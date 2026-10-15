@@ -2,6 +2,14 @@
 
 Scope: local, read-only replay cockpit first; integrations consume telemetry. No hardware access or external publication.
 
+## Authorized near-goal route correction (delivered and exercised)
+
+1. Preserve the deployment checkout and frozen bundle; reproduce the recorded same-cell route failure from actual coordinates.
+2. Add a tracked deployment correction through `bundle.load_flow()`, retaining both physical endpoints and existing class references. Test same-cell/exact-goal routes, normal-route parity, refresh/progress, loader integration and unchanged arrival scoring.
+3. Rerun saved scenario `scenario-c04c8b95e417` unchanged, audit native/replay parity, and open the result with LiDAR, map and Health.
+
+Delivered: deployment commit `f3329db5` on `codex/near-goal-route`; full frozen-bundle verification passed. Final job `job-191de58a285a` exited 0 with source goal completion at 6.46 s. The original failed prefix is unchanged; the new recording has 323 executed frames. Source/adapter/scorer/worker hashes are retained. The first corrected run had an intermittent process-exit stall after saving its completed source result; the bounded guard retained a failed job, and two subsequent identical runs exited normally. Process-local ONNX Runtime vendor telemetry is disabled and stack diagnostics are enabled for future stalls, without claiming a proven root cause. See `docs/NAVIGATION_TESTS.md` for exact evidence and remaining limitations.
+
 ## Obstacle navigation and visual workflow validation (delivered and exercised)
 
 1. Reuse the local frozen Flow scene generator read-only for three fresh development layouts (detour, slalom, corridor/beam), with source hashes and editable goal presets. Do not read sealed panels or outcomes.
@@ -9,7 +17,7 @@ Scope: local, read-only replay cockpit first; integrations consume telemetry. No
 3. Run six bounded CPU navigation cases through the browser, varying goals, heading and planner budget. Record source outcomes, contact/pose parity, timing and screenshots; do not equate execution completion with navigation success.
 4. Preserve sensor/map/Health view settings in replay links, verify responsive layout and regressions, leave a representative obstacle run open, and commit locally.
 
-Delivered: three source-backed obstacle maps, six browser-driven navigation configurations, causal contact telemetry, preserved source-failure replay, distinct goal/start markers, reusable view links and mobile layout fixes. Outcomes: four goal completions, one timeout and one source runtime error. Exact parity passed for 1,327 frames and 5,308 physics substeps. All 97 unit/integration tests, 13 existing browser checks and nine saved-view checks passed. See `docs/NAVIGATION_TESTS.md` for commands, metrics and the unresolved read-only dependency bug.
+Delivered: three source-backed obstacle maps, six browser-driven navigation configurations, causal contact telemetry, preserved source-failure replay, distinct goal/start markers, reusable view links and mobile layout fixes. Initial outcomes: four goal completions, one timeout and one source runtime error. Exact parity passed for 1,327 frames and 5,308 physics substeps. All 97 unit/integration tests, 13 existing browser checks and nine saved-view checks passed. The later authorized route correction and unchanged-scenario rerun are documented above and in `docs/NAVIGATION_TESTS.md`.
 
 ## Simulation workbench extension (delivered and exercised)
 

@@ -30,7 +30,7 @@ To open the longer rehearsal with the Health panel, map overlay and playback alr
 
 Use **Prepare → Policy test → Sensors** to select/import a map, pick a goal, save settings, run the actual CPU policy and attach perception to the viewport. Scans remain inspection-only until collision geometry is supplied; unknown space is never rendered as observed free space. Fresh tests are recorded automatically under `~/research-data/g1-deploy-studio/workbench/jobs`. [Detailed workflow and limits](docs/WORKBENCH.md).
 
-Three source-backed Flow obstacle arenas now provide editable start/goal presets: wall detour, alternating walls and corridor/overhead beam. Six browser-driven navigation configurations were exercised, with four goal completions, one timeout and one preserved source runtime failure. [Try the demonstrated navigation workflow and inspect the results](docs/NAVIGATION_TESTS.md). LiDAR pins, map, Health, camera, cursor and replay loop can be retained in a view link.
+Three source-backed Flow obstacle arenas now provide editable start/goal presets: wall detour, alternating walls and corridor/overhead beam. The initial six configurations produced four goal completions, one timeout and one preserved source runtime failure. After an authorized near-goal route fix in `g1-student-deploy`, the identical failed detour completed at 6.46 s; its original 296 executed frames are unchanged. [Try the corrected detour and inspect the results](docs/NAVIGATION_TESTS.md). LiDAR pins, map, Health, camera, cursor and replay loop can be retained in a view link.
 
 `config/sessions.json` registers the demonstrated paths. For a different local recording, create ignored `config/local.json` with the same `sessions` structure and run:
 

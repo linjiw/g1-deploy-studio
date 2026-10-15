@@ -5,10 +5,10 @@
 The gateway is `http://127.0.0.1:8790` (the desktop forwards it to a local browser port). Open:
 
 ```text
-http://127.0.0.1:8790/?session=job-1a40c9689e2b&panel=health&map=1&pin=lidar_filtered&time=1.2&camera=follow&speed=0.5&loop=1&play=1
+http://127.0.0.1:8790/?session=job-191de58a285a&panel=health&map=1&pin=lidar_filtered&time=1.2&camera=follow&speed=0.5&loop=1&play=1
 ```
 
-This plays the actual corridor/overhead-beam recording at half speed, with the causal map, filtered ray-LiDAR and Health together. Loop only repeats recorded playback; it never launches another policy run. **Link** preserves the cursor, pins, map visibility, inspector, camera, speed and workspace in a reusable URL. **Loop** can be turned off at any time.
+This plays the corrected wall-detour recording at half speed, with the causal map, filtered ray-LiDAR and Health together. For the earlier corridor/overhead-beam recording, select `job-1a40c9689e2b`. Loop only repeats recorded playback; it never launches another policy run. **Link** preserves the cursor, pins, map visibility, inspector, camera, speed and workspace in a reusable URL. **Loop** can be turned off at any time.
 
 To test another goal:
 
@@ -39,7 +39,7 @@ The slalom starts at yaw 0.35 rad. The final corridor case changes the goal to `
 
 ## Source route failure and preserved evidence
 
-The long detour reached 0.041 m from the goal after 5.92 s, then the unchanged source `Route.project()` raised `ValueError: attempt to get argmin of an empty sequence`. The source route can contain one point when start and goal map to the same grid cell; projection expects at least one segment. This is **runtime_error**, not goal completion. The reference repository and policy algorithm were not patched.
+The long detour reached 0.041 m from the goal after 5.92 s, then the unchanged source `Route.project()` raised `ValueError: attempt to get argmin of an empty sequence`. The source route can contain one point when start and goal map to the same grid cell; projection expects at least one segment. This historical result remains **runtime_error**, not goal completion. The reference repository was not patched during that initial investigation; the separately authorized correction is described below.
 
 The original failed attempt is `job-27eb805f08ca`; the repeated, fully inspectable failure is `job-b5a5fca91f03`. Its 296 executed frames, all recorded causal sensor/map snapshots and physical substeps are retained. Source lockstep wrote 297 pre-action states but only 296 actions/post-states/references. Studio preserves that native NPZ and creates an explicitly documented `native_executed` slice excluding only the unmatched final pre-state. Exact state/reference parity still applies to every executed frame. No motion is invented after failure. The process exits nonzero, job status remains failed, and the replay shows an incomplete-recording banner with the original error.
 
@@ -74,4 +74,56 @@ STUDIO_URL=http://127.0.0.1:8790 STUDIO_JOB=job-1a40c9689e2b \
 
 During implementation, the browser matrix used the isolated development gateway on 8791. After the source failure was discovered, the remaining four cases used `STUDIO_CASES=.../navigation-workflow/remaining-cases.json` and `STUDIO_EVIDENCE=.../navigation-remaining`; the first report was preserved before continuing. The final application runs on 8790.
 
-Remaining: the upstream route edge-case fix needs separate authorization to edit that read-only dependency. ROS/DDS live discovery, full isolated C++/DDS execution, physical sensor feeds and hardware observation remain unvalidated. The CPU tests use ideal simulation state and no injected planner delivery delay; the source planner treats unknown map cells as free and may fall back to a direct route. These results establish a useful navigation test cockpit, not hardware deployment readiness.
+Remaining: ROS/DDS live discovery, full isolated C++/DDS execution, physical sensor feeds and hardware observation remain unvalidated. The CPU tests use ideal simulation state and no injected planner delivery delay; the source planner treats unknown map cells as free and may fall back to a direct route. These results establish a useful navigation test cockpit, not hardware deployment readiness.
+
+## Authorized fix and identical detour rerun (2026-10-15)
+
+The user authorized a narrow edit to `g1-student-deploy`. Both working trees were clean before implementation. Deployment commit `f3329db5acd77e47d4758e01928d0df4996ef318`, branch `codex/near-goal-route`, adds `g1deploy/route_compat.py` and installs it through `bundle.load_flow()`. It preserves `[start, goal]` only for a successful one-point route, including a zero-length segment for identical endpoints. Applying it to the original class also covers inherited `SensorRoute` and existing `callback.Route` references. The ignored, hash-pinned frozen bundle and historical manifest remain byte-identical; full bundle verification passed. No scoring thresholds, model weights, ordinary route geometry, occupancy policy or hardware interfaces changed.
+
+The final saved-scenario rerun is **`job-191de58a285a`**, using exactly `scenario-c04c8b95e417`: the same map hash `7a423eacf9dd57a106ef3d61828941c6307cf3ddb12ac74bc49ebd0569f4d5b9`, start `(0, 0)`, goal `(3.8247117178139156, -0.5738279709187756)`, yaw 0, seed 0, K4/ODE6 and ten-second deadline.
+
+| Result | Observed value |
+| --- | ---: |
+| Job status / worker exit | completed / 0 |
+| Source outcome | goal_completion |
+| Executed simulation duration | 6.46 s, 323 steps |
+| Final / minimum goal distance | 0.085743 / 0.018202 m |
+| Maximum obstacle contact | 0 N (floor excluded) |
+| Planner p50 / p95 | 393.5 / 439.5 ms |
+| SONIC inference p50 / p95 | 3.15 / 7.18 ms |
+| Worker time through recording | 23.92 s |
+
+This is a CPU integration check, with ideal simulation state and zero injected planner delivery delay; timing is not a real-time guarantee. The unchanged source scorer declares arrival after its distance/speed/hold criteria. Raw scorer speed/hold rows are not persisted, so exact independent reconstruction of those rows is unavailable. Regression tests separately verify that near-goal proximity cannot bypass speed and continuous-hold requirements.
+
+All 296 formerly executed frames retain exact native pre-state, post-state, reference and contact values. The unmatched pre-state at the old exception also matches the continued run. The complete new recording is checked against native arrays and source identity, including the loader, route correction, frozen route, scorer and Studio worker hashes.
+
+Final verification passed 21 focused deployment tests, 97 Studio tests, 31 independent native-data audit checks and 14 browser checks. Screenshots were visually inspected at 1.2 s and 6.1 s (past the old exception), with the robot, obstacle, navigation goal, causal LiDAR/map and Health visible together. Playback, seeking and looping advance only the recorded data. The running gateway remains loopback-only on port 8790; the desktop forwards its browser URL.
+
+Execution history remains visible: `job-cd24dac996f5` reached the same source goal and saved its recording, but its process stalled during exit and the existing 180-second guard marked the job failed. Diagnostic rerun `job-9bd02a81a46b` exited normally with identical motion. The final run also exited normally after disabling ONNX Runtime vendor telemetry inside the worker process. Native runtime telemetry is a possible cause of the first stall, not a proven diagnosis. A 60-second stack-dump diagnostic now precedes the unchanged 180-second guard; no exit code is overridden or failure relabelled as success.
+
+Evidence under `/home/linjiw/research-data/g1-deploy-studio/evidence/route-fix/`:
+
+- `deployment-tests.txt`: 21 focused CPU tests covering route, SONIC parity and perception.
+- `bundle-verification.json`: full frozen artifact verification and unchanged route hash.
+- `studio-tests.txt`: 97 Studio unit/integration tests.
+- `final-request.json`, `final-result.json`: identical inputs, actual source outcome and clean process exit.
+- `native-audit.json`, `final-native-audit.json`: independent native/normalized parity, frame/time/joint and artifact identity checks.
+- `shutdown-attempt.json`, `diagnostic-job.json`: preserved lifecycle investigation.
+- `final-browser/`: saved-view/browser checks and screenshots; `final-browser-tests.txt` holds the command output.
+
+Commands (simulation/replay only):
+
+```bash
+# In /home/linjiw/code/g1-student-deploy:
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 .venv/bin/python -m pytest \
+  tests/test_route.py tests/test_sonic.py tests/test_perception.py -q
+.venv/bin/python -c 'from g1deploy import bundle; assert not bundle.verify(quick=False)'
+# In /home/linjiw/code/g1-deploy-studio:
+.venv/bin/python -m unittest discover -s tests -v
+STUDIO_URL=http://127.0.0.1:8790 STUDIO_JOB=job-191de58a285a \
+  STUDIO_FAILED_JOB=job-b5a5fca91f03 \
+  STUDIO_EVIDENCE=/home/linjiw/research-data/g1-deploy-studio/evidence/route-fix/final-browser \
+  node tools/navigation_view_acceptance.mjs
+```
+
+To repeat execution, load the saved detour configuration in **Policy test** and run it; the replay link itself never starts a worker. No DDS participant or hardware command path was enabled. Other reference repositories and ongoing jobs were left unchanged.

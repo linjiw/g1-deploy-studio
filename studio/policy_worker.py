@@ -189,6 +189,10 @@ def execute(request, output):
                                      'progress': {'simulation_time_s': 0, 'wall_time_s': 0}})
     try:
         import numpy as np
+        import onnxruntime as ort
+        # This local rehearsal has no need for the runtime's vendor telemetry.
+        # Set the process-local switch before constructing any inference session.
+        ort.disable_telemetry_events()
         import torch
         torch.set_num_threads(2)
         torch.set_num_interop_threads(1)
@@ -212,6 +216,8 @@ def execute(request, output):
         _atomic(output / 'boxes.json', req['map']['boxes'])
         source_files = [_hash(REFERENCE_ROOT / f) for f in ('sim/lockstep.py', 'sim/episode.py', 'g1deploy/contract.py',
                          'g1deploy/sonic.py', 'g1deploy/perception/cloud_memory.py',
+                         'g1deploy/bundle.py', 'g1deploy/route_compat.py', 'g1deploy/scoring.py',
+                         'bundle/flow/src/motion2scene_flow/closed_loop/route.py',
                          'bundle/sonic/sonic_release_g1.onnx', 'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt')]
         model_identity = _hash(REFERENCE_ROOT / 'sim/assets/g1_29dof.xml')
         checkout = _git_provenance(REFERENCE_ROOT)
@@ -243,7 +249,7 @@ def execute(request, output):
                                          'command_kind': 'PD position target; source applies clipped PD torques internally',
                                          'torque_samples_recorded': False},
                     'calibration_identity': 'bundled MID-360 inverted mount; simulation only',
-                    'provenance': {'artifacts': source_files, 'model_at_recording': model_identity,
+                    'provenance': {'artifacts': source_files + [_hash(Path(__file__))], 'model_at_recording': model_identity,
                                    'repositories': [checkout], 'adapter': 'studio.policy_worker.v1'},
                     'limitations': ['Fresh in-process CPU Flow + SONIC + MuJoCo; not a C++/DDS or real-time deployment validation.',
                                     'CPU quick-test sampling budget differs from deployed 16 candidates / 10 ODE steps unless selected.',
@@ -521,6 +527,11 @@ def execute(request, output):
 
 
 def main(argv=None):
+    import faulthandler
+    faulthandler.enable()
+    # Preserve stack evidence if native cleanup stalls after writing a result.
+    # The parent still owns the existing 180 s process limit and exit-code check.
+    faulthandler.dump_traceback_later(60, repeat=True)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--request', type=Path, required=True)
     ap.add_argument('--output', type=Path, required=True)
