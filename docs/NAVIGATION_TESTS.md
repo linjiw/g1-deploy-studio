@@ -1,5 +1,7 @@
 # Obstacle navigation workflow: executed development checks
 
+For the subsequent six-run comparison of the corrected planner across slalom and corridor goals, see [fixed-planner goal checks](FIXED_PLANNER_GOALS.md). It preserves both successes and failures, with timing, contacts, exact replay links and visual evidence. The initial runs and authorized route repair remain documented below.
+
 ## Try the demonstrated run
 
 The gateway is `http://127.0.0.1:8790` (the desktop forwards it to a local browser port). Open:

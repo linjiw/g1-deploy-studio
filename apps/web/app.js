@@ -13,7 +13,7 @@ const clock = value => { if (!finite(value)) return '—'; const ms = Math.round
 const fact = (label, value, cls = '') => `<div class="fact"><span>${escape(label)}</span><strong class="${cls}">${escape(value)}</strong></div>`;
 const notice = (text, cls = '') => `<div class="callout ${cls}">${escape(text)}</div>`;
 const vector = (v, digits = 3) => Array.isArray(v) ? v.map(n=>num(n,digits)).join(', ') : 'Unavailable';
-const state = {session:null, frame:null, measuredFrame:null, frozenFrame:null, frameIndex:-1, time:0, playing:false, speed:1, loop:false, tab:'intent', camera:'orbit', joint:0, loadGeneration:0};
+const state = {session:null, frame:null, measuredFrame:null, frozenFrame:null, frameIndex:-1, time:0, playing:false, speed:1, loop:false, tab:'intent', camera:'orbit', joint:0, loadGeneration:0, loading:false, liveStatus:null};
 let scene, camera, renderer, controls, modelSpec, robot, ghost, futureGhosts = [], content, environment, mapGroup, trajectory, futureLine, referenceLine, robotAxes, worldAxes, waypointMarker;
 const meshCache = new Map();
 const cachedGeometries = new Set();
@@ -41,6 +41,13 @@ function updateView(values) {
 }
 function updateRecordingWarning() {
   const metadata=state.session?.metadata??{};
+  // A bounded live preview is incomplete by design. Worker failures have their
+  // own warning; recording completeness comes from the opened recording.
+  if(metadata.mode==='simulation'){
+    $('recording-warning').hidden=state.liveStatus!=='failed';
+    $('recording-warning').textContent=`WORKER FAILED · ${metadata.termination_reason??metadata.error??'The worker stopped before normal completion.'} Showing received live samples. Open the recorded failure to inspect all captured execution.`;
+    return;
+  }
   $('recording-warning').hidden=!metadata.incomplete&&metadata.recording_complete!==false;
   $('recording-warning').textContent=`INCOMPLETE RECORDING · ${metadata.termination_reason??metadata.error??'The worker stopped before normal completion.'} Executed motion and telemetry are available up to the last captured sample. This is a recorded failure, not a successful navigation result.`;
 }
@@ -285,8 +292,8 @@ function setSensorOverlay(sensor) {
   sensorOverlays.set(sensor.id,object);sensorOverlayGroup.add(object);
 }
 function appendLiveFrame(latest) {
-  const frame=latest.frame;if(!frame||!state.session||!hasPose(frame))return;
-  setPlaying(false);state.frozenFrame=null;state.runtime=latest.runtime??null;
+  const frame=latest.frame;if(!frame||!state.session||!hasPose(frame)||state.loading||state.session.metadata.mode!=='simulation')return;
+  setPlaying(false);state.frozenFrame=null;state.runtime=latest.runtime??null;state.liveStatus=latest.status??null;
   const frames=state.session.frames,previous=frames.at(-1);
   if(previous&&frame.time<previous.time)return;
   if(latest.metadata)Object.assign(state.session.metadata,latest.metadata);
@@ -300,10 +307,12 @@ function appendLiveFrame(latest) {
     if(!previousMap||latest.perception.time>previousMap.time)snapshots.push(latest.perception);
     if(snapshots.length>500)snapshots.splice(0,snapshots.length-500);
   }
-  state.session.metadata.duration_s=frame.time;state.session.metadata.mode=terminal?'replay':'simulation';state.time=frame.time;state.frameIndex=-1;
+  // A terminal worker snapshot is still a bounded live preview, not the full
+  // recording. loadSession is the only transition into a decoded replay.
+  state.session.metadata.duration_s=frame.time;state.session.metadata.mode='simulation';state.time=frame.time;state.frameIndex=-1;
   $('timeline').max=String(frame.time);$('duration-time').textContent=$('timeline-end').textContent=clock(frame.time);$('timeline-middle').textContent=clock(frame.time/2);$('frames-value').textContent=`${frames.length.toLocaleString()} observed`;
   $('layer-perception').disabled=!state.session.perception?.available;
-  updateRecordingWarning();renderFrame(true);$('playback-state').textContent=terminal?`CPU RUN · ${latest.status.toUpperCase()}`:'CPU RUN · LATEST';$('source-badge').textContent=terminal?'SIMULATION · RECORDED WORKER STATE':'SIMULATION · ACTUAL WORKER STATE';
+  updateRecordingWarning();renderFrame(true);$('playback-state').textContent=terminal?`CPU RUN · ${latest.status.toUpperCase()}`:'CPU RUN · LATEST';$('source-badge').textContent=terminal?'SIMULATION · FINAL LIVE SAMPLE':'SIMULATION · ACTUAL WORKER STATE';
 }
 function updateLayers() {
   if(!environment)return;
@@ -439,10 +448,18 @@ function renderJoints() {
   $('joints-content').innerHTML=`<span class="eyebrow">NAMED JOINT PARITY</span><h3>Planned vs executed</h3><p>Simulator state and selected reference. All values in radians; error = state − reference.</p>${state.frozenFrame?notice(`Replay diagnostic injection: state held at ${clock(m.time)}. ${h.state_stale?'Tracking error unavailable while stale.':'Historical chart remains unmodified.'}`,'warning'):''}<select id="joint-select" class="joint-select" aria-label="Joint to inspect">${state.session.joint_names.map((n,i)=>`<option value="${i}" ${i===state.joint?'selected':''}>${escape(n)}</option>`).join('')}</select>${jointChart(state.joint)}<div class="chart-legend"><span>Reference</span><span>Ground truth</span></div><p class="tiny">Amber cursor marks selected session time. Model indices are resolved by joint name.</p><table class="joint-table" data-testid="joint-table"><thead><tr><th>Joint</th><th>State</th><th>Ref</th><th>Error</th></tr></thead><tbody>${state.session.joint_names.map((name,i)=>`<tr><td title="${escape(name)}">${escape(name.replace('_joint',''))}</td><td>${num(m.joints?.[i],3)}</td><td>${finite(f.reference?.joints[i])?num(f.reference.joints[i],3):'—'}</td><td>${finite(f.reference?.joints?.[i])&&finite(m.joints?.[i])&&!h.state_stale?num(m.joints[i]-f.reference.joints[i],3):'—'}</td></tr>`).join('')}</tbody></table>${f.command?.joints?notice('SONIC PD targets are recorded from the CPU worker. These are simulated commanded positions; no DDS motor packets or physical joint faults are observed.','neutral'):notice('Motor commands, gains and joint faults are unavailable in this recording. Reference error is not low-level command tracking error.','neutral')}${f.command?.joints?`<h4>Recorded SONIC command targets</h4>${fact('Command tracking RMSE',num(h.command_tracking_rmse_rad,3,'rad'))}<details class="raw-details"><summary>Named target values · radians</summary><pre>${escape(JSON.stringify(Object.fromEntries(state.session.joint_names.map((name,index)=>[name,f.command.joints[index]])),null,2))}</pre></details>`:''}`;
   $('joint-select').addEventListener('change',e=>{state.joint=Number(e.target.value);renderJoints();});
 }
+function recordedOutcomeSummary() {
+  const metadata=state.session.metadata,result=metadata.test_result;
+  if(metadata.mode!=='replay'||!result?.outcome)return '';
+  const last=state.session.frames.at(-1),interval=last?.post_action?.contact;
+  const labels={goal_completion:'Goal reached',timeout:'Timed out',obstacle_collision:'Obstacle collision',runtime_error:'Runtime error'};
+  const outcome=labels[result.outcome]??String(result.outcome).replaceAll('_',' ');
+  return `<section id="recorded-outcome" class="callout ${result.outcome==='goal_completion'?'neutral':'warning'}"><span class="eyebrow">FINAL RECORDED OUTCOME · ENTIRE RUN</span>${fact('Policy result',outcome)}${fact('Evaluator elapsed',num(result.elapsed_s,3,'s'))}${fact('Peak obstacle contact',num(result.maximum_obstacle_contact_n,2,'N'))}${interval?`<p class="tiny">Final contact interval ${num(interval.start_s,3)}–${num(interval.end_s,3,'s')}: ${num(interval.max_force_n,2,'N')}.${finite(interval.end_s)&&finite(last.time)&&interval.end_s>last.time?` This interval follows the final rendered pose at ${num(last.time,3,'s')}.`:''}</p>`:''}<div class="tiny">Whole-run result. Cursor diagnostics below remain at the selected time.</div></section>`;
+}
 function renderHealth() {
   const f=state.frame,m=state.measuredFrame,h=sampleHealth(),events=state.session.events??[];
   const recent=events.filter(e=>e.time<=state.time).slice(-8).reverse();
-  $('health-content').innerHTML=`<span class="eyebrow">${state.session.metadata.mode==='simulation'?'CPU WORKER SAMPLE DIAGNOSTICS':'RECORDED DIAGNOSTICS'}</span><h3>Timing & availability</h3><p>${state.session.metadata.mode==='simulation'?'Actual worker samples use simulation time. Host receipt age is measured separately; CPU lockstep is not guaranteed real time.':'Historical metrics at the selected sample. Paused replay does not imply a disconnected controller.'}</p>${state.runtime?`${fact('Owned worker',state.runtime.worker_alive===true?'Running · PID '+state.runtime.worker_pid:state.runtime.worker_alive===false?'Exited':'Ownership unavailable')}${fact('Worker host',state.runtime.host)}${fact('Live telemetry receipt',state.runtime.telemetry_status??'Unavailable')}${fact('Host receipt age',num(state.runtime.telemetry_age_ms,0,'ms'))}`:''}<div class="callout ${state.frozenFrame?'warning':'neutral'}"><label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame?'checked':''}> Replay diagnostic injection: hold state</label><div class="tiny">Hold one recorded state while playback/reference advances. Display stale after 100 ms. No producer or controller is stopped.</div></div>${fact('State freshness',finite(h.state_age_ms)?`${num(h.state_age_ms,1,'ms')} · ${h.state_stale?'STALE':'recording clock'}`:'Unavailable',h.state_stale?'value-amber':'')}${fact('Reference freshness',num(h.reference_age_ms,1,'ms'))}${fact('Receiver status',h.stream_status??'Unavailable')}${fact('Last observed receive rate',num(h.observed_rate_hz,1,'Hz'))}${fact('Visualization queue drops',h.queue_drops??'Unavailable')}${fact('Planner wall latency',num(h.planner_latency_ms,1,'ms'))}${fact('SONIC inference',num(h.sonic_inference_ms,2,'ms'))}${fact('Controller step wall time',num(h.control_step_wall_ms,2,'ms'))}${fact('Command target RMSE',num(h.command_tracking_rmse_rad,3,'rad'))}${fact('Low-command freshness',num(h.lowcmd_age_ms,1,'ms'))}${fact('End-to-end latency','Unavailable')}${fact('GPU utilization',num(h.gpu_utilization,1,'%'))}${fact('Supervisor state','Unavailable at this cursor')}${fact(hasPose(m)?'State source time':'Event source time',num(m.source_time,6,'s'))}${fact('Source clock',m.source_clock_domain)}${fact('Simulator time',num(m.sim_time,3,'s'))}${fact('Receipt time',num(m.receipt_time,6,'s'))}${fact('State sequence',m.sequence)}${fact('Obstacle contact · completed interval',num(h.contact_force_n,2,'N'))}${h.contact_interval?`<p class="tiny">Peak simulator obstacle contact over ${num(h.contact_interval.start_s,3)}–${num(h.contact_interval.end_s,3,'s')}; ${Array.isArray(h.contact_interval.samples_n)?h.contact_interval.samples_n.length:'Unavailable'} substeps. No future interval is shown.</p>`:''}${notice('Unavailable fields stay unknown. Planner compute time is not end-to-end latency. State age is evaluated in the recording clock.','neutral')}<h4>Events up to this time</h4>${recent.length?`<ol class="event-list">${recent.map(e=>`<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>`:'<p class="unavailable">No event recorded before this cursor.</p>'}`;
+  $('health-content').innerHTML=`<span class="eyebrow">${state.session.metadata.mode==='simulation'?'CPU WORKER SAMPLE DIAGNOSTICS':'RECORDED DIAGNOSTICS'}</span><h3>Timing & availability</h3>${recordedOutcomeSummary()}<p>${state.session.metadata.mode==='simulation'?'Actual worker samples use simulation time. Host receipt age is measured separately; CPU lockstep is not guaranteed real time.':'Historical metrics at the selected sample. Paused replay does not imply a disconnected controller.'}</p>${state.runtime?`${fact('Owned worker',state.runtime.worker_alive===true?'Running · PID '+state.runtime.worker_pid:state.runtime.worker_alive===false?'Exited':'Ownership unavailable')}${fact('Worker host',state.runtime.host)}${fact('Live telemetry receipt',state.runtime.telemetry_status??'Unavailable')}${fact('Host receipt age',num(state.runtime.telemetry_age_ms,0,'ms'))}`:''}<div class="callout ${state.frozenFrame?'warning':'neutral'}"><label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame?'checked':''}> Replay diagnostic injection: hold state</label><div class="tiny">Hold one recorded state while playback/reference advances. Display stale after 100 ms. No producer or controller is stopped.</div></div>${fact('State freshness',finite(h.state_age_ms)?`${num(h.state_age_ms,1,'ms')} · ${h.state_stale?'STALE':'recording clock'}`:'Unavailable',h.state_stale?'value-amber':'')}${fact('Reference freshness',num(h.reference_age_ms,1,'ms'))}${fact('Receiver status',h.stream_status??'Unavailable')}${fact('Last observed receive rate',num(h.observed_rate_hz,1,'Hz'))}${fact('Visualization queue drops',h.queue_drops??'Unavailable')}${fact('Planner wall latency',num(h.planner_latency_ms,1,'ms'))}${fact('SONIC inference',num(h.sonic_inference_ms,2,'ms'))}${fact('Controller step wall time',num(h.control_step_wall_ms,2,'ms'))}${fact('Command target RMSE',num(h.command_tracking_rmse_rad,3,'rad'))}${fact('Low-command freshness',num(h.lowcmd_age_ms,1,'ms'))}${fact('End-to-end latency','Unavailable')}${fact('GPU utilization',num(h.gpu_utilization,1,'%'))}${fact('Supervisor state','Unavailable at this cursor')}${fact(hasPose(m)?'State source time':'Event source time',num(m.source_time,6,'s'))}${fact('Source clock',m.source_clock_domain)}${fact('Simulator time',num(m.sim_time,3,'s'))}${fact('Receipt time',num(m.receipt_time,6,'s'))}${fact('State sequence',m.sequence)}${fact('Obstacle contact · completed interval',num(h.contact_force_n,2,'N'))}${h.contact_interval?`<p class="tiny">Peak simulator obstacle contact over ${num(h.contact_interval.start_s,3)}–${num(h.contact_interval.end_s,3,'s')}; ${Array.isArray(h.contact_interval.samples_n)?h.contact_interval.samples_n.length:'Unavailable'} substeps. No future interval is shown.</p>`:''}${notice('Unavailable fields stay unknown. Planner compute time is not end-to-end latency. State age is evaluated in the recording clock.','neutral')}<h4>Events up to this time</h4>${recent.length?`<ol class="event-list">${recent.map(e=>`<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>`:'<p class="unavailable">No event recorded before this cursor.</p>'}`;
   $('freeze-state').disabled=!hasPose(state.frame);
   $('freeze-state').addEventListener('change',e=>{state.frozenFrame=e.target.checked?state.frame:null;renderFrame(true);});
   bindEventSeek();
@@ -471,12 +488,13 @@ function bindEventSeek() { document.querySelectorAll('[data-seek]').forEach(el=>
 
 async function loadSession(id) {
   const generation=++state.loadGeneration;
+  state.loading=true;
   setPlaying(false);$('loading-overlay').hidden=false;$('error-banner').hidden=true;removeContent();modelSpec=null;
   try {
     const session=await json(`/api/session?id=${encodeURIComponent(id)}`);
     if(generation!==state.loadGeneration)return;
     if(session.schema_version!==1||!session.frames?.length)throw new Error('Unsupported or empty recording. Expected telemetry schema v1.');
-    state.session=session;state.sessionId=id;state.time=session.frames[0].time;state.frameIndex=-1;state.frame=null;state.measuredFrame=null;state.frozenFrame=null;state.joint=0;state.runtime=null;
+    state.session=session;state.sessionId=id;state.time=session.frames[0].time;state.frameIndex=-1;state.frame=null;state.measuredFrame=null;state.frozenFrame=null;state.joint=0;state.runtime=null;state.liveStatus=null;
     const m=session.metadata;
     updateRecordingWarning();
     const wire=m.recording_kind==='recorded-wire-transport';
@@ -504,7 +522,9 @@ async function loadSession(id) {
     window.__studio={get state(){return state;},get model(){return modelSpec;},get robot(){return robot;},get mapSample(){return mapSample;},get sensorOverlayCount(){return sensorOverlays.size;},get navigationMarkers(){return {goal:navigationGoal?.position.toArray()??null,start:navigationStart?.position.toArray()??null};},get preparationMarkers(){return {goal:preparationGoal?.position.toArray()??null,start:preparationStart?.position.toArray()??null,yaw:preparationStart?.getObjectByName('heading')?.rotation.z??null};},seek,selectTab,setPlaying,loadSession,cameraView,setPreparationMode,showPreparationMap,setPreparationGoal,setPreparationStart,pickPreparationGoal,updateLayers,updateView,setSensorOverlay,removeSensorOverlay,appendLiveFrame};
     window.dispatchEvent(new CustomEvent('studio:session',{detail:{session,id}}));
     const url=new URL(window.location);url.searchParams.set('session',id);history.replaceState({},'',url);
-  } catch(e) {if(generation===state.loadGeneration){$('loading-overlay').hidden=true;error(`Cannot open this recording: ${e.message}`);console.error(e);}}
+    return true;
+  } catch(e) {if(generation===state.loadGeneration){$('loading-overlay').hidden=true;error(`Cannot open this recording: ${e.message}`);console.error(e);}return false;
+  } finally {if(generation===state.loadGeneration)state.loading=false;}
 }
 function selectTab(name) {
   state.tab=name;

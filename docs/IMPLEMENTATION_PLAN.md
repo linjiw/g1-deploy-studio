@@ -2,6 +2,15 @@
 
 Scope: local, read-only replay cockpit first; integrations consume telemetry. No hardware access or external publication.
 
+## Fixed-planner goal comparison (delivered and exercised)
+
+1. Freeze six explicit development cases in `config/navigation-goal-checks.json`: preset, lateral-offset and intermediate goals on each of the slalom and corridor scenes. Keep start/yaw/seed/K4-ODE6/10 s deadline fixed. Endpoint standing clearance is checked separately from navigation outcome.
+2. Execute the browser preparation/test/replay workflow sequentially using corrected deployment commit `f3329db5`. Preserve every source outcome and process exit without selecting only successful trials.
+3. Compare completion, goal distance, contacts, simulation duration, worker wall time and planner/SONIC latency. Independently verify source/request/normalized-recording parity.
+4. Visually inspect every LiDAR/map/Health replay at mid-run and terminal frames, exercise playback and retain screenshot links and runnable saved scenarios.
+
+Delivered: six cases executed once each, yielding two goal completions, three timeouts and one obstacle collision; all workers exited 0 without route exceptions. Independent audit passed 318 checks across 2,572 native frames, 10,288 contact substeps and 259 perception snapshots. Fixed terminal live-preview/replay handoff and paused sensor seeking; added explicit whole-run outcome/contact summary. Source outcomes and interrupted browser evidence remain preserved. Exact comparisons, verification and replay links are in `docs/FIXED_PLANNER_GOALS.md`.
+
 ## Authorized near-goal route correction (delivered and exercised)
 
 1. Preserve the deployment checkout and frozen bundle; reproduce the recorded same-cell route failure from actual coordinates.

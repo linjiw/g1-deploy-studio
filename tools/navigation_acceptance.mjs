@@ -25,17 +25,28 @@ assert.ok(cases.length>0&&cases.length<=6,'At most six explicit development case
 const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
 const page=await browser.newPage({viewport:{width:1512,height:1100}});
 const errors=[],failed=[],results=[],checks=[];
+if(process.env.STUDIO_RESUME_REPORT){
+  const previous=JSON.parse(await readFile(process.env.STUDIO_RESUME_REPORT,'utf8'));
+  assert.deepEqual(previous.cases,cases,'Resume requires exactly the same case inputs');
+  assert.ok(previous.results.every(r=>['completed','failed'].includes(r.status)),'Do not relaunch a pending case');
+  results.push(...previous.results);checks.push(...previous.checks);
+}
 page.on('pageerror',error=>errors.push(error.message));
 page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
 page.on('response',response=>{if(response.status()>=400)failed.push(`${response.status()} ${response.url()}`);});
 const snapshot=name=>page.screenshot({path:path.join(evidence,`${name}.png`),fullPage:true});
 const save=()=>writeFile(path.join(evidence,'navigation-acceptance.json'),JSON.stringify({base,cases,checks,results,errors,failed,scope:'Fresh CPU development checks; no hardware, DDS or statistical success-rate claim'},null,2));
 async function fill(id,value){await page.fill(`#${id}`,String(value));}
-async function seek(time){await page.locator('#timeline').evaluate((node,t)=>{node.value=t;node.dispatchEvent(new Event('input',{bubbles:true}));},time);}
+async function seek(time){
+  const cursor=await page.locator('#timeline').evaluate((node,t)=>{node.value=t;node.dispatchEvent(new Event('input',{bubbles:true}));return window.__studio.state.time;},time);
+  await page.waitForFunction(t=>window.__workbench.state.sensors?.session_id===window.__studio.state.sessionId&&Math.abs(window.__workbench.state.sensors.cursor_s-t)<1e-6,cursor);
+  return cursor;
+}
 try{
   await page.goto(`${base}/?session=sonic-lockstep&panel=health&map=1`);
   await page.waitForFunction(()=>window.__studio?.robot&&document.querySelector('#loading-overlay').hidden,null,{timeout:60000});
   for(const [index,test] of cases.entries()){
+    if(results.some(r=>r.name===test.name)){console.log(`Already executed; preserving ${test.name}`);continue;}
     console.log(`Preparing ${index+1}/${cases.length}: ${test.name}`);
     await page.click('#workspace-prepare');await page.waitForSelector('#prepare-map');
     await page.selectOption('#prepare-map',test.map_id);
@@ -50,7 +61,7 @@ try{
       if(await page.locator('#pick-goal').getAttribute('aria-pressed')==='true')await page.click('#pick-goal');
     }
     for(const [id,value]of [['start-x',test.start_xy[0]],['start-y',test.start_xy[1]],['goal-x',test.goal_xy[0]],['goal-y',test.goal_xy[1]]])await fill(id,value);
-    await page.click('#save-scenario');await page.waitForFunction(()=>window.__workbench.state.scenario?.id);
+    await page.click('#save-scenario');await page.waitForFunction(()=>window.__workbench.state.scenario?.id&&document.querySelector('#scenario-result').textContent.includes('Scenario saved'));
     assert.match(await page.locator('#scenario-result').textContent(),/Scenario saved/);
     await snapshot(`${test.name}-prepare`);
     await page.click('#workspace-test');
@@ -70,32 +81,39 @@ try{
     result.status=job.status;result.output_path=job.output_path;result.summary=job.summary;await save();
     assert.ok(['completed','failed'].includes(job.status),job.error??job.log_tail);
     assert.ok(job.result_session_id,'Execution must retain its actual recording, including source runtime failures');
-    assert.deepEqual(job.scenario.goal_xy,test.goal_xy);assert.deepEqual(job.scenario.planner,test.planner);
+    for(const field of ['map_id','start_xy','goal_xy','start_yaw_rad','seed','duration_s','planner'])assert.deepEqual(job.scenario[field],test[field],field);
     assert.equal(job.runtime.dds_participants,0);assert.equal(job.runtime.hardware_enabled,false);
     await snapshot(`${test.name}-outcome`);
     await page.click('#open-job-replay');
-    await page.waitForFunction(id=>window.__studio.state.sessionId===id&&window.__studio.state.session.metadata.mode==='replay',id,{timeout:60000});
+    await page.waitForFunction(({id,count})=>window.__studio.state.sessionId===id&&window.__studio.state.session.metadata.mode==='replay'&&document.querySelector('#loading-overlay').hidden&&window.__studio.state.session.frames.length===count,{id,count:job.summary.report.control_steps},{timeout:60000});
     const recording=await page.evaluate(()=>window.__studio.state.session);
     assert.deepEqual(recording.metadata.goal_xy,test.goal_xy);assert.equal(recording.metadata.fixture,false);
-    if(job.status==='failed'){
+    if(job.status==='failed'&&!job.summary.recording_complete){
       assert.equal(recording.metadata.incomplete,true);
       assert.equal(job.summary.report.outcome,'runtime_error');
     }
+    result.exit_code=job.exit_code;result.error=job.error;result.source_repositories=recording.metadata.provenance.repositories;
     result.frame_count=recording.frames.length;result.perception_count=recording.perception.frames.length;
     result.start_position=recording.frames[0].position;result.end_position=recording.frames.at(-1).post_action.qpos.slice(0,3);
     result.root_displacement_m=Math.hypot(...result.end_position.slice(0,2).map((v,i)=>v-result.start_position[i]));
     assert.ok(recording.frames.length>=25&&recording.perception.frames.length>=2);
-    await seek(Math.min(recording.metadata.duration_s,.6*job.summary.report.elapsed_s));
     await page.click('#workspace-sensors');
     await page.waitForFunction(id=>window.__workbench.state.sensors?.session_id===id,id);
-    for(const sensor of ['lidar_filtered','map_support']){
+    for(const sensor of ['lidar_filtered']){
       if(!await page.evaluate(sensor=>window.__workbench.state.pinned.has(sensor),sensor))await page.locator(`#workbench-sensors [data-pin-sensor="${sensor}"]`).click();
     }
     await page.click('#workspace-replay');await page.check('#layer-perception');await page.click('#tab-health');
+    const replayTime=await seek(Math.min(recording.metadata.duration_s,.6*job.summary.report.elapsed_s));
     await page.click('#camera-orbit');await snapshot(`${test.name}-lidar-map-health`);
     const sensors=await page.evaluate(()=>window.__workbench.state.sensors);
     result.sensor_samples=sensors.sensors.filter(s=>['lidar_filtered','map_support','contact'].includes(s.id)).map(s=>({id:s.id,available:s.available,time:s.sample_time_s,status:s.status}));
     assert.ok(result.sensor_samples.filter(s=>s.id!=='contact').every(s=>s.available));
+    assert.ok(result.sensor_samples.every(s=>s.time==null||s.time<=replayTime+1e-6),'No future sensor samples');
+    result.replay_url=`${base}/?session=${id}&panel=health&map=1&pin=lidar_filtered&time=${replayTime.toFixed(3)}&camera=follow&speed=0.5&loop=1&play=1`;
+    await page.click('#camera-follow');await seek(recording.metadata.duration_s);await snapshot(`${test.name}-replay-end`);
+    await seek(.2);await page.selectOption('#speed','0.5');await page.click('#play');
+    await page.waitForFunction(()=>window.__studio.state.time>.35);await page.click('#play');
+    checks.push({name:`${test.name}: end-of-run seek, causal sensor samples and half-speed playback verified`,passed:true});
     checks.push({name:`${test.name}: configured map/goal/settings → actual CPU motion → synchronized LiDAR/map/Health`,passed:true,job_id:id,outcome:job.summary.report.outcome});
     console.log(JSON.stringify({name:test.name,job_id:id,outcome:job.summary.report.outcome,goal_distance_m:job.summary.report.final_goal_distance_xy_m,wall_s:job.summary.wall_time_s}));await save();
     if(index===0){

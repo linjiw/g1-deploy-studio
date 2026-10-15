@@ -172,15 +172,16 @@ function renderJob() {
 async function openResult(id) {
   wb.live=false;wb.liveJob=null;api()?.setPreparationMode(false);
   const sessions=await request('/api/sessions');$('session-picker').innerHTML=sessions.sessions.map(session=>`<option value="${escape(session.id)}">${escape(session.label??session.id)}</option>`).join('');$('session-picker').value=id;
-  await api().loadSession(id);api().selectTab('health');workspace('replay');
+  if(await api().loadSession(id)){api().selectTab('health');workspace('replay');}
 }
 async function showLiveFrame() {
-  if(!wb.job.latest?.frame)return;
-  const id=wb.job.session_id??wb.job.id;
-  if(wb.liveJob!==id){wb.liveJob=id;await api().loadSession(id);if(api().state.sessionId!==id){wb.liveJob=null;throw new Error('The worker has not published a renderable session yet. Try attach again after its first state sample.');}if(![...$('session-picker').options].some(option=>option.value===id))$('session-picker').add(new Option('Flow / SONIC · current CPU test',id));$('session-picker').value=id;api().selectTab('health');}
-  if(!wb.live)return;
+  const job=wb.job;
+  if(!wb.live||!job?.latest?.frame)return;
+  const id=job.session_id??job.id;
+  if(wb.liveJob!==id){wb.liveJob=id;const loaded=await api().loadSession(id);if(!wb.live||wb.liveJob!==id||wb.job?.id!==job.id)return;if(!loaded||api().state.sessionId!==id){wb.liveJob=null;throw new Error('The worker has not published a renderable session yet. Try attach again after its first state sample.');}if(![...$('session-picker').options].some(option=>option.value===id))$('session-picker').add(new Option('Flow / SONIC · current CPU test',id));$('session-picker').value=id;api().selectTab('health');}
+  if(!wb.live||wb.liveJob!==id||api().state.sessionId!==id)return;
   api().setPreparationMode(false);
-  api().appendLiveFrame?.({...wb.job.latest,runtime:wb.job.runtime});
+  api().appendLiveFrame?.({...job.latest,runtime:job.runtime});
 }
 
 function sensorPayload(sensor) {
@@ -228,7 +229,8 @@ async function refreshSensors(force=false) {
   const state=api()?.state;if(!state?.sessionId)return;
   if(wb.sensorRequest){if(force)wb.pendingSensorRefresh=true;return;}
   if(!force&&wb.workspace!=='sensors'&&!wb.pinned.size)return;
-  if(!force&&wb.sensorSession===state.sessionId&&Math.abs(wb.sensorTime-state.time)<.09)return;
+  // Playback is decimated; a paused seek must update even a single frame.
+  if(!force&&wb.sensorSession===state.sessionId&&Math.abs(wb.sensorTime-state.time)<(state.playing ? .09 : 1e-9))return;
   wb.sensorRequest=true;const sessionId=state.sessionId,time=state.time;
   try{
     const response=await request(`/api/sensors?session=${encodeURIComponent(sessionId)}&time=${encodeURIComponent(time)}`);
@@ -237,7 +239,7 @@ async function refreshSensors(force=false) {
     wb.sensors=response;wb.sensorTime=time;wb.sensorSession=sessionId;renderSensors();
   }catch(error){if(wb.workspace==='sensors')report(error);}finally{
     wb.sensorRequest=false;
-    if(api()?.state.sessionId!==sessionId||wb.pendingSensorRefresh||(!api()?.state.playing&&Math.abs((api()?.state.time??time)-time)>=.09)){wb.pendingSensorRefresh=false;refreshSensors(true);}
+    if(api()?.state.sessionId!==sessionId||wb.pendingSensorRefresh||(!api()?.state.playing&&Math.abs((api()?.state.time??time)-time)>1e-9)){wb.pendingSensorRefresh=false;refreshSensors(true);}
   }
 }
 export function initializeWorkbench() {
@@ -252,7 +254,7 @@ export function initializeWorkbench() {
       wb.sensors=null;wb.sensorSession=null;$('sensor-dock').hidden=true;
       if(wb.workspace==='sensors')$('workbench-sensors').innerHTML='<p class="tool-note">Loading causal sensor samples for this cursor…</p>';
       refreshSensors(true);
-    }else if(performance.now()-(wb.lastSensorFetch??0)>250){wb.lastSensorFetch=performance.now();refreshSensors();}
+    }else if(!api()?.state.playing||performance.now()-(wb.lastSensorFetch??0)>250){wb.lastSensorFetch=performance.now();refreshSensors();}
     wb.lastCursor=event.detail.time;
   });
   window.__workbench={state:wb,workspace,refreshSensors};

@@ -32,6 +32,8 @@ Use **Prepare → Policy test → Sensors** to select/import a map, pick a goal,
 
 Three source-backed Flow obstacle arenas now provide editable start/goal presets: wall detour, alternating walls and corridor/overhead beam. The initial six configurations produced four goal completions, one timeout and one preserved source runtime failure. After an authorized near-goal route fix in `g1-student-deploy`, the identical failed detour completed at 6.46 s; its original 296 executed frames are unchanged. [Try the corrected detour and inspect the results](docs/NAVIGATION_TESTS.md). LiDAR pins, map, Health, camera, cursor and replay loop can be retained in a view link.
 
+The corrected planner has also completed six fixed-input slalom/corridor goal checks: two goal completions, three timeouts and one collision, with no route exceptions. [Compare outcomes, timing and all six replays](docs/FIXED_PLANNER_GOALS.md). Health distinguishes whole-run results and terminal contact from diagnostics at the current replay cursor.
+
 `config/sessions.json` registers the demonstrated paths. For a different local recording, create ignored `config/local.json` with the same `sessions` structure and run:
 
 ```bash
