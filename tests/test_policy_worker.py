@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 
-from studio.policy_worker import capabilities, validate_request, _atomic
+from studio.policy_worker import capabilities, validate_request, _atomic, contact_interval, executed_native_recording
 
 
 class WorkerBoundaryTest(unittest.TestCase):
@@ -77,6 +77,53 @@ class WorkerBoundaryTest(unittest.TestCase):
             _atomic(path, {'frame': {'time': .02}, 'status': 'running'})
             self.assertEqual(json.loads(path.read_text())['frame']['time'], .02)
             self.assertFalse(path.with_suffix('.json.tmp').exists())
+
+    def test_physics_contact_preserves_substeps_and_interval(self):
+        interval = contact_interval([0., 23., 101., 8.], .02, .04)
+        self.assertEqual(interval['samples_n'], [0., 23., 101., 8.])
+        self.assertEqual(interval['max_force_n'], 101.)
+        self.assertEqual(interval['end_s'], .04)
+        self.assertEqual(interval['sample_period_s'], .005)
+        self.assertEqual(interval['classification'], 'simulator-ground-truth')
+        for forces, start, end in [([], 0., .02), ([math.nan], 0., .02),
+                                   ([-1.], 0., .02), ([1.], .02, .02)]:
+            with self.subTest(forces=forces, start=start, end=end), self.assertRaises(ValueError):
+                contact_interval(forces, start, end)
+
+    def test_failed_native_recording_preserves_original_and_only_excludes_unexecuted_tail(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            native = output/'native'
+            native.mkdir()
+            pre = np.arange(108.).reshape(3, 36)
+            post = np.arange(72.).reshape(2, 36)
+            refs = np.arange(1340.).reshape(2, 10, 67)
+            np.savez_compressed(native/'closed_loop.npz', pre_action_qpos=pre, realized_qpos=post,
+                                references=refs, estimated_qpos=np.empty((0,)))
+            original_bytes = (native/'closed_loop.npz').read_bytes()
+            _atomic(native/'plans.json', [{'tick': 0, 'waypoint_xy': [1., 2.]}])
+            _atomic(native/'run_config.json', {'start': 'stand'})
+            selected, extraction = executed_native_recording(output, 2)
+            self.assertEqual(extraction['excluded_unexecuted_pre_states'], 1)
+            self.assertEqual((native/'closed_loop.npz').read_bytes(), original_bytes)
+            with np.load(selected/'closed_loop.npz') as result:
+                np.testing.assert_array_equal(result['pre_action_qpos'], pre[:2])
+                np.testing.assert_array_equal(result['realized_qpos'], post)
+                np.testing.assert_array_equal(result['references'], refs)
+            self.assertEqual(json.loads((selected/'plans.json').read_text())[0]['waypoint_xy'], [1., 2.])
+
+    def test_failed_native_recording_rejects_missing_executed_data(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            native = output/'native'
+            native.mkdir()
+            np.savez_compressed(native/'closed_loop.npz', pre_action_qpos=np.zeros((3,36)),
+                                realized_qpos=np.zeros((1,36)), references=np.zeros((2,10,67)))
+            with self.assertRaisesRegex(ValueError, 'does not match executed frame count'):
+                executed_native_recording(output, 2)
+            self.assertFalse((output/'native_executed').exists())
 
 
 if __name__ == '__main__':

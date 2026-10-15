@@ -120,6 +120,54 @@ def _points(np, points, budget=MAX_SENSOR_POINTS):
     return pts[::max(1, math.ceil(len(pts) / budget))].tolist()
 
 
+def contact_interval(forces, start_s, end_s):
+    """Preserve actual physics substeps with their interval, never a future state stamp."""
+    samples = [float(v) for v in forces]
+    if not samples or any(not math.isfinite(v) or v < 0 for v in samples):
+        raise ValueError('Obstacle normal-force samples must be finite, nonnegative and nonempty')
+    if not math.isfinite(start_s) or not math.isfinite(end_s) or end_s <= start_s:
+        raise ValueError('Contact interval must have a finite positive duration')
+    return {'start_s': start_s, 'end_s': end_s, 'max_force_n': max(samples),
+            'samples_n': samples, 'sample_period_s': (end_s-start_s)/len(samples),
+            'classification': 'simulator-ground-truth', 'clock_domain': 'simulation',
+            'basis': 'Physics.step: maximum robot-obstacle normal force at each physics substep; excludes floor contacts'}
+
+
+def executed_native_recording(output, frame_count):
+    """Preserve a failed native recording and select only independently executed rows.
+
+    Source lockstep appends pre-action state before planning. A planning exception
+    can therefore leave one extra pre-state with no action, reference or result.
+    The original artifact stays intact and an explicitly documented bounded slice
+    is decoded by the normal independent replay adapter.
+    """
+    import numpy as np
+    native = output / 'native'
+    with np.load(native / 'closed_loop.npz', allow_pickle=False) as raw:
+        values = {key: raw[key] for key in raw.files}
+    counts = {key: len(values[key]) for key in ('pre_action_qpos', 'realized_qpos', 'references')}
+    if (frame_count <= 0 or counts['realized_qpos'] != frame_count or counts['references'] != frame_count
+            or counts['pre_action_qpos'] not in (frame_count, frame_count+1)):
+        raise ValueError(f'Failed native recording does not match executed frame count: {counts}, observed {frame_count}')
+    if counts['pre_action_qpos'] == frame_count:
+        return native, {'source_path': str(native / 'closed_loop.npz'), 'executed_rows': frame_count,
+                        'excluded_unexecuted_pre_states': 0}
+    selected = output / 'native_executed'
+    selected.mkdir()
+    values['pre_action_qpos'] = values['pre_action_qpos'][:frame_count]
+    if len(values.get('estimated_qpos', [])) > frame_count:
+        values['estimated_qpos'] = values['estimated_qpos'][:frame_count]
+    np.savez_compressed(selected / 'closed_loop.npz', **values)
+    for name in ('plans.json', 'run_config.json'):
+        if (native / name).is_file():
+            _atomic(selected / name, json.loads((native / name).read_text()))
+    extraction = {'source_path': str(native / 'closed_loop.npz'), 'executed_rows': frame_count,
+                  'excluded_unexecuted_pre_states': counts['pre_action_qpos']-frame_count,
+                  'basis': 'Only the final pre-state without an executed action/reference is excluded; original NPZ preserved'}
+    _atomic(selected / 'extraction.json', extraction)
+    return selected, extraction
+
+
 def execute(request, output):
     """Run one owned task. The caller must impose an independent wall-time limit."""
     req = validate_request(request)
@@ -136,6 +184,7 @@ def execute(request, output):
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(REFERENCE_ROOT))
     started = time.monotonic()
+    failed_receipt_written = False
     _atomic(output / 'latest.json', {'schema_version': 1, 'status': 'initializing', 'frame': None,
                                      'progress': {'simulation_time_s': 0, 'wall_time_s': 0}})
     try:
@@ -174,6 +223,11 @@ def execute(request, output):
                     'model_variant': 'G1 29 DoF · rubber hands', 'duration_s': req['duration_s'],
                     'source_time_origin': 0, 'source_path': str(output), 'clock_domain': 'simulation',
                     'frame_id': 'world', 'quaternion_convention': 'wxyz',
+                    'goal_xy': list(req['goal_xy']), 'start_xy': list(req['start_xy']),
+                    'start_yaw_rad': req['start_yaw_rad'],
+                    'navigation_criteria': {key: task[key] for key in
+                                            ('goal_radius_m', 'goal_speed_m_s', 'goal_hold_s',
+                                             'fall_height_m', 'fall_tilt_rad', 'obstacle_contact_threshold_n')},
                     'units': {'position': 'm', 'joint': 'rad', 'time': 's'},
                     'hardware_validated': False, 'command_path_enabled': False, 'fixture': False,
                     'policy_identity': 'Frozen Flow student + SONIC ONNX fused 1570 → 29 · CPU',
@@ -197,7 +251,7 @@ def execute(request, output):
                                     'Pose and IMU angular velocity are simulator truth; no physical sensor, camera, or hardware connection.',
                                     'Latent SONIC tokens are not exposed by the fused ONNX model.',
                                     'Unknown map cells remain unknown in Studio; the source planner selector treats unseen cells as free.']}
-        frames, perceptions, events, plans = [], [], [], []
+        frames, perceptions, events, plans, contact_intervals = [], [], [], [], []
         current = {'inference_ms': None, 'perception': None, 'raw': np.empty((0, 3)),
                    'filtered': np.empty((0, 3)), 'origin': None, 'capture_time': None,
                    'snapshot_time': -math.inf, 'last_write': -math.inf, 'sim': None, 'plan': None}
@@ -299,6 +353,9 @@ def execute(request, output):
                 t = float(len(frames)*.02)
                 tic = time.perf_counter()
                 result = super().step(ref_q_mj, ref_dq_mj, ref_ori6, push)
+                interval = contact_interval(result[2], t, float((len(frames)+1)*contract.DT))
+                previous_contact = contact_intervals[-1] if contact_intervals else None
+                contact_intervals.append(interval)
                 # Source run_episode calls feed.target; its observer below stores all 67 columns.
                 reference = decode_reference(current['reference'], q)
                 plan = _plan(current['plan'], current['plan']['tick']*.02, t) if current['plan'] else None
@@ -317,7 +374,8 @@ def execute(request, output):
                                  'frame_id': 'pelvis', 'classification': 'simulator-ground-truth',
                                  'linear_acceleration_m_s2': None},
                          'joint_velocity_rad_s': measured['dq'].tolist(),
-                         'post_action': {'time': t+.02, 'qpos': self.measure()['qpos'].tolist(),
+                         'post_action': {'time': interval['end_s'], 'qpos': self.measure()['qpos'].tolist(),
+                                         'contact': interval,
                                          'classification': 'simulator-ground-truth'},
                          'perception_index': len(perceptions)-1 if perceptions else None,
                          'health': {'state_age_ms': 0, 'reference_age_ms': 0,
@@ -326,6 +384,8 @@ def execute(request, output):
                                     'command_tracking_rmse_rad': float(np.sqrt(np.mean((q[7:]-target)**2))),
                                     'sonic_inference_ms': current['inference_ms'],
                                     'control_step_wall_ms': (time.perf_counter()-tic)*1000,
+                                    'contact_force_n': previous_contact['max_force_n'] if previous_contact else None,
+                                    'contact_interval': previous_contact,
                                     'lowcmd_age_ms': None, 'gpu_utilization': None}}
                 frames.append(frame)
                 # Compact 50 Hz stream: latest carries heavier reference/perception separately.
@@ -359,11 +419,32 @@ def execute(request, output):
             return result
         flow.planner.FlowPlanner.plan = observed_plan
         publish(force=True)
-        report = lockstep.run_episode(output / 'task.json', req['seed'], output / 'native',
-                    device='cpu', planner_impl='eager', start='stand', route_source='sensor',
-                    lidar='mjray', deadline_s=req['duration_s'], planner_overrides=req['planner'])
-        progress_log.close()
-        session = load_session(output / 'native', environment_path=output / 'boxes.json')
+        episode_error = None
+        try:
+            report = lockstep.run_episode(output / 'task.json', req['seed'], output / 'native',
+                        device='cpu', planner_impl='eager', start='stand', route_source='sensor',
+                        lidar='mjray', deadline_s=req['duration_s'], planner_overrides=req['planner'])
+        except Exception as exc:
+            episode_error = exc
+            if not frames or not (output / 'native/score.json').is_file():
+                raise
+            report = json.loads((output / 'native/score.json').read_text())
+            report.update(outcome='runtime_error', completed=False,
+                          runtime_error=f'{type(exc).__name__}: {exc}')
+        finally:
+            progress_log.close()
+        # Physics.step returns these same substeps directly to the source TaskScorer.
+        # The native NPZ has no force channel, so preserve it as a separate owned artifact
+        # and independently check its maximum against the unmodified scorer report.
+        if max((x['max_force_n'] for x in contact_intervals), default=0.0) != report['maximum_obstacle_contact_n']:
+            raise ValueError('Captured physics contact forces disagree with source TaskScorer')
+        np.savez_compressed(output / 'physics_observations.npz',
+                            interval_start_s=[x['start_s'] for x in contact_intervals],
+                            interval_end_s=[x['end_s'] for x in contact_intervals],
+                            obstacle_contact_n=[x['samples_n'] for x in contact_intervals])
+        native_path, extraction = (executed_native_recording(output, len(frames)) if episode_error else
+                                   (output / 'native', None))
+        session = load_session(native_path, environment_path=output / 'boxes.json')
         # The independent native adapter validates name order, finite references and model width.
         if len(session['frames']) != len(frames) or not np.allclose(
                 [f['qpos'] for f in frames], [f['qpos'] for f in session['frames']], atol=0, rtol=0):
@@ -378,9 +459,25 @@ def execute(request, output):
         metadata['executed_sim_duration_s'] = report['elapsed_s']
         metadata['source_samples'] = len(frames)
         metadata['mode'] = 'replay'
+        metadata['recording_complete'] = episode_error is None
+        if episode_error:
+            metadata.update(incomplete=True, termination_reason=f'{type(episode_error).__name__}: {episode_error}',
+                            native_extraction=extraction)
+            metadata['limitations'].append('Source execution failed. This partial recording contains only actually executed samples; no future motion is synthesized.')
+        inference_ms = [f['health']['sonic_inference_ms'] for f in frames
+                        if f['health']['sonic_inference_ms'] is not None]
+        report['sonic_inference_ms'] = {'p50': float(np.median(inference_ms)),
+                                       'p95': float(np.quantile(inference_ms, .95))} if inference_ms else None
+        report['worker_wall_to_summary_s'] = time.monotonic()-started
+        report['worker_real_time_factor'] = report['elapsed_s']/report['worker_wall_to_summary_s']
+        report['worker_timing_basis'] = 'Measured startup, policy execution and native decoding; excludes final session serialization'
         metadata['test_result'] = report
         metadata['goal_xy'] = req['goal_xy']
-        metadata['provenance']['artifacts'] += [_hash(output / p) for p in ('task.json', 'boxes.json', 'native/closed_loop.npz')]
+        metadata['provenance']['artifacts'] += [_hash(output / p) for p in
+                                               ('task.json', 'boxes.json', 'native/closed_loop.npz', 'physics_observations.npz')]
+        if native_path != output / 'native':
+            metadata['provenance']['artifacts'] += [_hash(native_path / 'closed_loop.npz'),
+                                                   _hash(native_path / 'extraction.json')]
         # Preserve native route waypoints and original planner latency by causal join.
         for frame, native in zip(frames, session['frames']):
             frame['plan'] = native['plan']
@@ -392,20 +489,34 @@ def execute(request, output):
         session['graph']['edges'][0]['topic'] = 'MuJoCo ray LiDAR (robot included, self-filtered)'
         session['graph']['dds_domain_note'] = 'No DDS participant exists in this in-process CPU rehearsal.'
         session['environment']['identity_basis'] = 'Exact collision boxes used by this fresh simulation; hash recorded'
-        session['events'] += [{'time': frames[-1]['time'] if frames else 0, 'type': 'test_result',
-                              'message': report['outcome'], 'source': 'TaskScorer'}]
+        session['events'] += [{'time': frames[-1]['time'] if frames else 0,
+                              'type': 'runtime_error' if episode_error else 'test_result',
+                              'message': report.get('runtime_error') if episode_error else report['outcome'],
+                              'source': 'source lockstep' if episode_error else 'TaskScorer'}]
         _atomic(output / 'session.json', session)
-        _atomic(output / 'result.json', {'schema_version': 1, 'status': 'completed', 'report': report,
+        status = 'failed' if episode_error else 'completed'
+        _atomic(output / 'result.json', {'schema_version': 1, 'status': status, 'report': report,
+                                        'recording_complete': episode_error is None,
+                                        'error': f'{type(episode_error).__name__}: {episode_error}' if episode_error else None,
                                         'wall_time_s': time.monotonic()-started, 'session_path': str(output/'session.json'),
                                         'hardware_enabled': False, 'dds_participants': 0,
                                         'state_parity': 'exact state, post-action state and references; independent native NPZ decoder'})
-        publish(frames[-1] if frames else None, status='completed', force=True)
+        publish(frames[-1] if frames else None, status=status, force=True)
+        if episode_error:
+            failed_receipt_written = True
+            raise episode_error
         return report
     except BaseException as exc:
+        if failed_receipt_written:
+            raise
         error = {'schema_version': 1, 'status': 'failed', 'error': f'{type(exc).__name__}: {exc}',
-                 'wall_time_s': time.monotonic()-started, 'hardware_enabled': False}
+                 'wall_time_s': time.monotonic()-started, 'hardware_enabled': False, 'recording_complete': False}
         _atomic(output / 'result.json', error)
-        _atomic(output / 'latest.json', error)
+        # Preserve any last actual telemetry sample even for a startup/finalization
+        # error. Failure is never replaced with fabricated empty healthy state.
+        previous = json.loads((output / 'latest.json').read_text()) if (output / 'latest.json').is_file() else {}
+        previous.update(status='failed', error=error['error'], recording_complete=False)
+        _atomic(output / 'latest.json', previous)
         raise
 
 

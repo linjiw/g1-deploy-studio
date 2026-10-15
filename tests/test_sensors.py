@@ -67,6 +67,23 @@ class SensorSemanticsTests(unittest.TestCase):
             self.assertFalse(sensor["synchronized"])
             self.assertEqual(sensor["payload"]["observed_mask"], [[True, False]])
 
+    def test_contact_interval_cannot_leak_future_physics_into_pre_action_state(self):
+        from studio.policy_worker import contact_interval
+        first, second = self.session['frames']
+        first['health'] = {'contact_force_n': None, 'contact_interval': None}
+        first['post_action'] = {'time': .2, 'contact': contact_interval([1., 4.], 0., .2)}
+        second['health'] = {'contact_force_n': 4.,
+                            'contact_interval': contact_interval([1., 4.], 0., .2)}
+        self.assertFalse(by_id(get_sensor_snapshot(self.session, .199))['contact']['available'])
+        contact = by_id(get_sensor_snapshot(self.session, .2))['contact']
+        self.assertEqual(contact['payload']['force_n'], 4.)
+        self.assertEqual(contact['payload']['interval']['samples_n'], [1., 4.])
+        self.assertEqual(contact['source_time'], .2)
+        self.assertEqual(contact['age_ms'], 0.)
+        self.assertEqual(contact['provenance']['source_field'], 'frames.health.contact_interval')
+        second['health']['contact_interval'] = contact_interval([999.], .2, .22)
+        self.assertFalse(by_id(get_sensor_snapshot(self.session, .21))['contact']['available'])
+
     def test_sensor_and_map_capture_times_are_separate_and_causal(self):
         self.session["perception"] = {"available": True, "kind": "time-series", "frames": [
             {"time": .2, "sensor_capture_time": .1, "map_time": .2, "frame_id": "world",

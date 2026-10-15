@@ -20,3 +20,11 @@
 @media(max-width:600px){.workbench-drawer{max-height:400px}}
 .saved-scenario-row{display:flex;gap:8px;align-items:center}.saved-scenario-row .tool-field{flex:1;min-width:0;margin-top:0}.saved-scenario-row button{font-size:9px;padding:9px;flex-shrink:0;margin-top:5px}
 .result-outcome{border:1px solid #4b4939;background:#22251f;padding:11px;border-radius:5px;margin-bottom:10px}.result-outcome>span{display:block;font-size:8px;color:var(--muted);letter-spacing:1px}.result-outcome>strong{display:block;font-size:17px;font-weight:500;margin-top:5px;color:var(--amber)}
+/* Keep navigation actions discoverable while the configuration drawer scrolls. */
+.sticky-actions{position:sticky;top:-18px;z-index:3;background:#131922f5;padding:10px 0;margin:0 0 10px;border-bottom:1px solid var(--border)}
+.loop-label{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--muted);white-space:nowrap}.loop-label input{accent-color:var(--cyan);margin:0}#copy-view{padding:6px 8px;font-size:9px}
+@media(max-width:1190px){.sticky-actions{top:-13px}}
+@media(max-width:600px){.sticky-actions{top:-14px}.sensor-dock{position:static;width:100%;max-width:none;max-height:none;display:grid;grid-template-columns:1fr;overflow:visible}.sensor-dock .sensor-card{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding:12px}.sensor-dock .sensor-card-heading{grid-column:1/-1;flex-direction:row;align-items:center}.sensor-dock .sensor-classification{grid-column:1/-1}.sensor-dock .sensor-preview{grid-row:span 3;height:90px;align-self:start}.sensor-dock .sensor-card>.tiny{grid-column:1/-1}.sensor-dock .sensor-pin{grid-column:1/-1}.sensor-dock .sensor-card .fact{margin:3px 0}.playback-controls{flex-wrap:wrap;gap:7px}.loop-label{font-size:8px}#copy-view{font-size:8px;padding:5px}.speed-label{margin-left:auto}}
+.preparation-inspector-note{margin:0 12px 12px;padding:10px;border:1px solid #655137;background:#30271e;color:#dfc99c;font-size:10px;line-height:1.7;border-radius:5px;flex-shrink:0}
+body.preparation-mode #sensor-dock{display:none!important}
+.recording-warning{margin:0;flex-shrink:0}

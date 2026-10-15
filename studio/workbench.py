@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import fcntl
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -11,6 +12,7 @@ from pathlib import Path
 import secrets
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -26,6 +28,86 @@ ACTIVE_STATES = ('starting', 'running', 'cancelling')
 TERMINAL_STATES = ('completed', 'failed', 'cancelled')
 HISTORY_FIELDS = ('id', 'status', 'scenario_id', 'scenario', 'started_unix_s', 'finished_unix_s',
                   'exit_code', 'error', 'result_session_id', 'recovered', 'ownership')
+DEVELOPMENT_SCENES = (
+    ('flow-detour', 'detour', 20261015, 'Flow arena · wall detour',
+     'A standing wall blocks the direct route. Select a goal on either side to inspect avoidance.'),
+    ('flow-slalom', 'slalom', 20261016, 'Flow arena · alternating walls',
+     'Three alternating wall stubs require lateral route changes; this is a navigation challenge, not a promised success.'),
+    ('flow-corridor', 'corridor_beam', 20261017, 'Flow arena · corridor and overhead beam',
+     'Side walls constrain steering while an overhead beam constrains body height.'),
+)
+
+
+@lru_cache(maxsize=2)
+def _generate_development_layouts(source_path, source_sha256):
+    """Run only the fixed source geometry generator in an isolated, bounded process.
+
+    Never call make_panel: that entry point reads research task templates. These
+    fresh development seeds call the pure layout function only, without panels,
+    research outcomes, controller imports or writes to the reference repository.
+    """
+    code = '''import hashlib, importlib.util, json, pathlib, sys
+import numpy as np
+path = pathlib.Path(sys.argv[1])
+if hashlib.sha256(path.read_bytes()).hexdigest() != sys.argv[2]:
+    raise RuntimeError("Scene source changed during catalog construction")
+spec = importlib.util.spec_from_file_location("studio_scene_source", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+scenes = json.loads(sys.argv[3])
+result = []
+for family, seed in scenes:
+    boxes, goal = module.layout(family, np.random.default_rng(seed))
+    result.append({"family": family, "seed": seed, "boxes": boxes, "goal_xy": goal})
+print(json.dumps({"numpy_version": np.__version__, "layouts": result}, allow_nan=False))
+'''
+    process = subprocess.run(
+        [sys.executable, '-I', '-B', '-c', code, source_path, source_sha256,
+         json.dumps([[s[1], s[2]] for s in DEVELOPMENT_SCENES])],
+        capture_output=True, text=True, timeout=5, check=True,
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1', CUDA_VISIBLE_DEVICES='',
+                 OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1'))
+    if len(process.stdout) > 65536:
+        raise ValueError('Scene generator exceeded the bounded geometry response')
+    return json.loads(process.stdout)
+
+
+def development_maps(reference_root=REFERENCE_ROOT):
+    source = Path(reference_root) / 'bundle/flow/src/motion2scene_flow/closed_loop/panel.py'
+    if not source.is_file():
+        return []
+    if source.stat().st_size > 1024 * 1024:
+        raise ValueError('Scene source exceeds the bounded source read')
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    generated = _generate_development_layouts(str(source), source_hash)
+    maps = []
+    for definition, layout in zip(DEVELOPMENT_SCENES, generated['layouts'], strict=True):
+        key, family, seed, title, description = definition
+        if layout['family'] != family or layout['seed'] != seed:
+            raise ValueError('Scene generator identity mismatch')
+        # The worker supports static native box colliders. Do not silently
+        # discard motion if a future generator changes its scene contract.
+        if any(b.get('velocity_xy', [0, 0]) != [0, 0] for b in layout['boxes']):
+            raise ValueError('Moving scene obstacles are not supported by this backend')
+        data = validate_map({'label': title, 'kind': 'boxes', 'frame_id': 'world',
+                             'units': 'm', 'boxes': layout['boxes']})
+        goal = vector(layout['goal_xy'], 'source goal XY', low=-50, high=50)
+        data.update(id=key, description=description,
+                    suggested_scenario={'start_xy': [0, 0], 'goal_xy': goal,
+                                        'start_yaw_rad': 0, 'duration_s': 8,
+                                        'seed': 0, 'planner': {'candidates': 4, 'ode_steps': 6}},
+                    provenance={'path': str(source), 'sha256': source_hash,
+                                'source_kind': 'source_generated_development_layout',
+                                'function': 'layout', 'family': family, 'layout_seed': seed,
+                                'numpy_version': generated['numpy_version'],
+                                'generator_frame': 'local x-forward, y-left; identity transform to world',
+                                'origin_xy': [0, 0], 'yaw_rad': 0,
+                                'research_panel_read': False,
+                                'note': 'Fresh Studio development geometry from the existing Flow generator; no recorded or sealed evaluation result used.'})
+        if any(point_status(data, p)['status'] != 'configured_free' for p in ([0, 0], goal)):
+            raise ValueError('Generated scene preset fails standing-footprint preflight')
+        maps.append(data)
+    return maps
 
 
 def finite(value, name, low=-1000., high=1000.):
@@ -159,6 +241,7 @@ class Workbench:
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.maps = {}
+        self.map_warnings = []
         self.scenarios = {}
         self.jobs = {}
         self.root.mkdir(parents=True, exist_ok=True)
@@ -166,6 +249,13 @@ class Workbench:
             (self.root / name).mkdir(exist_ok=True)
         flat = validate_map({'label': 'Flat ground · simulation', 'kind': 'boxes', 'boxes': [], 'bounds': {'min': [-5,-5], 'max': [5,5]}})
         self.maps['flat-ground'] = dict(flat, id='flat-ground', provenance={'source': 'Explicit Studio simulation ground plane'})
+        try:
+            for scene in development_maps(REFERENCE_ROOT):
+                self.maps[scene['id']] = scene
+        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            # Optional scene sources cannot disable replay. No approximate
+            # replacement geometry is substituted for a failed source adapter.
+            self.map_warnings.append(f'Flow development scenes unavailable: {type(error).__name__}')
         source = REFERENCE_ROOT / 'runs/rt/replay-beams2-101/boxes.json'
         if source.exists():
             boxes = read_json(source)
@@ -254,6 +344,8 @@ class Workbench:
             job.update(status='completed', result_session_id=job['id'], error=None)
         elif result and result.get('status') == 'failed':
             job.update(status='failed', error=str(result.get('error', 'Recorded worker failure'))[:2000])
+            if (output/'run/session.json').is_file():
+                job['result_session_id'] = job['id']
         elif not self._lease_held():
             job.update(status='failed', error='Gateway ownership was interrupted; no worker lock or successful completion receipt remains.')
         else:
@@ -278,8 +370,10 @@ class Workbench:
             elif job['status'] == 'completed' and not (output/'run/session.json').is_file():
                 job.update(status='failed', result_session_id=None, error='Saved completion recording is unavailable')
             self.jobs[output.name] = job
-            if (output/'run/session.json').is_file() and job['status'] == 'completed':
-                self.catalog.register(output.name, output/'run/session.json', 'Flow / SONIC · saved CPU simulation')
+            if (output/'run/session.json').is_file() and job['status'] in ('completed', 'failed'):
+                job['result_session_id'] = output.name
+                self.catalog.register(output.name, output/'run/session.json',
+                                      f"Flow / SONIC · {job.get('scenario', {}).get('label', 'saved CPU simulation')}")
 
     def capabilities(self):
         from studio.policy_worker import capabilities
@@ -292,7 +386,7 @@ class Workbench:
 
     def description(self):
         maps = [{k:v for k,v in m.items() if k not in ('boxes','points')} for m in self.maps.values()]
-        return {'schema_version': 1, 'csrf_token': self.token, 'maps': maps,
+        return {'schema_version': 1, 'csrf_token': self.token, 'maps': maps, 'map_warnings': self.map_warnings,
                 'backends': [self.capabilities()], 'defaults': {'map_id': 'flat-ground', 'backend_id': 'flow-sonic-cpu',
                 'duration_s': 2, 'start_xy': [0,0], 'goal_xy': [1,0], 'start_yaw_rad': 0, 'seed': 0,
                 'planner': {'candidates': 2, 'ode_steps': 4}},
@@ -311,7 +405,7 @@ class Workbench:
             raise ValueError('Imported maps must explicitly declare frame_id: world after alignment')
         data = validate_map(document)
         with self.lock:
-            if len(self.maps) >= 34:
+            if sum(key.startswith('map-') for key in self.maps) >= 32:
                 raise ValueError('Map catalog limit reached (32 imports)')
             key = 'map-' + uuid.uuid4().hex[:12]
             data.update(id=key, provenance={'source': 'User-uploaded geometry/points', 'imported_unix_s': time.time()})
@@ -452,6 +546,8 @@ class Workbench:
                 else:
                     job['status'] = 'failed'
                     job['error'] = job['error'] or (receipt or {}).get('error') or f'Worker exited with code {process.returncode}; inspect log for details'
+                    if (output/'session.json').is_file() and receipt and receipt.get('status') == 'failed':
+                        job['result_session_id'] = key
                 job['latest'] = self._optional_json(output/'latest.json', 16*1024*1024) or job['latest']
                 self._persist_job(job)
         except BaseException as exc:
@@ -555,7 +651,7 @@ class Workbench:
     def session_data(self, key):
         job = self.jobs[key]
         final = job['output']/'run/session.json'
-        if final.exists() and job['status'] == 'completed':
+        if final.exists() and job['status'] in ('completed', 'failed'):
             return read_json(final)
         latest = job['latest']
         if not latest or not latest.get('frame') or not latest.get('metadata'):

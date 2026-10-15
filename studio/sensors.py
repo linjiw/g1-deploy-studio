@@ -179,10 +179,27 @@ def _recorded_state(session, time_s, sensors):
                      "angular_velocity_frame": local_frame, "linear_acceleration_frame": local_frame,
                      "physical_sensor_packet": False if is_truth else None})
     contact = frame.get("health", {}).get("contact_force_n")
+    interval = frame.get("health", {}).get("contact_interval")
+    if interval is not None:
+        # An interval ending after this pre-action pose is a future observation.
+        # Do not expose it merely because it shares a serialized frame with the pose.
+        if (not isinstance(interval, dict) or not _finite(interval.get("start_s"))
+                or not _finite(interval.get("end_s")) or interval["start_s"] >= interval["end_s"]
+                or interval["end_s"] > min(time_s, frame["time"]) + 1e-9):
+            contact = None
     if _finite(contact):
         sensors["contact"].update(common, units={"force": "N"},
                                  payload={"force_n": contact,
+                                          "interval": interval,
                                           "scope": "simulated obstacle contact; not a foot force/torque sensor"})
+        if interval is not None:
+            sensors["contact"].update(
+                source_time=interval["end_s"], source_clock=interval.get("clock_domain"),
+                sample_time_s=interval["end_s"], age_ms=max(0., time_s-interval["end_s"])*1000,
+                reason="Maximum over the completed physics interval; the current action's future interval is excluded.",
+                provenance={**_provenance(session, "physics_observations.npz"),
+                            "source_field": "frames.health.contact_interval",
+                            "measurement_basis": interval.get("basis")})
 
 
 def _recorded_map(session, sensors):

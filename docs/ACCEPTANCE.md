@@ -4,6 +4,8 @@ This delivery includes a working local replay cockpit, preparation and CPU polic
 
 ## Fresh simulation workbench acceptance
 
+The subsequent obstacle-navigation delivery is documented in `NAVIGATION_TESTS.md`: three source-generated arenas, six actual browser-configured CPU cases (four goal completions, one timeout, one source runtime error), and preservation/inspection of failed runs. Final checks for that delivery: 97 unit/integration tests, 13 existing browser checks, nine saved-view/terminal-state checks, and all six navigation workflow inspections. Independent parity covered 1,327 executed frames and 5,308 physics substeps. Earlier counts below describe the initial workbench delivery.
+
 The browser now supports map selection/import, viewport navigation-goal picking, start/settings preflight, saved scenario load/export, owned CPU policy tests, live robot/performance visualization, run history, synchronized perception and sensor pinning. See `WORKBENCH.md`, `POLICY_BACKEND.md` and `SENSORS.md` for exact interfaces and boundaries.
 
 Final verification: **88 unit/integration tests and 25 browser checks passed** (seven new workflow checks, five workbench regressions, and thirteen existing replay checks through a forwarded loopback connection). The browser reports contain no page exceptions or failed HTTP resources. Older counts below describe earlier deliveries.

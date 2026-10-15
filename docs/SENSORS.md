@@ -51,6 +51,8 @@ The configured simulator mount transforms are available under `extrinsics.transf
 
 ## Optional recorded telemetry
 
+For fresh CPU navigation runs, obstacle contact is sampled directly from `Physics.step` and retained in `physics_observations.npz`. A sensor/Health value is the maximum of the preceding completed control interval, with interval provenance and simulation timestamps. The first sample remains unavailable. `post_action.contact` separately preserves the four current-interval force samples. Tests reject any future interval endpoint at the requested cursor. These forces exclude floor contacts and are not physical foot sensors.
+
 `load_sensor_capture(path)` reads an explicitly selected, bounded `studio.recorder` JSONL and re-decodes its original wire bytes. It supports `cloud`, `odom` and `g1_debug` sensor views; `pose` and `robot_config` remain available to their existing intent/configuration adapters. It refuses missing/corrupt wire bytes and non-monotonic or incompatible receipt clocks. It never trusts cached normalized numeric payloads as substitutes for wire evidence.
 
 Pass its `envelopes` to `get_sensor_snapshot(..., capture_envelopes=...)` only on the capture's own relative collector timeline. Alignment to a separate robot recording is **unavailable**, not guessed. Cloud packets do not prove self-filtering or the world frame; the registered-cloud card says so. SONIC debug data supplies joint state and orientation, but its fixed `base_trans_measured` placement remains excluded from localization. Debug orientation does not fabricate raw IMU acceleration/gyro.

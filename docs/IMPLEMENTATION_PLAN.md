@@ -2,6 +2,15 @@
 
 Scope: local, read-only replay cockpit first; integrations consume telemetry. No hardware access or external publication.
 
+## Obstacle navigation and visual workflow validation (delivered and exercised)
+
+1. Reuse the local frozen Flow scene generator read-only for three fresh development layouts (detour, slalom, corridor/beam), with source hashes and editable goal presets. Do not read sealed panels or outcomes.
+2. Inspect actual browser screenshots of preparation, live tests, sensor overlays and inspectors. Correct obscured controls/robot views and expose start/heading/final goal distinctly from planner waypoints.
+3. Run six bounded CPU navigation cases through the browser, varying goals, heading and planner budget. Record source outcomes, contact/pose parity, timing and screenshots; do not equate execution completion with navigation success.
+4. Preserve sensor/map/Health view settings in replay links, verify responsive layout and regressions, leave a representative obstacle run open, and commit locally.
+
+Delivered: three source-backed obstacle maps, six browser-driven navigation configurations, causal contact telemetry, preserved source-failure replay, distinct goal/start markers, reusable view links and mobile layout fixes. Outcomes: four goal completions, one timeout and one source runtime error. Exact parity passed for 1,327 frames and 5,308 physics substeps. All 97 unit/integration tests, 13 existing browser checks and nine saved-view checks passed. See `docs/NAVIGATION_TESTS.md` for commands, metrics and the unresolved read-only dependency bug.
+
 ## Simulation workbench extension (delivered and exercised)
 
 1. Add a local map/scenario catalog with bounded JSON imports, explicit world coordinates, start/goal validation, and reproducible Flow/SONIC test settings. Scans remain observed data; they do not imply collision geometry or known free space.

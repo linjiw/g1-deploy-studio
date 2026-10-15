@@ -68,6 +68,11 @@ The worker records:
 - `native/closed_loop.npz`, `native/plans.json`, `native/run_config.json`: unmodified source backend recording format.
 - `task.json`, `boxes.json`, `initial_state.npz`, `request.json`: exact owned simulation inputs.
 - `result.json`: backend outcome, wall time, parity receipt and explicit lack of hardware/DDS execution.
+- `physics_observations.npz`: actual obstacle normal-force substeps and start/end times for every control interval. Its maximum is checked against the unchanged source scorer.
+
+Contact Health values are causal: at pre-action time `t`, only the previous completed interval is exposed. The current interval is retained separately in `post_action.contact`; the first Health sample remains unavailable. Source reports include measured planner and SONIC p50/p95 values and a worker wall-time factor, with the measurement scope explicit.
+
+An exception after valid execution produces a failed partial recording with the original error and nonzero worker exit. Source lockstep can append one pre-action state before a planner exception, leaving no matching reference/post-state. In that case Studio retains the original native NPZ, records an explicit extraction receipt and decodes only the matched executed prefix through the strict independent decoder. It never manufactures an action or repairs source policy behavior. Actual LiDAR/map history remains available in the failed session. See `NAVIGATION_TESTS.md` for the reproduced near-goal route exception.
 
 Perception is sampled at 5 Hz simulation time. Raw and filtered clouds are each decimated to at most 1,500 points; support and ceiling each to at most 1,000 displayed points. Full observed-cell indices preserve mask membership. `sensor_capture_time` and `map_time` are separate: consumed map fusion includes the source's 100 ms latency. State `time` and `source_time` use simulation seconds; `receipt_time` uses host monotonic seconds and its clock domain is named explicitly. Do not subtract these different clocks.
 

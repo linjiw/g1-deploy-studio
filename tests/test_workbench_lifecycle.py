@@ -119,6 +119,24 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(reopened.job('job-interrupted')['status'], 'failed')
             kill.assert_not_called()
 
+    def test_failed_recording_remains_inspectable_after_restart(self):
+        output = self.root/'jobs/job-failed-replay'
+        (output/'run').mkdir(parents=True)
+        atomic_json(output/'job.json', {'status': 'failed', 'error': 'source route failure'})
+        session = {'schema_version': 1, 'metadata': {'incomplete': True}, 'frames': [{'time': 0}]}
+        atomic_json(output/'run/session.json', session)
+        atomic_json(output/'run/result.json', {'status': 'failed', 'error': 'source route failure',
+                                             'report': {'outcome': 'runtime_error'}})
+        catalog = Catalog()
+        with patch('studio.workbench.os.killpg') as kill:
+            reopened = Workbench(catalog, self.root)
+            job = reopened.job('job-failed-replay')
+            self.assertEqual(job['status'], 'failed')
+            self.assertEqual(job['result_session_id'], 'job-failed-replay')
+            self.assertIn('job-failed-replay', catalog.entries)
+            self.assertEqual(reopened.session_data('job-failed-replay'), session)
+            kill.assert_not_called()
+
     def test_termination_race_ignores_already_exited_owned_process(self):
         process = Mock(pid=123)
         process.poll.return_value = None

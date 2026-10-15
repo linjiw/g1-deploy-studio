@@ -13,7 +13,7 @@ const clock = value => { if (!finite(value)) return '—'; const ms = Math.round
 const fact = (label, value, cls = '') => `<div class="fact"><span>${escape(label)}</span><strong class="${cls}">${escape(value)}</strong></div>`;
 const notice = (text, cls = '') => `<div class="callout ${cls}">${escape(text)}</div>`;
 const vector = (v, digits = 3) => Array.isArray(v) ? v.map(n=>num(n,digits)).join(', ') : 'Unavailable';
-const state = {session:null, frame:null, measuredFrame:null, frozenFrame:null, frameIndex:-1, time:0, playing:false, speed:1, tab:'intent', camera:'orbit', joint:0, loadGeneration:0};
+const state = {session:null, frame:null, measuredFrame:null, frozenFrame:null, frameIndex:-1, time:0, playing:false, speed:1, loop:false, tab:'intent', camera:'orbit', joint:0, loadGeneration:0};
 let scene, camera, renderer, controls, modelSpec, robot, ghost, futureGhosts = [], content, environment, mapGroup, trajectory, futureLine, referenceLine, robotAxes, worldAxes, waypointMarker;
 const meshCache = new Map();
 const cachedGeometries = new Set();
@@ -22,7 +22,8 @@ const up = new THREE.Vector3(0,0,1);
 const positions = new THREE.Vector3();
 const previousFollow = new THREE.Vector3();
 let lastTick = performance.now();
-let preparationGroup, preparationGoal, preparationMode=false, goalPicking=false, goalPicked=null;
+let preparationGroup, preparationGoal, preparationStart, preparationMode=false, goalPicking=false, goalPicked=null;
+let navigationGoal=null, navigationStart=null;
 let sensorOverlayGroup, mapSample=null;
 const sensorOverlays=new Map();
 
@@ -33,6 +34,16 @@ async function json(url) {
 }
 function error(message) { $('error-banner').textContent = message; $('error-banner').hidden = false; }
 function quat(values) { return new THREE.Quaternion(values[1],values[2],values[3],values[0]); }
+function updateView(values) {
+  const url=new URL(location.href);
+  for(const [key,value] of Object.entries(values))if(value===null||value===undefined)url.searchParams.delete(key);else url.searchParams.set(key,String(value));
+  if(url.href!==location.href)history.replaceState({},'',url);
+}
+function updateRecordingWarning() {
+  const metadata=state.session?.metadata??{};
+  $('recording-warning').hidden=!metadata.incomplete&&metadata.recording_complete!==false;
+  $('recording-warning').textContent=`INCOMPLETE RECORDING · ${metadata.termination_reason??metadata.error??'The worker stopped before normal completion.'} Executed motion and telemetry are available up to the last captured sample. This is a recorded failure, not a successful navigation result.`;
+}
 
 function initializeScene() {
   const host = $('viewport');
@@ -141,12 +152,21 @@ function line(points,color,opacity=1) {
   const object=new THREE.Line(new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(...p))),new THREE.LineBasicMaterial({color,transparent:true,opacity}));
   return object;
 }
+function navigationMarker(label,color,radius=.22,heading=false) {
+  const group=new THREE.Group();group.name=label;
+  const ring=new THREE.Mesh(new THREE.RingGeometry(radius*.83,radius,40),new THREE.MeshBasicMaterial({color,side:THREE.DoubleSide,transparent:true,opacity:.95}));ring.position.z=.035;group.add(ring);
+  const canvas=document.createElement('canvas');canvas.width=256;canvas.height=64;
+  const ctx=canvas.getContext('2d');ctx.fillStyle='#101b26e8';ctx.fillRect(0,0,256,64);ctx.font='bold 29px sans-serif';ctx.textAlign='center';ctx.fillStyle=`#${color.toString(16).padStart(6,'0')}`;ctx.fillText(label,128,42);
+  const texture=new THREE.CanvasTexture(canvas),sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,sizeAttenuation:false}));sprite.scale.set(.13,.0325,1);sprite.position.z=heading?.4:.7;group.add(sprite);
+  if(heading){const direction=new THREE.Group();direction.name='heading';direction.add(new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(0,0,.05),.65,color,.18,.12));group.add(direction);}else group.add(line([[0,0,.04],[0,0,.6]],color));
+  return group;
+}
 function updateLine(object,points) {
   object.geometry.dispose();object.geometry=new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(...p)));
 }
 function removeContent() {
-  content.traverse(obj=>{if(obj.material){for(const m of Array.isArray(obj.material)?obj.material:[obj.material])m.dispose();}if(obj.geometry&&!cachedGeometries.has(obj.geometry))obj.geometry.dispose();});
-  content.clear();robot=null;ghost=null;futureGhosts=[];environment=null;mapGroup=null;trajectory=null;futureLine=null;referenceLine=null;robotAxes=null;waypointMarker=null;
+  content.traverse(obj=>{if(obj.material){for(const m of Array.isArray(obj.material)?obj.material:[obj.material]){m.map?.dispose();m.dispose();}}if(obj.geometry&&!cachedGeometries.has(obj.geometry))obj.geometry.dispose();});
+  content.clear();robot=null;ghost=null;futureGhosts=[];environment=null;mapGroup=null;trajectory=null;futureLine=null;referenceLine=null;robotAxes=null;waypointMarker=null;navigationGoal=null;navigationStart=null;
   mapSample=null;for(const id of sensorOverlays.keys())removeSensorOverlay(id);
 }
 function perceptionAt(time) {
@@ -178,7 +198,8 @@ async function loadScene(session,id,generation) {
   for(const b of session.environment?.boxes??[]) {
     if(!Array.isArray(b.center_xy)||!Array.isArray(b.half_xy))continue;
     const height=b.z_top-b.z_bottom;
-    const mesh=new THREE.Mesh(new THREE.BoxGeometry(b.half_xy[0]*2,b.half_xy[1]*2,height),new THREE.MeshStandardMaterial({color:0x736d84,roughness:.9,transparent:true,opacity:.42}));
+    // Keep measured motion legible behind corridor walls; edge lines retain collider boundaries.
+    const mesh=new THREE.Mesh(new THREE.BoxGeometry(b.half_xy[0]*2,b.half_xy[1]*2,height),new THREE.MeshStandardMaterial({color:0x736d84,roughness:.9,transparent:true,opacity:.18,depthWrite:false}));
     mesh.position.set(b.center_xy[0],b.center_xy[1],b.z_bottom+height/2);mesh.rotation.z=b.yaw??0;mesh.castShadow=true;mesh.receiveShadow=true;
     const edges=new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry),new THREE.LineBasicMaterial({color:0x9a91ac,transparent:true,opacity:.5}));mesh.add(edges);environment.add(mesh);
   }
@@ -190,6 +211,9 @@ async function loadScene(session,id,generation) {
   futureLine=line([],0xefbb70,.95);referenceLine=line([],0x56d9d0,.7);content.add(futureLine,referenceLine);
   robotAxes=new THREE.AxesHelper(.32);content.add(robotAxes);
   waypointMarker=new THREE.Mesh(new THREE.RingGeometry(.09,.13,32),new THREE.MeshBasicMaterial({color:0xefbb70,side:THREE.DoubleSide,transparent:true,opacity:.8}));content.add(waypointMarker);
+  if(session.metadata.goal_xy?.length===2){navigationGoal=navigationMarker('NAV GOAL',0xefbb70,session.metadata.navigation_criteria?.goal_radius_m??.3);navigationGoal.position.set(...session.metadata.goal_xy,0);content.add(navigationGoal);}
+  if(session.metadata.start_xy?.length===2){navigationStart=navigationMarker('START',0x75c9f1,.22,finite(session.metadata.start_yaw_rad));navigationStart.position.set(...session.metadata.start_xy,0);const arrow=navigationStart.getObjectByName('heading');if(arrow)arrow.rotation.z=session.metadata.start_yaw_rad;content.add(navigationStart);}
+  $('layer-navigation').disabled=!navigationGoal&&!navigationStart;
   if(session.frames.some(hasReferencePose)){
     const previews=await Promise.all([buildRobot(spec,true,.075),buildRobot(spec,true,.055)]);
     if(generation!==state.loadGeneration)return;
@@ -201,6 +225,7 @@ async function loadScene(session,id,generation) {
 
 function cameraView(kind,reset=false) {
   state.camera=kind;
+  updateView({camera:kind});
   document.querySelectorAll('[data-camera]').forEach(b=>{const active=b.dataset.camera===kind;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});
   const root=state.frame?.position??[0,0,.75];
   controls.target.set(root[0],root[1],.7);
@@ -212,15 +237,18 @@ function cameraView(kind,reset=false) {
 }
 function setPreparationMode(enabled) {
   preparationMode=enabled;preparationGroup.visible=enabled;content.visible=!enabled;
+  document.body.classList.toggle('preparation-mode',enabled);
   sensorOverlayGroup.visible=!enabled;
   $('preparation-caption').hidden=!enabled;$('source-badge').hidden=enabled;
+  $('preparation-inspector-note').hidden=!enabled;
+  document.querySelectorAll('[data-camera]').forEach(button=>{button.disabled=enabled;button.title=enabled?'Preparation uses a top-down map camera':'';});
   document.querySelector('.viewport-meta').hidden=enabled;
   $('scene-unavailable').hidden=enabled||state.session?.frames.some(hasPose);
   if(enabled)setPlaying(false);else {goalPicking=false;renderer.domElement.style.cursor='';cameraView(state.camera,true);updateLayers();}
 }
 function clearPreparation() {
-  preparationGroup.traverse(object=>{object.geometry?.dispose();if(object.material)for(const material of Array.isArray(object.material)?object.material:[object.material])material.dispose();});
-  preparationGroup.clear();preparationGoal=null;
+  preparationGroup.traverse(object=>{object.geometry?.dispose();if(object.material)for(const material of Array.isArray(object.material)?object.material:[object.material]){material.map?.dispose();material.dispose();}});
+  preparationGroup.clear();preparationGoal=null;preparationStart=null;
 }
 function showPreparationMap(map) {
   clearPreparation();setPreparationMode(true);
@@ -236,9 +264,8 @@ function showPreparationMap(map) {
     const points=map[key]??map.perception?.[key]??[];
     if(points.length)preparationGroup.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(...p))),new THREE.PointsMaterial({color,size:.045,transparent:true,opacity:.85})));
   }
-  preparationGoal=new THREE.Group();
-  const ring=new THREE.Mesh(new THREE.RingGeometry(.12,.17,32),new THREE.MeshBasicMaterial({color:0xefbb70,side:THREE.DoubleSide}));ring.position.z=.035;
-  const stem=line([[0,0,.04],[0,0,.6]],0xefbb70);preparationGoal.add(ring,stem);preparationGoal.visible=false;preparationGroup.add(preparationGoal);
+  preparationGoal=navigationMarker('NAV GOAL',0xefbb70,.3);preparationGoal.visible=false;preparationGroup.add(preparationGoal);
+  preparationStart=navigationMarker('START',0x75c9f1,.22,true);preparationStart.visible=false;preparationGroup.add(preparationStart);
   $('preparation-caption').textContent=`PREPARATION · ${map.label??map.id} · frame ${map.frame_id??'unverified'} · grid is a coordinate guide; empty space is unknown`;
   const box=new THREE.Box3().setFromObject(preparationGroup),bounds=map.bounds;
   const center=bounds?new THREE.Vector3((bounds.min[0]+bounds.max[0])/2,(bounds.min[1]+bounds.max[1])/2,0):box.isEmpty()?new THREE.Vector3():box.getCenter(new THREE.Vector3());
@@ -247,6 +274,7 @@ function showPreparationMap(map) {
   controls.target.set(center.x,center.y,0);camera.position.set(center.x,center.y-.001,Math.min(100,extent*1.6));controls.enableRotate=false;controls.update();
 }
 function setPreparationGoal(xy) {if(preparationGoal){preparationGoal.visible=Array.isArray(xy);if(xy)preparationGoal.position.set(xy[0],xy[1],0);}}
+function setPreparationStart(xy,yaw) {if(preparationStart){preparationStart.visible=Array.isArray(xy)&&xy.every(finite);if(preparationStart.visible){preparationStart.position.set(...xy,0);preparationStart.getObjectByName('heading').rotation.z=finite(yaw)?yaw:0;}}}
 function pickPreparationGoal(enabled,callback) {goalPicking=enabled;goalPicked=callback;renderer.domElement.style.cursor=enabled?'crosshair':'';}
 function removeSensorOverlay(id) {const object=sensorOverlays.get(id);if(object){object.geometry.dispose();object.material.dispose();sensorOverlayGroup.remove(object);sensorOverlays.delete(id);}}
 function setSensorOverlay(sensor) {
@@ -261,6 +289,9 @@ function appendLiveFrame(latest) {
   setPlaying(false);state.frozenFrame=null;state.runtime=latest.runtime??null;
   const frames=state.session.frames,previous=frames.at(-1);
   if(previous&&frame.time<previous.time)return;
+  if(latest.metadata)Object.assign(state.session.metadata,latest.metadata);
+  const terminal=['completed','failed','cancelled'].includes(latest.status);
+  if(latest.status==='failed')Object.assign(state.session.metadata,{incomplete:true,recording_complete:false,termination_reason:latest.metadata?.termination_reason??latest.error??state.session.metadata.termination_reason});
   if(previous&&frame.time===previous.time)frames[frames.length-1]=frame;else frames.push(frame);
   if(frames.length>3000)frames.splice(0,frames.length-3000);
   if(latest.perception){
@@ -269,10 +300,10 @@ function appendLiveFrame(latest) {
     if(!previousMap||latest.perception.time>previousMap.time)snapshots.push(latest.perception);
     if(snapshots.length>500)snapshots.splice(0,snapshots.length-500);
   }
-  state.session.metadata.duration_s=frame.time;state.session.metadata.mode='simulation';state.time=frame.time;state.frameIndex=-1;
+  state.session.metadata.duration_s=frame.time;state.session.metadata.mode=terminal?'replay':'simulation';state.time=frame.time;state.frameIndex=-1;
   $('timeline').max=String(frame.time);$('duration-time').textContent=$('timeline-end').textContent=clock(frame.time);$('timeline-middle').textContent=clock(frame.time/2);$('frames-value').textContent=`${frames.length.toLocaleString()} observed`;
   $('layer-perception').disabled=!state.session.perception?.available;
-  renderFrame(true);$('playback-state').textContent='CPU RUN · LATEST';$('source-badge').textContent='SIMULATION · ACTUAL WORKER STATE';
+  updateRecordingWarning();renderFrame(true);$('playback-state').textContent=terminal?`CPU RUN · ${latest.status.toUpperCase()}`:'CPU RUN · LATEST';$('source-badge').textContent=terminal?'SIMULATION · RECORDED WORKER STATE':'SIMULATION · ACTUAL WORKER STATE';
 }
 function updateLayers() {
   if(!environment)return;
@@ -285,6 +316,8 @@ function updateLayers() {
   futureLine.visible=$('layer-future').checked&&!!state.frame?.plan;
   referenceLine.visible=$('layer-reference').checked&&!!state.frame?.reference;
   waypointMarker.visible=$('layer-future').checked&&!!state.frame?.plan?.waypoint;
+  if(navigationGoal)navigationGoal.visible=$('layer-navigation').checked;
+  if(navigationStart)navigationStart.visible=$('layer-navigation').checked;
   robotAxes.visible=$('layer-frames').checked&&hasPose(state.measuredFrame);
   worldAxes.visible=$('layer-frames').checked&&hasPose(state.measuredFrame);
   if(mapGroup.visible)$('reference-caption').textContent=state.session.perception?.frames?`MAP OVERLAY · causal simulated LiDAR map · sample ${clock(mapSample?.time)}`:'MAP OVERLAY · final accumulated snapshot · capture time unavailable';
@@ -369,9 +402,10 @@ function setPlaying(value) {
   $('play').innerHTML=value?'Ⅱ <span>Pause</span>':'▶ <span>Play</span>';
   $('play').setAttribute('aria-label',value?'Pause recording':'Play recording');
   $('playback-state').textContent=value?'PLAYING':'PAUSED';
+  updateView({play:value?'1':null});
   lastTick=performance.now();
 }
-function seek(time) {if(state.frozenFrame&&time<state.frozenFrame.time)state.frozenFrame=null;state.time=Math.max(state.session.frames[0].time,Math.min(state.session.metadata.duration_s,time));renderFrame();}
+function seek(time) {if(state.frozenFrame&&time<state.frozenFrame.time)state.frozenFrame=null;state.time=Math.max(state.session.frames[0].time,Math.min(state.session.metadata.duration_s,time));renderFrame();updateView({time:state.time.toFixed(3)});}
 
 function renderInspector() {
   if(!state.frame)return;
@@ -387,7 +421,7 @@ function renderIntent() {
   const wire=state.session.metadata.recording_kind==='recorded-wire-transport';
   const window=r?.window??[];
   const referenceDetail=r?`${fact('Recorded shape',r.shape?.join(' × ')+' · float values','value-cyan')}${fact('Horizon',`${window.length} frames · ${num(window.at(-1)?.offset_s,1,'s')}`)}<div class="window-bars">${window.slice(0,15).map(w=>`<span title="Reference offset ${num(w.offset_s,3,'s')}">${num(w.offset_s,1)}</span>`).join('')}</div><p class="tiny">Offsets in seconds · ${wire?'decoded wire reference':'sampled future reference'}</p>${wire?notice('World-root pose and playback cursor were not present in the captured packet. No ghost or inferred trajectory is rendered.','neutral'):notice('Cyan: reference pose. Faint ghosts: +0.4 s and +0.9 s. Amber: selected planner prediction. Future motion is not guaranteed.')}${wire?`${fact('Wire contract','pose v1 · little-endian arrays')}${fact('Wire joint order','Isaac → name-mapped G1 order')}${fact('Body quaternion','wxyz · frame not verified')}${fact('Latent token vector','Not in pose packet')}`:`${fact('SONIC input columns','0–63 · joints, velocity, orientation')}${fact('Diagnostic columns','64–66 · planner root displacement')}${fact('Orientation','relative 6D → world wxyz')}`}${fact('Joint position units','radians')}<details class="raw-details"><summary>Inspect actual reference values</summary><pre>${escape(JSON.stringify(wire?r.raw_fields:{offset_s:window[0]?.offset_s,joint_names:state.session.joint_names,values:r.raw?.[0]},null,2))}</pre></details>`:notice('No reference payload is available at this cursor. Reference joints, token values and tracking error remain unavailable.','warning');
-  $('intent-content').innerHTML=`<span class="eyebrow">${wire?'REFERENCE PUBLISHER → COLLECTOR':'PLANNER → SONIC'}</span><h3>What comes next</h3><p>${wire?'Real reference payloads captured by a read-only subscriber during a local transport rehearsal.':'Selected motion and the reference window supplied to the recorded controller.'}</p>${notice(wire?'Recorded reference rows were reserialized through the source pose packer. This tests transport and decoding; no controller inference ran.':'Fused SONIC reference input · token vector unavailable in this recording/config. Reference values are not semantic token labels.','neutral')}<h4>Planner selection</h4>${fact('Selection rule',p?.rule??'Unavailable','value-amber')}${fact('Plan age',num(p?.age_s,3,'s'))}${fact('Waypoint · world',p?.waypoint?`[${vector(p.waypoint,2)}] m`:'Unavailable')}${fact('Compute latency',num(p?.latency_ms,1,'ms'))}${p?.clock_basis?`<p class="tiny">Timing: ${escape(p.clock_basis)}</p>`:''}<h4>${wire?'Observed pose reference':'SONIC reference window'}</h4>${referenceDetail}<h4>Observed execution</h4>${state.frozenFrame?notice(`Replay diagnostic injection: measured state held at ${clock(m.time)}. State ${h.state_stale?'stale':'held'}; reference follows the cursor.`,'warning'):''}${fact('Root · world',hasPose(m)?`[${vector(m.position,2)}] m`:'Unavailable')}${fact('Orientation · wxyz',hasPose(m)?`[${vector(m.quaternion_wxyz,3)}]`:'Unavailable')}${fact('Joint reference RMSE',num(h.tracking_rmse_rad,3,'rad'))}<p class="tiny">${f.command?.joints?'Reference targets describe intent. Recorded SONIC PD targets are available in Joints; these are simulated commands, not DDS motor packets.':'Reference targets describe intent. Low-level motor targets were not captured and are not interchangeable with these values.'}</p>`;
+  $('intent-content').innerHTML=`<span class="eyebrow">${wire?'REFERENCE PUBLISHER → COLLECTOR':'PLANNER → SONIC'}</span><h3>What comes next</h3><p>${wire?'Real reference payloads captured by a read-only subscriber during a local transport rehearsal.':'Selected motion and the reference window supplied to the recorded controller.'}</p>${notice(wire?'Recorded reference rows were reserialized through the source pose packer. This tests transport and decoding; no controller inference ran.':'Fused SONIC reference input · token vector unavailable in this recording/config. Reference values are not semantic token labels.','neutral')}<h4>Navigation target</h4>${fact('Final goal · world',state.session.metadata.goal_xy?`[${vector(state.session.metadata.goal_xy,2)}] m`:'Unavailable')}${fact('Goal distance · XY',state.session.metadata.goal_xy&&hasPose(m)?num(Math.hypot(m.position[0]-state.session.metadata.goal_xy[0],m.position[1]-state.session.metadata.goal_xy[1]),3,'m'):'Unavailable')}${state.session.metadata.navigation_criteria?`<p class="tiny">Goal evaluation also requires speed ≤ ${num(state.session.metadata.navigation_criteria.goal_speed_m_s,2,'m/s')} for ${num(state.session.metadata.navigation_criteria.goal_hold_s,2,'s')} within ${num(state.session.metadata.navigation_criteria.goal_radius_m,2,'m')}. The final goal marker is distinct from the selected route waypoint.</p>`:''}<h4>Planner selection</h4>${fact('Selection rule',p?.rule??'Unavailable','value-amber')}${fact('Plan age',num(p?.age_s,3,'s'))}${fact('Waypoint · world',p?.waypoint?`[${vector(p.waypoint,2)}] m`:'Unavailable')}${fact('Compute latency',num(p?.latency_ms,1,'ms'))}${p?.clock_basis?`<p class="tiny">Timing: ${escape(p.clock_basis)}</p>`:''}<h4>${wire?'Observed pose reference':'SONIC reference window'}</h4>${referenceDetail}<h4>Observed execution</h4>${state.frozenFrame?notice(`Replay diagnostic injection: measured state held at ${clock(m.time)}. State ${h.state_stale?'stale':'held'}; reference follows the cursor.`,'warning'):''}${fact('Root · world',hasPose(m)?`[${vector(m.position,2)}] m`:'Unavailable')}${fact('Orientation · wxyz',hasPose(m)?`[${vector(m.quaternion_wxyz,3)}]`:'Unavailable')}${fact('Joint reference RMSE',num(h.tracking_rmse_rad,3,'rad'))}<p class="tiny">${f.command?.joints?'Reference targets describe intent. Recorded SONIC PD targets are available in Joints; these are simulated commands, not DDS motor packets.':'Reference targets describe intent. Low-level motor targets were not captured and are not interchangeable with these values.'}</p>`;
 }
 
 function jointChart(index) {
@@ -408,7 +442,7 @@ function renderJoints() {
 function renderHealth() {
   const f=state.frame,m=state.measuredFrame,h=sampleHealth(),events=state.session.events??[];
   const recent=events.filter(e=>e.time<=state.time).slice(-8).reverse();
-  $('health-content').innerHTML=`<span class="eyebrow">${state.session.metadata.mode==='simulation'?'CPU WORKER SAMPLE DIAGNOSTICS':'RECORDED DIAGNOSTICS'}</span><h3>Timing & availability</h3><p>${state.session.metadata.mode==='simulation'?'Actual worker samples use simulation time. Host receipt age is measured separately; CPU lockstep is not guaranteed real time.':'Historical metrics at the selected sample. Paused replay does not imply a disconnected controller.'}</p>${state.runtime?`${fact('Owned worker',state.runtime.worker_alive===true?'Running · PID '+state.runtime.worker_pid:state.runtime.worker_alive===false?'Exited':'Ownership unavailable')}${fact('Worker host',state.runtime.host)}${fact('Live telemetry receipt',state.runtime.telemetry_status??'Unavailable')}${fact('Host receipt age',num(state.runtime.telemetry_age_ms,0,'ms'))}`:''}<div class="callout ${state.frozenFrame?'warning':'neutral'}"><label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame?'checked':''}> Replay diagnostic injection: hold state</label><div class="tiny">Hold one recorded state while playback/reference advances. Display stale after 100 ms. No producer or controller is stopped.</div></div>${fact('State freshness',finite(h.state_age_ms)?`${num(h.state_age_ms,1,'ms')} · ${h.state_stale?'STALE':'recording clock'}`:'Unavailable',h.state_stale?'value-amber':'')}${fact('Reference freshness',num(h.reference_age_ms,1,'ms'))}${fact('Receiver status',h.stream_status??'Unavailable')}${fact('Last observed receive rate',num(h.observed_rate_hz,1,'Hz'))}${fact('Visualization queue drops',h.queue_drops??'Unavailable')}${fact('Planner wall latency',num(h.planner_latency_ms,1,'ms'))}${fact('SONIC inference',num(h.sonic_inference_ms,2,'ms'))}${fact('Controller step wall time',num(h.control_step_wall_ms,2,'ms'))}${fact('Command target RMSE',num(h.command_tracking_rmse_rad,3,'rad'))}${fact('Low-command freshness',num(h.lowcmd_age_ms,1,'ms'))}${fact('End-to-end latency','Unavailable')}${fact('GPU utilization',num(h.gpu_utilization,1,'%'))}${fact('Supervisor state','Unavailable at this cursor')}${fact(hasPose(m)?'State source time':'Event source time',num(m.source_time,6,'s'))}${fact('Source clock',m.source_clock_domain)}${fact('Simulator time',num(m.sim_time,3,'s'))}${fact('Receipt time',num(m.receipt_time,6,'s'))}${fact('State sequence',m.sequence)}${fact('Contact force',num(h.contact_force_n,2,'N'))}${notice('Unavailable fields stay unknown. Planner compute time is not end-to-end latency. State age is evaluated in the recording clock.','neutral')}<h4>Events up to this time</h4>${recent.length?`<ol class="event-list">${recent.map(e=>`<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>`:'<p class="unavailable">No event recorded before this cursor.</p>'}`;
+  $('health-content').innerHTML=`<span class="eyebrow">${state.session.metadata.mode==='simulation'?'CPU WORKER SAMPLE DIAGNOSTICS':'RECORDED DIAGNOSTICS'}</span><h3>Timing & availability</h3><p>${state.session.metadata.mode==='simulation'?'Actual worker samples use simulation time. Host receipt age is measured separately; CPU lockstep is not guaranteed real time.':'Historical metrics at the selected sample. Paused replay does not imply a disconnected controller.'}</p>${state.runtime?`${fact('Owned worker',state.runtime.worker_alive===true?'Running · PID '+state.runtime.worker_pid:state.runtime.worker_alive===false?'Exited':'Ownership unavailable')}${fact('Worker host',state.runtime.host)}${fact('Live telemetry receipt',state.runtime.telemetry_status??'Unavailable')}${fact('Host receipt age',num(state.runtime.telemetry_age_ms,0,'ms'))}`:''}<div class="callout ${state.frozenFrame?'warning':'neutral'}"><label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame?'checked':''}> Replay diagnostic injection: hold state</label><div class="tiny">Hold one recorded state while playback/reference advances. Display stale after 100 ms. No producer or controller is stopped.</div></div>${fact('State freshness',finite(h.state_age_ms)?`${num(h.state_age_ms,1,'ms')} · ${h.state_stale?'STALE':'recording clock'}`:'Unavailable',h.state_stale?'value-amber':'')}${fact('Reference freshness',num(h.reference_age_ms,1,'ms'))}${fact('Receiver status',h.stream_status??'Unavailable')}${fact('Last observed receive rate',num(h.observed_rate_hz,1,'Hz'))}${fact('Visualization queue drops',h.queue_drops??'Unavailable')}${fact('Planner wall latency',num(h.planner_latency_ms,1,'ms'))}${fact('SONIC inference',num(h.sonic_inference_ms,2,'ms'))}${fact('Controller step wall time',num(h.control_step_wall_ms,2,'ms'))}${fact('Command target RMSE',num(h.command_tracking_rmse_rad,3,'rad'))}${fact('Low-command freshness',num(h.lowcmd_age_ms,1,'ms'))}${fact('End-to-end latency','Unavailable')}${fact('GPU utilization',num(h.gpu_utilization,1,'%'))}${fact('Supervisor state','Unavailable at this cursor')}${fact(hasPose(m)?'State source time':'Event source time',num(m.source_time,6,'s'))}${fact('Source clock',m.source_clock_domain)}${fact('Simulator time',num(m.sim_time,3,'s'))}${fact('Receipt time',num(m.receipt_time,6,'s'))}${fact('State sequence',m.sequence)}${fact('Obstacle contact · completed interval',num(h.contact_force_n,2,'N'))}${h.contact_interval?`<p class="tiny">Peak simulator obstacle contact over ${num(h.contact_interval.start_s,3)}–${num(h.contact_interval.end_s,3,'s')}; ${Array.isArray(h.contact_interval.samples_n)?h.contact_interval.samples_n.length:'Unavailable'} substeps. No future interval is shown.</p>`:''}${notice('Unavailable fields stay unknown. Planner compute time is not end-to-end latency. State age is evaluated in the recording clock.','neutral')}<h4>Events up to this time</h4>${recent.length?`<ol class="event-list">${recent.map(e=>`<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>`:'<p class="unavailable">No event recorded before this cursor.</p>'}`;
   $('freeze-state').disabled=!hasPose(state.frame);
   $('freeze-state').addEventListener('change',e=>{state.frozenFrame=e.target.checked?state.frame:null;renderFrame(true);});
   bindEventSeek();
@@ -444,6 +478,7 @@ async function loadSession(id) {
     if(session.schema_version!==1||!session.frames?.length)throw new Error('Unsupported or empty recording. Expected telemetry schema v1.');
     state.session=session;state.sessionId=id;state.time=session.frames[0].time;state.frameIndex=-1;state.frame=null;state.measuredFrame=null;state.frozenFrame=null;state.joint=0;state.runtime=null;
     const m=session.metadata;
+    updateRecordingWarning();
     const wire=m.recording_kind==='recorded-wire-transport';
     $('session-title').textContent=m.title;
     $('backend-value').textContent=m.backend_id.toUpperCase();
@@ -463,35 +498,39 @@ async function loadSession(id) {
     $('layer-future').disabled=!hasState;$('layer-trajectory').disabled=!hasState;$('layer-environment').disabled=!hasState;$('layer-frames').disabled=!hasState;
     $('scene-unavailable').hidden=hasState;
     $('layer-reference').disabled=!hasReference;$('layer-reference').checked=hasReference;
-    $('layer-perception').disabled=!session.perception?.available;$('layer-perception').checked=false;
+    $('layer-perception').disabled=!session.perception?.available;$('layer-perception').checked=!!session.perception?.available&&new URLSearchParams(location.search).get('map')==='1';
     renderFrame(true);await loadScene(session,id,generation);
     if(generation!==state.loadGeneration)return;
-    window.__studio={get state(){return state;},get model(){return modelSpec;},get robot(){return robot;},get mapSample(){return mapSample;},get sensorOverlayCount(){return sensorOverlays.size;},seek,selectTab,setPlaying,loadSession,cameraView,setPreparationMode,showPreparationMap,setPreparationGoal,pickPreparationGoal,updateLayers,setSensorOverlay,removeSensorOverlay,appendLiveFrame};
+    window.__studio={get state(){return state;},get model(){return modelSpec;},get robot(){return robot;},get mapSample(){return mapSample;},get sensorOverlayCount(){return sensorOverlays.size;},get navigationMarkers(){return {goal:navigationGoal?.position.toArray()??null,start:navigationStart?.position.toArray()??null};},get preparationMarkers(){return {goal:preparationGoal?.position.toArray()??null,start:preparationStart?.position.toArray()??null,yaw:preparationStart?.getObjectByName('heading')?.rotation.z??null};},seek,selectTab,setPlaying,loadSession,cameraView,setPreparationMode,showPreparationMap,setPreparationGoal,setPreparationStart,pickPreparationGoal,updateLayers,updateView,setSensorOverlay,removeSensorOverlay,appendLiveFrame};
     window.dispatchEvent(new CustomEvent('studio:session',{detail:{session,id}}));
     const url=new URL(window.location);url.searchParams.set('session',id);history.replaceState({},'',url);
   } catch(e) {if(generation===state.loadGeneration){$('loading-overlay').hidden=true;error(`Cannot open this recording: ${e.message}`);console.error(e);}}
 }
 function selectTab(name) {
   state.tab=name;
+  updateView({panel:name});
   document.querySelectorAll('[data-tab]').forEach(button=>{const active=button.dataset.tab===name;button.classList.toggle('active',active);button.setAttribute('aria-selected',String(active));$(`panel-${button.dataset.tab}`).hidden=!active;});
   renderInspector();
 }
 function tick(now) {
-  if(state.playing&&state.session){const dt=Math.min((now-lastTick)/1000,.25);state.time=Math.min(state.session.metadata.duration_s,state.time+dt*state.speed);renderFrame();if(state.time>=state.session.metadata.duration_s)setPlaying(false);}
+  if(state.playing&&state.session){const dt=Math.min((now-lastTick)/1000,.25);state.time=Math.min(state.session.metadata.duration_s,state.time+dt*state.speed);renderFrame();if(state.time>=state.session.metadata.duration_s){if(state.loop&&state.session.metadata.duration_s>state.session.frames[0].time)seek(state.session.frames[0].time);else setPlaying(false);}}
   lastTick=now;
   if(renderer){controls.update();renderer.render(scene,camera);}
   requestAnimationFrame(tick);
 }
 async function initialize() {
+  const view=new URLSearchParams(location.search);
   try{initializeScene();}catch(e){error(`3D renderer could not start: ${e.message}`);$('loading-overlay').hidden=true;return;}
   initializeWorkbench();
   $('session-picker').addEventListener('change',e=>loadSession(e.target.value));
   $('play').addEventListener('click',()=>{if(!state.session)return;if(state.time>=state.session.metadata.duration_s)seek(0);setPlaying(!state.playing);});
   $('restart').addEventListener('click',()=>{if(state.session){setPlaying(false);seek(0);}});
   $('timeline').addEventListener('input',e=>{setPlaying(false);seek(Number(e.target.value));});
-  $('speed').addEventListener('change',e=>state.speed=Number(e.target.value));
+  $('speed').addEventListener('change',e=>{state.speed=Number(e.target.value);updateView({speed:state.speed});});
+  $('loop').addEventListener('change',e=>{state.loop=e.target.checked;updateView({loop:state.loop?'1':null});});
+  $('copy-view').addEventListener('click',async()=>{updateView({time:state.time.toFixed(3)});try{await navigator.clipboard.writeText(location.href);$('copy-view').textContent='Copied';}catch{$('copy-view').textContent='URL updated';}setTimeout(()=>$('copy-view').textContent='Link',2000);});
   document.querySelectorAll('[data-camera]').forEach(b=>b.addEventListener('click',()=>cameraView(b.dataset.camera)));
-  document.querySelectorAll('.layers input').forEach(b=>b.addEventListener('change',updateLayers));
+  document.querySelectorAll('.layers input').forEach(b=>b.addEventListener('change',()=>{updateLayers();if(b.id==='layer-perception')updateView({map:b.checked?'1':'0'});}));
   document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>selectTab(b.dataset.tab)));
   window.addEventListener('keydown',e=>{if(e.code==='Space'&&!['INPUT','SELECT','BUTTON','TEXTAREA'].includes(document.activeElement.tagName)){e.preventDefault();$('play').click();}});
   requestAnimationFrame(tick);
@@ -499,7 +538,6 @@ async function initialize() {
     const {sessions}=await json('/api/sessions');
     if(!sessions?.length)throw new Error('No recordings configured. See the local configuration instructions.');
     $('session-picker').innerHTML=sessions.map(s=>`<option value="${escape(s.id)}">${escape(s.label??s.title??s.id)}</option>`).join('');
-    const view=new URLSearchParams(location.search);
     const requested=view.get('session');
     const selected=sessions.some(s=>s.id===requested)?requested:sessions[0].id;
     $('session-picker').value=selected;await loadSession(selected);
@@ -510,6 +548,13 @@ async function initialize() {
     const panel=view.get('panel');
     if([...document.querySelectorAll('[data-tab]')].some(button=>button.dataset.tab===panel))selectTab(panel);
     if(view.get('map')==='1'&&!$('layer-perception').disabled){$('layer-perception').checked=true;updateLayers();}
+    if(view.has('time')&&Number.isFinite(Number(view.get('time'))))seek(Number(view.get('time')));
+    if(['orbit','follow','top'].includes(view.get('camera')))cameraView(view.get('camera'),true);
+    if(['.25','0.25','0.5','1','2','4'].includes(view.get('speed'))){state.speed=Number(view.get('speed'));$('speed').value=String(state.speed);}
+    state.loop=view.get('loop')==='1';$('loop').checked=state.loop;
+    // Session/model loading may finish after the preparation catalog arrives.
+    // Reapply the selected workspace after both data sources are ready.
+    if(['prepare','test','sensors'].includes(view.get('workspace')))window.__workbench.workspace(view.get('workspace'));
     if(view.get('play')==='1')setPlaying(true);
   }catch(e){error(e.message);$('loading-overlay').hidden=true;}
 }
