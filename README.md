@@ -1,8 +1,8 @@
 # G1 Deploy Studio
 
-Local, read-only developer cockpit for Unitree G1 deployment replay. A working browser application decodes real recorded SONIC/MuJoCo executions, renders the matching articulated G1 model, and synchronizes reference intent, joints, planner timing, events, and provenance.
+Local developer cockpit for Unitree G1 replay, preparation and CPU policy testing. The browser decodes real SONIC/MuJoCo recordings, renders the matching articulated G1, and can run fresh bounded Flow/SONIC/MuJoCo CPU tests with synchronized simulated perception and performance. Hardware access stays disabled.
 
-**Implemented and exercised:** recorded replay, local model rendering, reference-window inspection, final-map inspection, normalized MCAP export/import, and a bounded loopback ZMQ telemetry recorder. **Not hardware validated:** no robot connections, DDS participants, motor writers, or controller launchers exist in the dashboard. A new full C++/DDS simulation run is blocked by the referenced runner's hard-coded domain 0 and the host's NVML mismatch; see [limitations and evidence](docs/ACCEPTANCE.md).
+**Implemented and exercised:** replay, local map/goal configuration, saved scenarios, actual CPU policy tests, live worker-state visualization, pinnable sensor views, synchronized ray-LiDAR/maps, MCAP and bounded loopback ZMQ recording. **Not hardware validated:** no robot connections, DDS participants or motor writers exist in the dashboard. Fresh CPU tests use the existing in-process backend; the full C++/DDS rehearsal remains blocked by the referenced runner's hard-coded domain 0 and host NVML mismatch. See [the workbench guide](docs/WORKBENCH.md) and [evidence](docs/ACCEPTANCE.md).
 
 ## Run the cockpit
 
@@ -28,6 +28,8 @@ Use play/pause, seek and speed to inspect the same session clock across panels. 
 
 To open the longer rehearsal with the Health panel, map overlay and playback already enabled, use `http://127.0.0.1:8790/?session=sonic-dds-tutorial&panel=health&map=1&play=1`. These optional view parameters apply after the recording loads; they affect only browser replay. The map remains an explicitly labelled final accumulated snapshot. Normal session links start paused.
 
+Use **Prepare → Policy test → Sensors** to select/import a map, pick a goal, save settings, run the actual CPU policy and attach perception to the viewport. Scans remain inspection-only until collision geometry is supplied; unknown space is never rendered as observed free space. Fresh tests are recorded automatically under `~/research-data/g1-deploy-studio/workbench/jobs`. [Detailed workflow and limits](docs/WORKBENCH.md).
+
 `config/sessions.json` registers the demonstrated paths. For a different local recording, create ignored `config/local.json` with the same `sessions` structure and run:
 
 ```bash
@@ -45,7 +47,7 @@ Capture subscribes only to supported telemetry topics on literal loopback endpoi
 .venv/bin/python -m studio.recorder --endpoint tcp://127.0.0.1:5557 --topic g1_debug --output /absolute/data/root/capture.jsonl --duration 10
 ```
 
-This command is an example, not a statement that a debug producer is currently running. The capture keeps wire bytes, normalized messages, receive health and transport events; it is independent of browser lifetime. There is no dashboard control API.
+This command is an example, not a statement that a debug producer is currently running. The capture keeps wire bytes, normalized messages, receive health and transport events; it is independent of browser lifetime. The dashboard has no hardware control API; its preparation API only saves local data and manages the fixed CPU simulation worker.
 
 Export the demonstrated replay to indexed MCAP (exclusive creation; output must not already exist):
 

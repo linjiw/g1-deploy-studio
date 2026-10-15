@@ -1,0 +1,40 @@
+// Read-only replay regressions and local map/configuration persistence; no policy worker launch.
+import {chromium} from '@playwright/test';
+import assert from 'node:assert/strict';
+import {mkdir,writeFile} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+const base=process.env.STUDIO_URL||'http://127.0.0.1:8791';
+const evidence=process.env.STUDIO_EVIDENCE||path.join(os.homedir(),'research-data/g1-deploy-studio/evidence/workbench-browser');await mkdir(evidence,{recursive:true});
+const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+const page=await browser.newPage({viewport:{width:1512,height:1100}}),checks=[],errors=[],failed=[];
+page.on('pageerror',error=>errors.push(error.message));page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});page.on('response',response=>{if(response.status()>=400)failed.push(`${response.status()} ${response.url()}`);});
+try{
+  const catalog=await(await page.request.get(`${base}/api/sessions`)).json();const id=process.env.STUDIO_JOB||catalog.sessions.find(session=>session.id.startsWith('job-')&&session.available)?.id;assert.ok(id,'An actual completed CPU session is required');
+  await page.goto(`${base}/?session=${id}&workspace=sensors`);await page.waitForFunction(id=>window.__studio?.state.sessionId===id&&document.querySelector('#loading-overlay').hidden,id,{timeout:60000});await page.waitForSelector('[data-pin-sensor="lidar_raw"]');
+  await page.evaluate(()=>window.__studio.seek(.8));await page.evaluate(()=>window.__workbench.refreshSensors(true));await page.waitForFunction(()=>window.__workbench.state.sensors?.cursor_s===.8);
+  await page.locator('#workbench-sensors [data-pin-sensor="lidar_raw"]').click();assert.equal(await page.evaluate(()=>window.__studio.sensorOverlayCount),1);
+  let release,started;const gate=new Promise(resolve=>release=resolve),seen=new Promise(resolve=>started=resolve);
+  await page.route('**/api/sensors?**',async route=>{const url=new URL(route.request().url());if(Number(url.searchParams.get('time'))===1.6){const response=await route.fetch();started();await gate;await route.fulfill({response});}else await route.continue();});
+  await page.evaluate(()=>{window.__studio.seek(1.6);window.__workbench.refreshSensors(true);});await seen;
+  await page.evaluate(()=>window.__studio.seek(.2));assert.equal(await page.locator('#sensor-dock').isVisible(),false);assert.equal(await page.evaluate(()=>window.__studio.sensorOverlayCount),0);assert.ok(await page.evaluate(()=>window.__studio.mapSample.time<=.2));release();
+  await page.waitForFunction(()=>window.__workbench.state.sensors?.cursor_s===.2);
+  assert.ok(await page.evaluate(()=>window.__workbench.state.sensors.sensors.filter(sensor=>sensor.available&&sensor.synchronized).every(sensor=>sensor.sample_time_s<=.2+1e-9)));
+  checks.push({name:'Delayed future sensor response is discarded after rewind; 3D overlay clears immediately and only causal samples return',passed:true});
+  await page.unroute('**/api/sensors?**');
+  await page.click('#workspace-test');await page.waitForSelector('#job-picker');await page.waitForFunction(id=>[...document.querySelector('#job-picker').options].some(option=>option.value===id),id);
+  await page.selectOption('#job-picker',id);await page.waitForFunction(id=>window.__workbench.state.job?.id===id,id);await page.waitForSelector('#open-job-replay');
+  assert.match(await page.locator('#job-results').textContent(),/goal distance|outcome/);assert.match(await page.locator('#job-status').textContent(),/Telemetry receipt|Worker process/);
+  await page.screenshot({path:path.join(evidence,'saved-policy-run.png'),fullPage:true});checks.push({name:'Owned run history restores completion result, actual outcome and runtime evidence after page reload',passed:true});
+  await page.click('#workspace-prepare');await page.waitForSelector('#saved-scenario');await page.waitForFunction(()=>document.querySelector('#saved-scenario').options.length>1);
+  const scenario=await page.locator('#saved-scenario option').nth(1).getAttribute('value');await page.selectOption('#saved-scenario',scenario);await page.waitForFunction(id=>window.__workbench.state.scenario?.id===id,scenario);
+  const downloaded=page.waitForEvent('download');await page.click('#export-scenario');const download=await downloaded;assert.ok(download.suggestedFilename().endsWith('.json'));await download.saveAs(path.join(evidence,'exported-scenario.json'));
+  checks.push({name:'Saved scenario reloads start, goal and planner settings and exports a real JSON configuration',passed:true});
+  const recordedPoints=await page.evaluate(()=>window.__studio.state.session.perception.frames[0].raw_lidar.slice(0,64));assert.ok(recordedPoints.length>0);
+  await page.locator('.map-import summary').click();await page.setInputFiles('#map-import-file',{name:'unaligned-scan.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({kind:'scan',points:recordedPoints}))});await page.click('#import-map');await page.waitForFunction(()=>document.querySelector('#workbench-error').textContent.includes('frame_id'));assert.notEqual(await page.evaluate(()=>window.__workbench.state.map?.kind),'scan');checks.push({name:'Imported scans without an explicit world frame are rejected locally without inferred alignment',passed:true});await page.setInputFiles('#map-import-file',{name:'recorded-lidar-slice.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({kind:'scan',frame_id:'world',units:'m',points:recordedPoints,resolution_m:.1}))});await page.fill('#map-import-label','Browser import · actual simulated LiDAR slice');await page.click('#import-map');await page.waitForFunction(()=>window.__workbench.state.map?.kind==='scan');
+  await page.click('#save-scenario');await page.waitForFunction(()=>document.querySelector('#scenario-result').textContent.includes('Scenario cannot run'));assert.match(await page.locator('#scenario-result').textContent(),/collision geometry/);assert.equal(await page.locator('#source-badge').isVisible(),false);
+  await page.screenshot({path:path.join(evidence,'imported-scan-preflight.png'),fullPage:true});await page.click('#workspace-test');assert.equal(await page.locator('#start-job').isDisabled(),true);
+  checks.push({name:'Real recorded LiDAR values import as an inspection map; missing collision geometry blocks policy launch without inventing free space',passed:true});
+  await page.setViewportSize({width:390,height:844});await page.click('#workspace-sensors');await page.waitForTimeout(250);assert.ok(await page.evaluate(()=>document.body.scrollWidth<=innerWidth));await page.screenshot({path:path.join(evidence,'workbench-mobile.png'),fullPage:true});
+  assert.deepEqual(errors,[]);assert.deepEqual(failed,[]);const report={base,id,checks,errors,failed};await writeFile(path.join(evidence,'regression.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+}catch(error){await page.screenshot({path:path.join(evidence,'regression-failure.png'),fullPage:true});await writeFile(path.join(evidence,'regression-failure.json'),JSON.stringify({error:error.message,checks,errors,failed},null,2));throw error;}finally{await browser.close();}

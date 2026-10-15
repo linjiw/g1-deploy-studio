@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>G1 Deploy Studio · Replay cockpit</title>
+  <title>G1 Deploy Studio · Rehearsal workbench</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315232b'/%3E%3Ctext x='4' y='23' fill='%2356d9d0' font-size='20' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
   <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
@@ -13,7 +13,7 @@
   <header class="app-header">
     <a class="brand" href="/" aria-label="G1 Deploy Studio home"><span class="brand-icon">G1</span><span>Deploy <strong>Studio</strong><small>ROBOTICS / REHEARSAL WORKSPACE</small></span></a>
     <div class="session-select"><label for="session-picker">RECORDING</label><select id="session-picker" aria-label="Select recorded session" data-testid="session-select"><option>Loading recordings…</option></select></div>
-    <div class="header-status"><span class="badge amber">◷ REPLAY</span><span class="read-only">◈ Read-only consumer</span></div>
+    <div class="header-status"><span class="badge amber">◷ REPLAY</span><span class="read-only">◈ Hardware disabled</span></div>
   </header>
 
   <div id="error-banner" class="error-banner" role="alert" hidden></div>
@@ -49,9 +49,23 @@
     </aside>
 
     <section class="center-panel" aria-label="Synchronized robot scene and playback">
+      <nav class="workbench-nav panel" aria-label="Workspace tools">
+        <button id="workspace-replay" class="active" data-workspace="replay" aria-pressed="true"><span>01</span> Replay</button>
+        <button id="workspace-prepare" data-workspace="prepare" aria-pressed="false"><span>02</span> Prepare</button>
+        <button id="workspace-test" data-workspace="test" aria-pressed="false"><span>03</span> Policy test</button>
+        <button id="workspace-sensors" data-workspace="sensors" aria-pressed="false"><span>04</span> Sensors</button>
+      </nav>
+      <section id="workbench-drawer" class="workbench-drawer panel" aria-label="Preparation and test tools" hidden>
+        <div id="workbench-error" class="callout warning" role="alert" hidden></div>
+        <div id="workbench-prepare" hidden></div>
+        <div id="workbench-test" hidden></div>
+        <div id="workbench-sensors" hidden></div>
+      </section>
       <div class="viewport-shell">
         <div class="viewport-top"><div><span class="eyebrow">DIGITAL TWIN</span><h2>Motion workspace <span id="world-frame">world</span></h2></div><span id="source-badge" class="badge ground-truth">SIMULATOR GROUND TRUTH</span></div>
         <div id="viewport" data-testid="viewport" aria-label="Interactive G1 digital twin"></div>
+        <div id="preparation-caption" class="preparation-caption" hidden></div>
+        <div id="sensor-dock" class="sensor-dock" aria-label="Pinned sensor views" hidden></div>
         <div id="loading-overlay" class="loading-overlay"><div class="loader"></div><span>Decoding recorded robot state…</span></div>
         <div id="scene-unavailable" class="scene-unavailable" hidden><span>◇</span><h3>World pose was not captured</h3><p>This transport recording contains real reference values and receiver observations. Inspect Intent, Joints and Graph for available data.</p><small>No root pose is inferred from reference joint values.</small></div>
         <div class="viewport-meta"><span id="pose-caption">Pose unavailable</span><span id="reference-caption">Reference unavailable</span></div>
@@ -89,7 +103,7 @@
       <div class="inspector-footer"><span id="inspector-time">SYNCHRONIZED · 00:00.000</span><span>v1</span></div>
     </aside>
   </main>
-  <footer class="app-footer"><span><i></i> LOCAL REPLAY · LOOPBACK ONLY</span><span id="footer-source">Source verification pending</span><span>G1 DEPLOY STUDIO</span></footer>
-  <script type="module" src="/app.js?v=replay-view-1"></script>
+  <footer class="app-footer"><span><i></i> LOCAL WORKSPACE · LOOPBACK ONLY</span><span id="footer-source">Source verification pending</span><span>G1 DEPLOY STUDIO</span></footer>
+  <script type="module" src="/app.js?v=workbench-1"></script>
 </body>
 </html>

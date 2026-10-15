@@ -2,6 +2,8 @@
 
 ## Implemented local slice
 
+The simulation workbench adds `studio.workbench` (bounded map/scenario storage and owned-process lifecycle), `studio.policy_worker` (actual frozen Flow + SONIC ONNX + MuJoCo CPU execution), and `studio.sensors` (causal sensor inventory and views). The HTTP process does not import policy runtimes or middleware. Its worker uses the existing reference environment read-only and produces atomic live snapshots plus complete replay sessions outside Git. Simulation-only POST operations require a same-origin token; no hardware control endpoint exists. See `docs/WORKBENCH.md` for runnable workflow and exact boundaries.
+
 `studio.replay` decodes explicitly selected rehearsal directories into bounded v1 session data. `studio.model` exports the actual local MJCF body tree and individually allowlisted STL assets. `studio.server` serves the browser on loopback only, with no motor publishing or middleware imports. `apps/web` performs causal replay and articulated rendering. `studio.export` uses the MCAP library for indexed normalized-frame export/import.
 
 `studio.protocols` decodes actual SONIC pose/debug/cloud formats; `studio.recorder` is an independent loopback SUB consumer with bounded drop-oldest disk buffering. It does not live inside the control loop or depend on a browser connection. `studio.capture_replay` adapts captured wire JSONL to the same browser timeline, with observed receiver-edge metrics and explicitly unavailable robot pose. It re-decodes original wire bytes instead of trusting a fabricated motion track.

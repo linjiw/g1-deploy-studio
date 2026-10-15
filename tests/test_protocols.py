@@ -103,6 +103,29 @@ class ActualSourceParityTests(unittest.TestCase):
         self.assertEqual(event["payload"]["fields"]["pos"], [1., 2., 3.])
         self.assertEqual(event["frame_id"], "source_world_unverified")
 
+    def test_cloud_and_odom_stamp_cannot_identify_source_clock(self):
+        # Explicit protocol fixtures: simulator and LIO use this same packed
+        # schema with simulation versus host-monotonic stamps. Magnitude and
+        # an optional `wall` field do not establish the publisher or alignment.
+        for topic in (b"cloud", b"odom"):
+            for stamp in (.2, 1234567.25, None):
+                fields = ([("points", np.array([[1., 2., 3.]], dtype=np.float32)),
+                           ("origin", np.array([0., 0., 1.]))] if topic == b"cloud" else
+                          [("pos", np.array([1., 2., 3.])),
+                           ("quat_wxyz", np.array([1., 0., 0., 0.]))])
+                if stamp is not None:
+                    fields.extend([("stamp", np.array([stamp])), ("wall", np.array([1234570.]))])
+                event = decode_packet(self.source.pack(fields, topic=topic), topic,
+                                      receipt_monotonic=1234571., receipt_unix=1800000000.)
+                with self.subTest(topic=topic, stamp=stamp):
+                    self.assertEqual(event["source_timestamp"], stamp)
+                    self.assertEqual(event["source_clock"], "unknown")
+                    self.assertEqual(event["payload"]["source_clock"], "unknown")
+                    self.assertEqual(event["receipt_clock"], "collector_host_monotonic")
+                    self.assertEqual(event["receipt_timestamp"], 1234571.)
+                    self.assertEqual(event["provenance"]["clock_alignment"], "unverified")
+                    self.assertNotIn("source_latency_s", event)
+
 
 class DebugTests(unittest.TestCase):
     def packet(self, **extra):

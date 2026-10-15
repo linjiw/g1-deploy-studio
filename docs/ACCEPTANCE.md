@@ -1,6 +1,33 @@
 # Executed acceptance and handoff — 2026-10-15
 
-This delivery is a working local replay cockpit plus read-only telemetry capture/diagnostics. M1 is exercised; substantial M2/M3 observability pieces are implemented. **A new full SONIC/DDS controller rehearsal and physical robot observation were not performed.** The blockers and missing validations below remain open.
+This delivery includes a working local replay cockpit, preparation and CPU policy-test workbench, and read-only telemetry capture/diagnostics. M1 is exercised; substantial M2/M3 observability pieces are implemented. **Fresh Flow/SONIC/MuJoCo CPU tests were performed. A new full SONIC/DDS controller rehearsal and physical robot observation were not performed.** The blockers and missing validations below remain open.
+
+## Fresh simulation workbench acceptance
+
+The browser now supports map selection/import, viewport navigation-goal picking, start/settings preflight, saved scenario load/export, owned CPU policy tests, live robot/performance visualization, run history, synchronized perception and sensor pinning. See `WORKBENCH.md`, `POLICY_BACKEND.md` and `SENSORS.md` for exact interfaces and boundaries.
+
+Final verification: **88 unit/integration tests and 25 browser checks passed** (seven new workflow checks, five workbench regressions, and thirteen existing replay checks through a forwarded loopback connection). The browser reports contain no page exceptions or failed HTTP resources. Older counts below describe earlier deliveries.
+
+Real execution evidence (all outside Git):
+
+- `~/research-data/g1-deploy-studio/evidence/policy-workbench/run-boxes-verified/`: real two-wall corridor, 1.5 m goal, 2.0 s / 100 control steps / 13 replans. Goal distance decreased to about 0.637 m. Source pre-action state, post-action state and references matched the independent NPZ decoder exactly. Sensor/IMU values were sampled against this recording.
+- `~/research-data/g1-deploy-studio/evidence/workbench-browser/acceptance.json`: seven browser workflow checks, actual job `job-3144c5a7d462`, live model visible at 0.32 s, real SONIC inference 2.40 ms at that sampled frame, result replay and three pinned raw/filtered/IMU views. Desktop/mobile screenshots accompany the report.
+- `~/research-data/g1-deploy-studio/evidence/workbench-browser/regression.json`: five checks covering delayed future sensor responses after rewind, saved scenarios/export, job recovery and scan-import boundaries. An actual recorded LiDAR sample was imported; physics launch correctly remained blocked without collision geometry.
+- `~/research-data/g1-deploy-studio/evidence/workbench-forwarded/browser-acceptance.json`: thirteen complete replay/rendering checks through a preserved-Host loopback forwarder against the final port-8790 gateway, including independent MuJoCo body-transform parity.
+- `~/research-data/g1-deploy-studio/evidence/workbench-api/acceptance.json`: actual API-launched job `job-028c64864653`, two simulated seconds / 100 frames / ten perception snapshots, 4.42 wall seconds. Goal distance reached 0.099 m; scorer outcome stayed **timeout**, not goal completion. Duplicate worker rejected; consumer disconnect did not stop the worker; cancellation affected only the second owned CPU job.
+- `~/research-data/g1-deploy-studio/evidence/workbench-api-fault/acceptance.json`: owned CPU job `job-48fd6424930c` deliberately paused/resumed; telemetry became stale as expected and recovered. Source policy outcome remains timeout. The pause contributes to measured wall/planner timing and is not a performance benchmark.
+- `~/research-data/g1-deploy-studio/evidence/workbench-unit-tests.txt`: complete current unit/integration test output, including map bounds/unknown handling, same-origin POST authorization, job exclusion/lifecycle, sensor chronology and malformed wire data.
+
+Commands executed included `.venv/bin/python -m unittest discover -s tests -v`, `STUDIO_URL=http://127.0.0.1:8791 node tools/workbench_acceptance.mjs`, and `.venv/bin/python tools/accept_workbench.py --url http://127.0.0.1:8791 --output <new-evidence-directory>`. Port 8791 was used as an isolated development gateway while the user's original 8790 replay stayed available. The final handoff uses 8790.
+
+Additional final regression commands:
+
+```bash
+STUDIO_URL=http://127.0.0.1:8791 STUDIO_JOB=job-3144c5a7d462 node tools/workbench_regression.mjs
+STUDIO_EVIDENCE=/home/linjiw/research-data/g1-deploy-studio/evidence/workbench-forwarded npm run test:browser:forwarded
+```
+
+This execution uses the frozen Flow/SONIC reference implementation and reference Python environment read-only. No source/environment, GPU driver, robot/network configuration, DDS domain or other running job was changed. The CPU backend has no DDS/ZMQ participant; actual DDS delivery, hardware motor faults, cameras, physical sensor calibration and real-time deadline behavior remain unvalidated. Imported scans can be inspected and assigned goals, but require explicit collision geometry before physics tests. The source planner's unseen-cell-as-free behavior is disclosed in validation and provenance, while visual unknown cells remain empty.
 
 ## Start and select evidence
 

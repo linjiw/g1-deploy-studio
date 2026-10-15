@@ -1,4 +1,4 @@
-"""Loopback, read-only HTTP replay gateway. This process has no control interface."""
+"""Loopback replay and owned CPU simulation gateway. No hardware control interface."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ import json
 import mimetypes
 from pathlib import Path
 import re
+import secrets
 import socket
 import threading
 from urllib.parse import parse_qs, unquote, urlparse
@@ -29,11 +30,26 @@ class Catalog:
         self.cache = {}
         self.models = {}
         self.lock = threading.RLock()
+        self.providers = {}
+        self.workbench = None
+
+    def enable_workbench(self, data_root=None):
+        from studio.workbench import Workbench, DATA_ROOT
+        self.workbench = Workbench(self, data_root or DATA_ROOT)
+
+    def register(self, key, path, label, provider=None):
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', key):
+            raise ValueError('Invalid session ID')
+        with self.lock:
+            self.entries[key] = {'id': key, 'path': str(path), 'label': label}
+            if provider:
+                self.providers[key] = provider
+            self.cache.pop(key, None)
 
     def listing(self):
         return {"sessions": [{"id": k, "label": v.get("label", k),
                               "description": v.get("description", ""),
-                              "available": Path(v["path"]).exists()}
+                              "available": Path(v["path"]).exists() or k in self.providers}
                              for k, v in self.entries.items()],
                 "mode": "replay", "hardware_enabled": False, "read_only": True}
 
@@ -42,9 +58,16 @@ class Catalog:
         with self.lock:
             if key not in self.entries:
                 raise KeyError("Unknown session")
-            if key not in self.cache:
+            if key not in self.cache or key in self.providers:
                 item = self.entries[key]
-                if Path(item["path"]).suffix.lower() == ".jsonl":
+                if key in self.providers:
+                    data = self.providers[key]()
+                elif Path(item['path']).suffix.lower() == '.json':
+                    from studio.workbench import read_json
+                    data = read_json(item['path'])
+                    if data.get('schema_version') != 1 or not data.get('frames'):
+                        raise ValueError('Invalid owned simulation recording')
+                elif Path(item["path"]).suffix.lower() == ".jsonl":
                     from studio.capture_replay import load_capture
                     data = load_capture(item["path"])
                 elif Path(item["path"]).suffix.lower() == ".mcap":
@@ -148,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store" if kind == "application/json" else "private, max-age=3600")
+        self.send_header("Cache-Control", "private, max-age=3600" if kind == "application/octet-stream" else "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -160,29 +183,56 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
-    def do_GET(self):
+    def authorize_local(self):
         # Reject cross-site fetches and DNS rebinding even on a loopback listener.
         # SSH/app forwarding can preserve the browser's local authority, whose
         # port need not equal the backend port. Never trust arbitrary hostnames
         # or X-Forwarded-* headers to establish that local boundary.
         hosts = self.headers.get_all("Host", [])
         if len(hosts) != 1 or not loopback_authority(hosts[0]):
-            return self.respond({"error": "Loopback Host required"}, status=403)
+            self.respond({"error": "Loopback Host required"}, status=403)
+            return False
         origins = self.headers.get_all("Origin", [])
         if len(origins) > 1 or (origins and origins[0] != f"http://{hosts[0]}"):
-            return self.respond({"error": "Cross-origin telemetry access denied"}, status=403)
+            self.respond({"error": "Cross-origin telemetry access denied"}, status=403)
+            return False
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            return self.respond({"error": "Cross-site access denied"}, status=403)
+            self.respond({"error": "Cross-site access denied"}, status=403)
+            return False
+        return True
+
+    def do_GET(self):
+        if not self.authorize_local():
+            return
         try:
             route = urlparse(self.path)
             path = unquote(route.path)
             query = parse_qs(route.query)
             catalog = self.server.catalog
+            workbench = catalog.workbench
+            if path == '/api/workbench' and workbench:
+                return self.respond(workbench.description())
+            if path == '/api/map' and workbench:
+                return self.respond(workbench.map(query.get('id', ['flat-ground'])[0]))
+            if path == '/api/scenarios' and workbench:
+                key = query.get('id', [None])[0]
+                with workbench.lock:
+                    return self.respond(workbench.scenarios[key] if key else {'scenarios': list(workbench.scenarios.values())})
+            if path == '/api/jobs' and workbench:
+                key = query.get('id', [None])[0]
+                return self.respond(workbench.job(key) if key else workbench.list_jobs())
+            if path == '/api/sensors':
+                from studio.sensors import get_sensor_snapshot
+                key = query.get('session', [next(iter(catalog.entries))])[0]
+                at = float(query.get('time', ['0'])[0])
+                return self.respond(get_sensor_snapshot(catalog.session(key)[0], at))
             if path == "/api/sessions":
                 return self.respond(catalog.listing())
             if path == "/api/safety":
                 return self.respond({"mode": "replay", "hardware_enabled": False, "publishers": [],
-                                     "dds_participants": 0, "binding": self.server.server_address[0], "read_only": True})
+                                     "dds_participants": 0, "binding": self.server.server_address[0], "read_only": not bool(workbench),
+                                     "hardware_read_only": True, "simulation_jobs_enabled": bool(workbench),
+                                     "allowed_mutations": ['local scenarios', 'map imports', 'owned CPU simulation jobs'] if workbench else []})
             if path in ("/api/session", "/api/model", "/api/kinematics", "/api/export"):
                 key = query.get("id", [next(iter(catalog.entries))])[0]
                 if path == "/api/session":
@@ -223,7 +273,39 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": str(error)}, status=422)
 
     def do_POST(self):
-        self.respond({"error": "Read-only replay gateway; mutations and control are not supported"}, status=405)
+        if not self.authorize_local():
+            return
+        path = urlparse(self.path).path
+        workbench = self.server.catalog.workbench
+        if not workbench or path not in ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel'):
+            return self.respond({'error': 'No hardware/control endpoint; only local preparation and owned CPU tests are supported'}, status=405)
+        if not self.headers.get('Origin') or not secrets.compare_digest(self.headers.get('X-Studio-Token', ''), workbench.token):
+            return self.respond({'error': 'Same-origin preparation token required'}, status=403)
+        if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+            return self.respond({'error': 'JSON body required'}, status=415)
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 4*1024*1024:
+                raise ValueError('Request must contain 1 byte to 4 MiB of JSON')
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError('Incomplete request body')
+            data = json.loads(raw, parse_constant=lambda s: (_ for _ in ()).throw(ValueError(f'Invalid JSON number {s}')))
+            if not isinstance(data, dict):
+                raise ValueError('JSON object required')
+            if path == '/api/scenarios':
+                result = workbench.save_scenario(data)
+            elif path == '/api/maps/import':
+                result = workbench.import_map(data)
+            elif path == '/api/jobs':
+                result = workbench.start_job(data.get('scenario_id'))
+            else:
+                result = workbench.cancel_job(data.get('id'))
+            return self.respond(result, status=201)
+        except KeyError:
+            self.respond({'error': 'Unknown map, scenario or owned job'}, status=404)
+        except (ValueError, OSError) as error:
+            self.respond({'error': str(error)}, status=422)
 
 
 def main():
@@ -231,12 +313,14 @@ def main():
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--config", type=Path, default=ROOT / "config/sessions.json")
     args = parser.parse_args()
-    servers = loopback_gateways(args.port, Catalog(args.config))
+    catalog = Catalog(args.config)
+    catalog.enable_workbench()
+    servers = loopback_gateways(args.port, catalog)
     ipv4, ipv6 = servers
     worker = threading.Thread(target=ipv6.serve_forever, daemon=True)
     worker.start()
     print(f"G1 Deploy Studio: http://127.0.0.1:{ipv4.server_port}  "
-          f"[REPLAY / READ ONLY; IPv4 + IPv6 loopback]", flush=True)
+          f"[REPLAY + CPU SIMULATION; HARDWARE DISABLED; IPv4 + IPv6 loopback]", flush=True)
     try:
         ipv4.serve_forever()
     except KeyboardInterrupt:

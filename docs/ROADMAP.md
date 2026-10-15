@@ -2,6 +2,8 @@
 
 ## Current implementation status (2026-10-15)
 
+- Simulation workbench implemented: actual CPU Flow/SONIC/MuJoCo tests, editable map/goal/scenario settings, bounded owned jobs, live state attachment, synchronized ray-LiDAR/filter/map recording, pinnable sensor views and replay of fresh results. This is explicitly in-process CPU execution; it does not remove the full C++/DDS or hardware validation gaps below. Scan imports support inspection and goal preflight, not automatic collision reconstruction.
+
 - M1 implemented: actual recorded lockstep SONIC replay, matching articulated model, reference ghost/window, synchronized timeline, named-joint errors, planner latency, source hashes, and MCAP roundtrip. A second recording exercises the historical separated C++/DDS process chain with explicit missing-reference limitations.
 - Parts of M2/M3 implemented: bounded loopback-only ZMQ capture and actual-source binary decoders; real recorded values transmitted/recorded and opened in the browser with observed fresh → stale → disconnected transitions; final map snapshot, configured topology and unavailable-metric handling.
 - New full C++/DDS rehearsal blocked: source hard-codes domain 0, and NVML reports driver/library mismatch. No upstream edits or new full controller run performed. Runtime ROS/DDS discovery, synchronized raw LiDAR history and new full deployment captures remain open.

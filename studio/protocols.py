@@ -236,7 +236,11 @@ def decode_packet(message: bytes, topic: bytes, *, receipt_monotonic=None, recei
                 raise ProtocolError("zero odometry quaternion")
         payload = {"schema": f"flow.{topic.decode()}.v1", "sequence": None,
                    "source_timestamp": None if stamp is None else float(stamp[0]),
-                   "source_clock": "source_host_monotonic" if stamp is not None else "unknown",
+                   # The simulator packs simulation seconds in `stamp`; the
+                   # LIO bridge packs host-monotonic forwarding time. Neither
+                   # cloud nor odom includes a clock-domain tag on the wire.
+                   "source_clock": "unknown",
+                   "source_clock_note": "stamp has no clock-domain tag; producer configuration and alignment are required",
                    "frame_id": "source_world_unverified", "kind": "source_kind_unverified",
                    "visualization_decimation": decimation,
                    "header": header, "fields": {name: arr.tolist() for name, arr in fields.items()}}

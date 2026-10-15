@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { initializeWorkbench } from './workbench.js';
 
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? 'Unavailable').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -21,6 +22,9 @@ const up = new THREE.Vector3(0,0,1);
 const positions = new THREE.Vector3();
 const previousFollow = new THREE.Vector3();
 let lastTick = performance.now();
+let preparationGroup, preparationGoal, preparationMode=false, goalPicking=false, goalPicked=null;
+let sensorOverlayGroup, mapSample=null;
+const sensorOverlays=new Map();
 
 async function json(url) {
   const response = await fetch(url, {cache:'no-store'});
@@ -67,6 +71,17 @@ function initializeScene() {
   const grid = new THREE.GridHelper(100,100,0x4c6472,0x30434f); grid.rotation.x=Math.PI/2; grid.position.z=-.01;
   grid.material.transparent=true;grid.material.opacity=.48;scene.add(grid);
   content = new THREE.Group();scene.add(content);
+  preparationGroup=new THREE.Group();preparationGroup.visible=false;scene.add(preparationGroup);
+  sensorOverlayGroup=new THREE.Group();scene.add(sensorOverlayGroup);
+  let pointerStart=null;
+  renderer.domElement.addEventListener('pointerdown',event=>{pointerStart=[event.clientX,event.clientY];});
+  renderer.domElement.addEventListener('pointerup',event=>{
+    if(!preparationMode||!goalPicking||!pointerStart||Math.hypot(event.clientX-pointerStart[0],event.clientY-pointerStart[1])>5)return;
+    const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1),camera);
+    const point=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1),0),new THREE.Vector3());
+    if(point)goalPicked?.([point.x,point.y]);
+  });
   worldAxes = new THREE.AxesHelper(.6);worldAxes.position.z=.015;scene.add(worldAxes);
   new ResizeObserver(()=>{const {width,height}=host.getBoundingClientRect();camera.aspect=width/height;camera.updateProjectionMatrix();renderer.setSize(width,height);}).observe(host);
   renderer.domElement.addEventListener('webglcontextlost',()=>error('The 3D rendering context was lost. Reload to restore the scene; recorded data remains unchanged.'));
@@ -132,6 +147,25 @@ function updateLine(object,points) {
 function removeContent() {
   content.traverse(obj=>{if(obj.material){for(const m of Array.isArray(obj.material)?obj.material:[obj.material])m.dispose();}if(obj.geometry&&!cachedGeometries.has(obj.geometry))obj.geometry.dispose();});
   content.clear();robot=null;ghost=null;futureGhosts=[];environment=null;mapGroup=null;trajectory=null;futureLine=null;referenceLine=null;robotAxes=null;waypointMarker=null;
+  mapSample=null;for(const id of sensorOverlays.keys())removeSensorOverlay(id);
+}
+function perceptionAt(time) {
+  const perception=state.session?.perception;
+  if(!perception?.frames)return perception;
+  let selected=null;
+  for(const frame of perception.frames){if(frame.time<=time)selected=frame;else break;}
+  return selected;
+}
+function updateMapSample(force=false) {
+  if(!mapGroup)return;
+  const sample=perceptionAt(state.time);
+  if(sample===mapSample&&!force)return;
+  mapSample=sample;
+  mapGroup.traverse(object=>{object.geometry?.dispose();object.material?.dispose();});mapGroup.clear();
+  for(const [key,color]of [['support_points',0x6bc8ac],['ceiling_points',0xc4a0d9]]){
+    const points=sample?.[key]??[];
+    if(points.length)mapGroup.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(...p))),new THREE.PointsMaterial({size:Math.max(.025,(sample.resolution_m??.05)*.7),color,transparent:true,opacity:.78,sizeAttenuation:true})));
+  }
 }
 async function loadScene(session,id,generation) {
   const spec=session.metadata.model_path?await json(`/api/model?id=${encodeURIComponent(id)}`):null;
@@ -150,10 +184,7 @@ async function loadScene(session,id,generation) {
   }
   content.add(environment);
   mapGroup=new THREE.Group();
-  for(const [key,color] of [['support_points',0x6bc8ac],['ceiling_points',0xc4a0d9]]) {
-    const points=session.perception?.[key]??[];
-    if(points.length)mapGroup.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(...p))),new THREE.PointsMaterial({size:Math.max(.025,(session.perception.resolution_m??.05)*.7),color,transparent:true,opacity:.78,sizeAttenuation:true})));
-  }
+  updateMapSample(true);
   content.add(mapGroup);
   trajectory=line(session.trajectory??[],0x7c92a0,.7);content.add(trajectory);
   futureLine=line([],0xefbb70,.95);referenceLine=line([],0x56d9d0,.7);content.add(futureLine,referenceLine);
@@ -179,6 +210,70 @@ function cameraView(kind,reset=false) {
   else if(reset||kind==='follow')camera.position.set(root[0]+3.1,root[1]-4.4,2.5);
   controls.update();
 }
+function setPreparationMode(enabled) {
+  preparationMode=enabled;preparationGroup.visible=enabled;content.visible=!enabled;
+  sensorOverlayGroup.visible=!enabled;
+  $('preparation-caption').hidden=!enabled;$('source-badge').hidden=enabled;
+  document.querySelector('.viewport-meta').hidden=enabled;
+  $('scene-unavailable').hidden=enabled||state.session?.frames.some(hasPose);
+  if(enabled)setPlaying(false);else {goalPicking=false;renderer.domElement.style.cursor='';cameraView(state.camera,true);updateLayers();}
+}
+function clearPreparation() {
+  preparationGroup.traverse(object=>{object.geometry?.dispose();if(object.material)for(const material of Array.isArray(object.material)?object.material:[object.material])material.dispose();});
+  preparationGroup.clear();preparationGoal=null;
+}
+function showPreparationMap(map) {
+  clearPreparation();setPreparationMode(true);
+  for(const box of map.boxes??map.environment?.boxes??[]) {
+    if(!Array.isArray(box.center_xy)||!Array.isArray(box.half_xy))continue;
+    const height=box.z_top-box.z_bottom;
+    if(!finite(height)||height<=0)continue;
+    const mesh=new THREE.Mesh(new THREE.BoxGeometry(box.half_xy[0]*2,box.half_xy[1]*2,height),new THREE.MeshStandardMaterial({color:0x9287a5,roughness:.9,transparent:true,opacity:.58}));
+    mesh.position.set(...box.center_xy,box.z_bottom+height/2);mesh.rotation.z=box.yaw??0;preparationGroup.add(mesh);
+    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry),new THREE.LineBasicMaterial({color:0xb1a6c7})));
+  }
+  for(const [key,color] of [['support_points',0x6bc8ac],['ceiling_points',0xc4a0d9],['points',0x8bc9be]]) {
+    const points=map[key]??map.perception?.[key]??[];
+    if(points.length)preparationGroup.add(new THREE.Points(new THREE.BufferGeometry().setFromPoints(points.map(p=>new THREE.Vector3(...p))),new THREE.PointsMaterial({color,size:.045,transparent:true,opacity:.85})));
+  }
+  preparationGoal=new THREE.Group();
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.12,.17,32),new THREE.MeshBasicMaterial({color:0xefbb70,side:THREE.DoubleSide}));ring.position.z=.035;
+  const stem=line([[0,0,.04],[0,0,.6]],0xefbb70);preparationGoal.add(ring,stem);preparationGoal.visible=false;preparationGroup.add(preparationGoal);
+  $('preparation-caption').textContent=`PREPARATION · ${map.label??map.id} · frame ${map.frame_id??'unverified'} · grid is a coordinate guide; empty space is unknown`;
+  const box=new THREE.Box3().setFromObject(preparationGroup),bounds=map.bounds;
+  const center=bounds?new THREE.Vector3((bounds.min[0]+bounds.max[0])/2,(bounds.min[1]+bounds.max[1])/2,0):box.isEmpty()?new THREE.Vector3():box.getCenter(new THREE.Vector3());
+  const extent=bounds?Math.max(bounds.max[0]-bounds.min[0],bounds.max[1]-bounds.min[1],3):box.isEmpty()?8:Math.max(box.getSize(new THREE.Vector3()).x,box.getSize(new THREE.Vector3()).y,5);
+  if(bounds){const [x0,y0]=bounds.min,[x1,y1]=bounds.max;preparationGroup.add(line([[x0,y0,.025],[x1,y0,.025],[x1,y1,.025],[x0,y1,.025],[x0,y0,.025]],map.kind==='boxes'?0x6a9caa:0x967f58,.7));}
+  controls.target.set(center.x,center.y,0);camera.position.set(center.x,center.y-.001,Math.min(100,extent*1.6));controls.enableRotate=false;controls.update();
+}
+function setPreparationGoal(xy) {if(preparationGoal){preparationGoal.visible=Array.isArray(xy);if(xy)preparationGoal.position.set(xy[0],xy[1],0);}}
+function pickPreparationGoal(enabled,callback) {goalPicking=enabled;goalPicked=callback;renderer.domElement.style.cursor=enabled?'crosshair':'';}
+function removeSensorOverlay(id) {const object=sensorOverlays.get(id);if(object){object.geometry.dispose();object.material.dispose();sensorOverlayGroup.remove(object);sensorOverlays.delete(id);}}
+function setSensorOverlay(sensor) {
+  const points=sensor.payload?.points;
+  if(!sensor.overlay_compatible||!Array.isArray(points)||!points.length){removeSensorOverlay(sensor.id);return;}
+  removeSensorOverlay(sensor.id);
+  const object=new THREE.Points(new THREE.BufferGeometry().setFromPoints(points.map(point=>new THREE.Vector3(...point))),new THREE.PointsMaterial({color:sensor.id.includes('raw')?0xc5abdc:sensor.id.includes('ceiling')?0xbba3d5:0x77e0c2,size:.035,transparent:true,opacity:.85}));
+  sensorOverlays.set(sensor.id,object);sensorOverlayGroup.add(object);
+}
+function appendLiveFrame(latest) {
+  const frame=latest.frame;if(!frame||!state.session||!hasPose(frame))return;
+  setPlaying(false);state.frozenFrame=null;state.runtime=latest.runtime??null;
+  const frames=state.session.frames,previous=frames.at(-1);
+  if(previous&&frame.time<previous.time)return;
+  if(previous&&frame.time===previous.time)frames[frames.length-1]=frame;else frames.push(frame);
+  if(frames.length>3000)frames.splice(0,frames.length-3000);
+  if(latest.perception){
+    if(!state.session.perception?.frames)state.session.perception={available:true,kind:'time-series',frames:[]};
+    const snapshots=state.session.perception.frames,previousMap=snapshots.at(-1);
+    if(!previousMap||latest.perception.time>previousMap.time)snapshots.push(latest.perception);
+    if(snapshots.length>500)snapshots.splice(0,snapshots.length-500);
+  }
+  state.session.metadata.duration_s=frame.time;state.session.metadata.mode='simulation';state.time=frame.time;state.frameIndex=-1;
+  $('timeline').max=String(frame.time);$('duration-time').textContent=$('timeline-end').textContent=clock(frame.time);$('timeline-middle').textContent=clock(frame.time/2);$('frames-value').textContent=`${frames.length.toLocaleString()} observed`;
+  $('layer-perception').disabled=!state.session.perception?.available;
+  renderFrame(true);$('playback-state').textContent='CPU RUN · LATEST';$('source-badge').textContent='SIMULATION · ACTUAL WORKER STATE';
+}
 function updateLayers() {
   if(!environment)return;
   if(robot)robot.root.visible=$('layer-robot').checked&&hasPose(state.measuredFrame);
@@ -192,7 +287,7 @@ function updateLayers() {
   waypointMarker.visible=$('layer-future').checked&&!!state.frame?.plan?.waypoint;
   robotAxes.visible=$('layer-frames').checked&&hasPose(state.measuredFrame);
   worldAxes.visible=$('layer-frames').checked&&hasPose(state.measuredFrame);
-  if(mapGroup.visible)$('reference-caption').textContent='MAP OVERLAY · final accumulated snapshot · capture time unavailable';
+  if(mapGroup.visible)$('reference-caption').textContent=state.session.perception?.frames?`MAP OVERLAY · causal simulated LiDAR map · sample ${clock(mapSample?.time)}`:'MAP OVERLAY · final accumulated snapshot · capture time unavailable';
   else updateCaption();
 }
 function updateCaption() {
@@ -233,6 +328,8 @@ function renderFrame(force=false) {
   state.frameIndex=index;state.frame=state.session.frames[index];
   state.measuredFrame=state.frozenFrame??state.frame;
   const f=state.frame;
+  document.querySelector('.header-status .badge').textContent=state.session.metadata.mode==='simulation'?'◷ CPU SIMULATION':'◷ REPLAY';
+  updateMapSample();
   $('timeline').value=String(state.time);
   $('current-time').textContent=clock(state.time);
   $('frame-counter').textContent=`Frame ${index+1} / ${state.session.frames.length}`;
@@ -244,7 +341,7 @@ function renderFrame(force=false) {
     updateLine(futureLine,f.plan?.future??[]);
     updateLine(referenceLine,f.reference?.window?.map(w=>w.position)??[]);
     if(f.plan?.waypoint)waypointMarker.position.set(f.plan.waypoint[0],f.plan.waypoint[1],.015);
-    if(state.camera==='follow'||state.camera==='top'){
+    if(!preparationMode&&(state.camera==='follow'||state.camera==='top')){
       positions.fromArray(f.position);const delta=positions.clone().sub(previousFollow);delta.z=0;camera.position.add(delta);controls.target.add(delta);previousFollow.copy(positions);
     }
     updateLayers();
@@ -259,6 +356,7 @@ function renderFrame(force=false) {
   $('metric-reference').classList.toggle('bad',h.stream_status==='disconnected');
   updateCaption();if(mapGroup?.visible)updateLayers();
   if(changed||force)renderInspector();
+  window.dispatchEvent(new CustomEvent('studio:frame',{detail:{frame:f,time:state.time,health:h}}));
 }
 function metric(name,value,unit,digits,warning) {
   const node=$(`metric-${name}`);node.innerHTML=finite(value)?`${value.toFixed(digits)}<em>${unit}</em>`:'—';
@@ -273,7 +371,7 @@ function setPlaying(value) {
   $('playback-state').textContent=value?'PLAYING':'PAUSED';
   lastTick=performance.now();
 }
-function seek(time) {if(state.frozenFrame&&time<state.frozenFrame.time)state.frozenFrame=null;state.time=Math.max(0,Math.min(state.session.metadata.duration_s,time));renderFrame();}
+function seek(time) {if(state.frozenFrame&&time<state.frozenFrame.time)state.frozenFrame=null;state.time=Math.max(state.session.frames[0].time,Math.min(state.session.metadata.duration_s,time));renderFrame();}
 
 function renderInspector() {
   if(!state.frame)return;
@@ -289,7 +387,7 @@ function renderIntent() {
   const wire=state.session.metadata.recording_kind==='recorded-wire-transport';
   const window=r?.window??[];
   const referenceDetail=r?`${fact('Recorded shape',r.shape?.join(' × ')+' · float values','value-cyan')}${fact('Horizon',`${window.length} frames · ${num(window.at(-1)?.offset_s,1,'s')}`)}<div class="window-bars">${window.slice(0,15).map(w=>`<span title="Reference offset ${num(w.offset_s,3,'s')}">${num(w.offset_s,1)}</span>`).join('')}</div><p class="tiny">Offsets in seconds · ${wire?'decoded wire reference':'sampled future reference'}</p>${wire?notice('World-root pose and playback cursor were not present in the captured packet. No ghost or inferred trajectory is rendered.','neutral'):notice('Cyan: reference pose. Faint ghosts: +0.4 s and +0.9 s. Amber: selected planner prediction. Future motion is not guaranteed.')}${wire?`${fact('Wire contract','pose v1 · little-endian arrays')}${fact('Wire joint order','Isaac → name-mapped G1 order')}${fact('Body quaternion','wxyz · frame not verified')}${fact('Latent token vector','Not in pose packet')}`:`${fact('SONIC input columns','0–63 · joints, velocity, orientation')}${fact('Diagnostic columns','64–66 · planner root displacement')}${fact('Orientation','relative 6D → world wxyz')}`}${fact('Joint position units','radians')}<details class="raw-details"><summary>Inspect actual reference values</summary><pre>${escape(JSON.stringify(wire?r.raw_fields:{offset_s:window[0]?.offset_s,joint_names:state.session.joint_names,values:r.raw?.[0]},null,2))}</pre></details>`:notice('No reference payload is available at this cursor. Reference joints, token values and tracking error remain unavailable.','warning');
-  $('intent-content').innerHTML=`<span class="eyebrow">${wire?'REFERENCE PUBLISHER → COLLECTOR':'PLANNER → SONIC'}</span><h3>What comes next</h3><p>${wire?'Real reference payloads captured by a read-only subscriber during a local transport rehearsal.':'Selected motion and the reference window supplied to the recorded controller.'}</p>${notice(wire?'Recorded reference rows were reserialized through the source pose packer. This tests transport and decoding; no controller inference ran.':'Fused SONIC reference input · token vector unavailable in this recording/config. Reference values are not semantic token labels.','neutral')}<h4>Planner selection</h4>${fact('Selection rule',p?.rule??'Unavailable','value-amber')}${fact('Plan age',num(p?.age_s,3,'s'))}${fact('Waypoint · world',p?.waypoint?`[${vector(p.waypoint,2)}] m`:'Unavailable')}${fact('Compute latency',num(p?.latency_ms,1,'ms'))}${p?.clock_basis?`<p class="tiny">Timing: ${escape(p.clock_basis)}</p>`:''}<h4>${wire?'Observed pose reference':'SONIC reference window'}</h4>${referenceDetail}<h4>Observed execution</h4>${state.frozenFrame?notice(`Replay diagnostic injection: measured state held at ${clock(m.time)}. State ${h.state_stale?'stale':'held'}; reference follows the cursor.`,'warning'):''}${fact('Root · world',hasPose(m)?`[${vector(m.position,2)}] m`:'Unavailable')}${fact('Orientation · wxyz',hasPose(m)?`[${vector(m.quaternion_wxyz,3)}]`:'Unavailable')}${fact('Joint reference RMSE',num(h.tracking_rmse_rad,3,'rad'))}<p class="tiny">Reference targets describe intent. Low-level motor targets were not captured and are not interchangeable with these values.</p>`;
+  $('intent-content').innerHTML=`<span class="eyebrow">${wire?'REFERENCE PUBLISHER → COLLECTOR':'PLANNER → SONIC'}</span><h3>What comes next</h3><p>${wire?'Real reference payloads captured by a read-only subscriber during a local transport rehearsal.':'Selected motion and the reference window supplied to the recorded controller.'}</p>${notice(wire?'Recorded reference rows were reserialized through the source pose packer. This tests transport and decoding; no controller inference ran.':'Fused SONIC reference input · token vector unavailable in this recording/config. Reference values are not semantic token labels.','neutral')}<h4>Planner selection</h4>${fact('Selection rule',p?.rule??'Unavailable','value-amber')}${fact('Plan age',num(p?.age_s,3,'s'))}${fact('Waypoint · world',p?.waypoint?`[${vector(p.waypoint,2)}] m`:'Unavailable')}${fact('Compute latency',num(p?.latency_ms,1,'ms'))}${p?.clock_basis?`<p class="tiny">Timing: ${escape(p.clock_basis)}</p>`:''}<h4>${wire?'Observed pose reference':'SONIC reference window'}</h4>${referenceDetail}<h4>Observed execution</h4>${state.frozenFrame?notice(`Replay diagnostic injection: measured state held at ${clock(m.time)}. State ${h.state_stale?'stale':'held'}; reference follows the cursor.`,'warning'):''}${fact('Root · world',hasPose(m)?`[${vector(m.position,2)}] m`:'Unavailable')}${fact('Orientation · wxyz',hasPose(m)?`[${vector(m.quaternion_wxyz,3)}]`:'Unavailable')}${fact('Joint reference RMSE',num(h.tracking_rmse_rad,3,'rad'))}<p class="tiny">${f.command?.joints?'Reference targets describe intent. Recorded SONIC PD targets are available in Joints; these are simulated commands, not DDS motor packets.':'Reference targets describe intent. Low-level motor targets were not captured and are not interchangeable with these values.'}</p>`;
 }
 
 function jointChart(index) {
@@ -304,19 +402,24 @@ function jointChart(index) {
 }
 function renderJoints() {
   const f=state.frame,m=state.measuredFrame,h=sampleHealth();
-  $('joints-content').innerHTML=`<span class="eyebrow">NAMED JOINT PARITY</span><h3>Planned vs executed</h3><p>Simulator state and selected reference. All values in radians; error = state − reference.</p>${state.frozenFrame?notice(`Replay diagnostic injection: state held at ${clock(m.time)}. ${h.state_stale?'Tracking error unavailable while stale.':'Historical chart remains unmodified.'}`,'warning'):''}<select id="joint-select" class="joint-select" aria-label="Joint to inspect">${state.session.joint_names.map((n,i)=>`<option value="${i}" ${i===state.joint?'selected':''}>${escape(n)}</option>`).join('')}</select>${jointChart(state.joint)}<div class="chart-legend"><span>Reference</span><span>Ground truth</span></div><p class="tiny">Amber cursor marks selected session time. Model indices are resolved by joint name.</p><table class="joint-table" data-testid="joint-table"><thead><tr><th>Joint</th><th>State</th><th>Ref</th><th>Error</th></tr></thead><tbody>${state.session.joint_names.map((name,i)=>`<tr><td title="${escape(name)}">${escape(name.replace('_joint',''))}</td><td>${num(m.joints?.[i],3)}</td><td>${finite(f.reference?.joints[i])?num(f.reference.joints[i],3):'—'}</td><td>${finite(f.reference?.joints?.[i])&&finite(m.joints?.[i])&&!h.state_stale?num(m.joints[i]-f.reference.joints[i],3):'—'}</td></tr>`).join('')}</tbody></table>${notice('Motor commands, gains and joint faults are unavailable in this recording. Reference error is not low-level command tracking error.','neutral')}`;
+  $('joints-content').innerHTML=`<span class="eyebrow">NAMED JOINT PARITY</span><h3>Planned vs executed</h3><p>Simulator state and selected reference. All values in radians; error = state − reference.</p>${state.frozenFrame?notice(`Replay diagnostic injection: state held at ${clock(m.time)}. ${h.state_stale?'Tracking error unavailable while stale.':'Historical chart remains unmodified.'}`,'warning'):''}<select id="joint-select" class="joint-select" aria-label="Joint to inspect">${state.session.joint_names.map((n,i)=>`<option value="${i}" ${i===state.joint?'selected':''}>${escape(n)}</option>`).join('')}</select>${jointChart(state.joint)}<div class="chart-legend"><span>Reference</span><span>Ground truth</span></div><p class="tiny">Amber cursor marks selected session time. Model indices are resolved by joint name.</p><table class="joint-table" data-testid="joint-table"><thead><tr><th>Joint</th><th>State</th><th>Ref</th><th>Error</th></tr></thead><tbody>${state.session.joint_names.map((name,i)=>`<tr><td title="${escape(name)}">${escape(name.replace('_joint',''))}</td><td>${num(m.joints?.[i],3)}</td><td>${finite(f.reference?.joints[i])?num(f.reference.joints[i],3):'—'}</td><td>${finite(f.reference?.joints?.[i])&&finite(m.joints?.[i])&&!h.state_stale?num(m.joints[i]-f.reference.joints[i],3):'—'}</td></tr>`).join('')}</tbody></table>${f.command?.joints?notice('SONIC PD targets are recorded from the CPU worker. These are simulated commanded positions; no DDS motor packets or physical joint faults are observed.','neutral'):notice('Motor commands, gains and joint faults are unavailable in this recording. Reference error is not low-level command tracking error.','neutral')}${f.command?.joints?`<h4>Recorded SONIC command targets</h4>${fact('Command tracking RMSE',num(h.command_tracking_rmse_rad,3,'rad'))}<details class="raw-details"><summary>Named target values · radians</summary><pre>${escape(JSON.stringify(Object.fromEntries(state.session.joint_names.map((name,index)=>[name,f.command.joints[index]])),null,2))}</pre></details>`:''}`;
   $('joint-select').addEventListener('change',e=>{state.joint=Number(e.target.value);renderJoints();});
 }
 function renderHealth() {
   const f=state.frame,m=state.measuredFrame,h=sampleHealth(),events=state.session.events??[];
   const recent=events.filter(e=>e.time<=state.time).slice(-8).reverse();
-  $('health-content').innerHTML=`<span class="eyebrow">RECORDED DIAGNOSTICS</span><h3>Timing & availability</h3><p>Historical metrics at the selected sample. Paused replay does not imply a disconnected controller.</p><div class="callout ${state.frozenFrame?'warning':'neutral'}"><label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame?'checked':''}> Replay diagnostic injection: hold state</label><div class="tiny">Hold one recorded state while playback/reference advances. Display stale after 100 ms. No producer or controller is stopped.</div></div>${fact('State freshness',finite(h.state_age_ms)?`${num(h.state_age_ms,1,'ms')} · ${h.state_stale?'STALE':'recording clock'}`:'Unavailable',h.state_stale?'value-amber':'')}${fact('Reference freshness',num(h.reference_age_ms,1,'ms'))}${fact('Receiver status',h.stream_status??'Unavailable')}${fact('Last observed receive rate',num(h.observed_rate_hz,1,'Hz'))}${fact('Visualization queue drops',h.queue_drops??'Unavailable')}${fact('Planner wall latency',num(h.planner_latency_ms,1,'ms'))}${fact('SONIC inference',num(h.sonic_inference_ms,2,'ms'))}${fact('Low-command freshness',num(h.lowcmd_age_ms,1,'ms'))}${fact('End-to-end latency','Unavailable')}${fact('GPU utilization',num(h.gpu_utilization,1,'%'))}${fact('Supervisor state','Unavailable at this cursor')}${fact(hasPose(m)?'State source time':'Event source time',num(m.source_time,6,'s'))}${fact('Source clock',m.source_clock_domain)}${fact('Simulator time',num(m.sim_time,3,'s'))}${fact('Receipt time',num(m.receipt_time,6,'s'))}${fact('State sequence',m.sequence)}${fact('Contact force',num(h.contact_force_n,2,'N'))}${notice('Unavailable fields stay unknown. Planner compute time is not end-to-end latency. State age is evaluated in the recording clock.','neutral')}<h4>Events up to this time</h4>${recent.length?`<ol class="event-list">${recent.map(e=>`<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>`:'<p class="unavailable">No event recorded before this cursor.</p>'}`;
+  $('health-content').innerHTML=`<span class="eyebrow">${state.session.metadata.mode==='simulation'?'CPU WORKER SAMPLE DIAGNOSTICS':'RECORDED DIAGNOSTICS'}</span><h3>Timing & availability</h3><p>${state.session.metadata.mode==='simulation'?'Actual worker samples use simulation time. Host receipt age is measured separately; CPU lockstep is not guaranteed real time.':'Historical metrics at the selected sample. Paused replay does not imply a disconnected controller.'}</p>${state.runtime?`${fact('Owned worker',state.runtime.worker_alive===true?'Running · PID '+state.runtime.worker_pid:state.runtime.worker_alive===false?'Exited':'Ownership unavailable')}${fact('Worker host',state.runtime.host)}${fact('Live telemetry receipt',state.runtime.telemetry_status??'Unavailable')}${fact('Host receipt age',num(state.runtime.telemetry_age_ms,0,'ms'))}`:''}<div class="callout ${state.frozenFrame?'warning':'neutral'}"><label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame?'checked':''}> Replay diagnostic injection: hold state</label><div class="tiny">Hold one recorded state while playback/reference advances. Display stale after 100 ms. No producer or controller is stopped.</div></div>${fact('State freshness',finite(h.state_age_ms)?`${num(h.state_age_ms,1,'ms')} · ${h.state_stale?'STALE':'recording clock'}`:'Unavailable',h.state_stale?'value-amber':'')}${fact('Reference freshness',num(h.reference_age_ms,1,'ms'))}${fact('Receiver status',h.stream_status??'Unavailable')}${fact('Last observed receive rate',num(h.observed_rate_hz,1,'Hz'))}${fact('Visualization queue drops',h.queue_drops??'Unavailable')}${fact('Planner wall latency',num(h.planner_latency_ms,1,'ms'))}${fact('SONIC inference',num(h.sonic_inference_ms,2,'ms'))}${fact('Controller step wall time',num(h.control_step_wall_ms,2,'ms'))}${fact('Command target RMSE',num(h.command_tracking_rmse_rad,3,'rad'))}${fact('Low-command freshness',num(h.lowcmd_age_ms,1,'ms'))}${fact('End-to-end latency','Unavailable')}${fact('GPU utilization',num(h.gpu_utilization,1,'%'))}${fact('Supervisor state','Unavailable at this cursor')}${fact(hasPose(m)?'State source time':'Event source time',num(m.source_time,6,'s'))}${fact('Source clock',m.source_clock_domain)}${fact('Simulator time',num(m.sim_time,3,'s'))}${fact('Receipt time',num(m.receipt_time,6,'s'))}${fact('State sequence',m.sequence)}${fact('Contact force',num(h.contact_force_n,2,'N'))}${notice('Unavailable fields stay unknown. Planner compute time is not end-to-end latency. State age is evaluated in the recording clock.','neutral')}<h4>Events up to this time</h4>${recent.length?`<ol class="event-list">${recent.map(e=>`<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>`:'<p class="unavailable">No event recorded before this cursor.</p>'}`;
   $('freeze-state').disabled=!hasPose(state.frame);
   $('freeze-state').addEventListener('change',e=>{state.frozenFrame=e.target.checked?state.frame:null;renderFrame(true);});
   bindEventSeek();
 }
 function renderPerception() {
   const p=state.session.perception;
+  if(p?.frames){
+    const sample=perceptionAt(state.time);
+    $('perception-content').innerHTML=`<span class="eyebrow">CAUSAL SIMULATED PERCEPTION</span><h3>What the planner observes</h3><p>Selected from recorded map and LiDAR samples at or before the session cursor. Unobserved grid cells remain unknown.</p>${sample?`${notice(sample.label??'Recorded simulated LiDAR and CloudMemory snapshot')}<div class="map-stats"><div><strong>${sample.observed_cells?.support?.toLocaleString()??'Unavailable'}</strong><span>OBSERVED SUPPORT CELLS</span></div><div><strong>${sample.observed_cells?.ceiling?.toLocaleString()??'Unavailable'}</strong><span>OBSERVED CEILING CELLS</span></div></div>${fact('Classification','Estimated map · simulated ray returns')}${fact('Frame',sample.frame_id)}${fact('Map sample time',num(sample.time,3,'s'))}${fact('Sensor acquisition',num(sample.sensor_capture_time,3,'s'))}${fact('Map age',num((state.time-sample.time)*1000,1,'ms'))}${fact('Sensor latency',num(sample.sensor_latency_s*1000,1,'ms'))}${fact('Sensor rate',num(sample.rate_hz,1,'Hz'))}${fact('Resolution',num(sample.resolution_m,3,'m'))}${fact('Unknown cells',sample.unknown_cells??'Unavailable')}${fact('Raw LiDAR count',sample.raw_points_count??sample.raw_lidar?.length??'Unavailable')}${fact('Filtered LiDAR count',sample.filtered_points_count??sample.filtered_lidar?.length??'Unavailable')}${fact('Self-filter removed · cumulative',sample.self_removed??'Unavailable')}${notice(sample.note??'Rendered point clouds are bounded visualization samples.','neutral')}<details class="raw-details"><summary>Sensor extrinsics and mask convention</summary><pre>${escape(JSON.stringify({extrinsics:sample.extrinsics,mask_convention:sample.mask_convention},null,2))}</pre></details>`:notice('No perception sample exists at or before this cursor.','warning')}<p>Open Sensors to attach raw LiDAR, filtered LiDAR, map layers or state to the viewport.</p>`;
+    return;
+  }
   $('perception-content').innerHTML=`<span class="eyebrow">PERCEPTION / MAPPING</span><h3>Observed space</h3><p>Recorded perception evidence. Unknown cells are left empty.</p>${p?.available?`${notice(p.label,'warning')}<div class="map-stats"><div><strong>${(p.observed_cells?.support??p.support_points?.length??0).toLocaleString()}</strong><span>OBSERVED SUPPORT CELLS</span></div><div><strong>${(p.observed_cells?.ceiling??p.ceiling_points?.length??0).toLocaleString()}</strong><span>OBSERVED CEILING CELLS</span></div></div>${fact('Classification','Estimated · accumulated map')}${fact('Grid resolution',num(p.resolution_m,3,'m'))}${fact('Unknown cells',p.unknown_cells?.toLocaleString()??'Unavailable')}${fact('Capture timestamp','Unavailable')}${fact('Time synchronization','Not available · final snapshot')}${fact('Displayed points',(p.observed_points?.length??0).toLocaleString())}${fact('Decimated',p.decimated?'Yes · bounded visualization':'No')}${notice(p.note,'neutral')}<p>Enable “Observed map snapshot” in View layers to show the final accumulated map. It does not represent perception at the timeline cursor.</p>`:notice(p?.reason??'No perception was recorded in this session.','warning')}${fact('Raw LiDAR','Unavailable')}${fact('Filtered LiDAR','Unavailable')}${fact('Sensor extrinsics','Unavailable')}${fact('Self-filter state','Unavailable')}${fact('Localization uncertainty','Unavailable')}${fact('Map update rate','Unavailable')}<p class="tiny">Simulation scene geometry is ground truth, separate from the estimated map. The ground grid is a coordinate guide; it does not imply observed free space.</p>`;
 }
 function renderGraph() {
@@ -328,7 +431,7 @@ function renderGraph() {
 
 function renderSource() {
   const m=state.session.metadata,provenance=m.provenance??{};
-  $('source-content').innerHTML=`<span class="eyebrow">REPRODUCIBLE PROVENANCE</span><h3>Source evidence</h3><a class="export-link" href="/api/export?id=${encodeURIComponent(state.sessionId)}" download>↓ Export normalized MCAP</a>${fact('Mode','Replay · read-only')}${fact('Recording',m.recording_kind)}${fact('Robot model',m.model_variant)}${fact('Backend',m.backend_id)}${fact('Clock',m.clock_domain)}${fact('Frame',m.frame_id)}${fact('Quaternion',m.quaternion_convention)}${fact('Policy',m.policy_identity)}${fact('Policy hash at capture',m.policy_hash_at_recording??'Unavailable')}${fact('Calibration identity',m.calibration_identity??'Unavailable')}${fact('Hardware validated',m.hardware_validated?'Yes':'No')}${fact('Command path enabled',m.command_path_enabled?'YES — unexpected':'No')}${fact('Adapter',provenance.adapter??'Unavailable')}<h4>Recording source</h4><pre>${escape(m.source_path)}</pre><h4>Exact model source</h4><pre>${escape(modelSpec?.source_path??m.model_path)}\nSHA-256 ${escape(modelSpec?.sha256??'Unavailable')}</pre><h4>Source artifacts</h4>${(provenance.artifacts??[]).map(a=>`<details class="raw-details"><summary>${escape(a.path.split('/').at(-1))} · ${num(a.bytes/1024,1,'KiB')}</summary><pre>${escape(a.path)}\nSHA-256 ${escape(a.sha256)}</pre></details>`).join('')}<h4>Source checkouts at read time</h4>${(provenance.repositories??[]).map(r=>`<pre>${escape(r.path)}\nHEAD ${escape(r.head_at_read)}\nDirty at read: ${r.dirty_at_read===null||r.dirty_at_read===undefined?'unknown':r.dirty_at_read?'yes':'no'}\nRevision at recording: ${escape(r.recording_revision??'not recorded')}</pre>`).join('')}<h4>Known evidence limits</h4>${(m.limitations??[]).map(text=>`<p>• ${escape(text)}</p>`).join('')}<p class="tiny">Local meshes are loaded from the referenced model. Third-party model files and recordings are not copied into this project.</p>`;
+  $('source-content').innerHTML=`<span class="eyebrow">REPRODUCIBLE PROVENANCE</span><h3>Source evidence</h3><a class="export-link" href="/api/export?id=${encodeURIComponent(state.sessionId)}" download>↓ Export normalized MCAP</a>${fact('Mode',m.mode==='simulation'?'Simulation · CPU worker observation':'Replay · read-only')}${fact('Recording',m.recording_kind)}${fact('Robot model',m.model_variant)}${fact('Backend',m.backend_id)}${fact('Clock',m.clock_domain)}${fact('Frame',m.frame_id)}${fact('Quaternion',m.quaternion_convention)}${fact('Policy',m.policy_identity)}${fact('Policy hash at capture',m.policy_hash_at_recording??'Unavailable')}${fact('Calibration identity',m.calibration_identity??'Unavailable')}${fact('Hardware validated',m.hardware_validated?'Yes':'No')}${fact('Hardware command path',m.command_path_enabled?'YES — unexpected':'No')}${fact('Adapter',provenance.adapter??'Unavailable')}<h4>Recording source</h4><pre>${escape(m.source_path)}</pre><h4>Exact model source</h4><pre>${escape(modelSpec?.source_path??m.model_path)}\nSHA-256 ${escape(modelSpec?.sha256??'Unavailable')}</pre><h4>Source artifacts</h4>${(provenance.artifacts??[]).map(a=>`<details class="raw-details"><summary>${escape(a.path.split('/').at(-1))} · ${num(a.bytes/1024,1,'KiB')}</summary><pre>${escape(a.path)}\nSHA-256 ${escape(a.sha256)}</pre></details>`).join('')}<h4>Source checkouts at read time</h4>${(provenance.repositories??[]).map(r=>`<pre>${escape(r.path)}\nHEAD ${escape(r.head_at_read)}\nDirty at read: ${r.dirty_at_read===null||r.dirty_at_read===undefined?'unknown':r.dirty_at_read?'yes':'no'}\nRevision at recording: ${escape(r.recording_revision??'not recorded')}</pre>`).join('')}<h4>Known evidence limits</h4>${(m.limitations??[]).map(text=>`<p>• ${escape(text)}</p>`).join('')}<p class="tiny">Local meshes are loaded from the referenced model. Third-party model files and recordings are not copied into this project.</p>`;
 }
 function bindEventSeek() { document.querySelectorAll('[data-seek]').forEach(el=>el.addEventListener('click',()=>{setPlaying(false);seek(Number(el.dataset.seek));})); }
 
@@ -339,7 +442,7 @@ async function loadSession(id) {
     const session=await json(`/api/session?id=${encodeURIComponent(id)}`);
     if(generation!==state.loadGeneration)return;
     if(session.schema_version!==1||!session.frames?.length)throw new Error('Unsupported or empty recording. Expected telemetry schema v1.');
-    state.session=session;state.sessionId=id;state.time=0;state.frameIndex=-1;state.frame=null;state.measuredFrame=null;state.frozenFrame=null;state.joint=0;
+    state.session=session;state.sessionId=id;state.time=session.frames[0].time;state.frameIndex=-1;state.frame=null;state.measuredFrame=null;state.frozenFrame=null;state.joint=0;state.runtime=null;
     const m=session.metadata;
     const wire=m.recording_kind==='recorded-wire-transport';
     $('session-title').textContent=m.title;
@@ -347,10 +450,11 @@ async function loadSession(id) {
     $('model-value').textContent=m.model_variant;
     $('clock-value').textContent=m.clock_domain;
     $('frames-value').textContent=`${session.frames.length.toLocaleString()} decoded`;
-    $('recording-kind').textContent=wire?'Recorded ZMQ telemetry. Real pose packets and receiver status; policy execution is not observed.':m.recording_kind==='sonic-mujoco-lockstep'?'Recorded MuJoCo + SONIC lockstep. In-process rehearsal, with actual reference data.':'Recorded C++ / DDS rehearsal. Separate processes; reference packets were not captured.';
+    $('recording-kind').textContent=m.mode==='simulation'?'Fresh CPU MuJoCo + SONIC simulation. Observing the actual local worker; no DDS or robot connection.':wire?'Recorded ZMQ telemetry. Real pose packets and receiver status; policy execution is not observed.':m.recording_kind==='sonic-mujoco-lockstep'?'Recorded MuJoCo + SONIC lockstep. In-process rehearsal, with actual reference data.':'Recorded C++ / DDS rehearsal. Separate processes; reference packets were not captured.';
     $('world-frame').textContent=hasPose(session.frames[0])?m.frame_id:'frame unverified';
     $('footer-source').textContent=m.source_path;
-    $('timeline').max=String(m.duration_s);$('timeline').value='0';
+    $('timeline').min=String(session.frames[0].time);$('timeline').max=String(m.duration_s);$('timeline').value=String(state.time);
+    document.querySelector('.timeline-ticks>span').textContent=clock(session.frames[0].time);
     $('timeline-middle').textContent=clock(m.duration_s/2);$('timeline-end').textContent=$('duration-time').textContent=clock(m.duration_s);
     const events=session.events??[];
     $('event-rail').innerHTML=events.filter((_,i)=>i%Math.max(1,Math.ceil(events.length/200))===0).filter(e=>e.time>=0&&e.time<=m.duration_s).map(e=>`<button class="event-marker" data-seek="${e.time}" style="left:${e.time/m.duration_s*100}%" title="${escape(`${clock(e.time)} · ${e.message}`)}" aria-label="${escape(`Seek event ${e.message} at ${clock(e.time)}`)}"></button>`).join('');bindEventSeek();
@@ -362,7 +466,8 @@ async function loadSession(id) {
     $('layer-perception').disabled=!session.perception?.available;$('layer-perception').checked=false;
     renderFrame(true);await loadScene(session,id,generation);
     if(generation!==state.loadGeneration)return;
-    window.__studio={get state(){return state;},get model(){return modelSpec;},get robot(){return robot;},seek,selectTab};
+    window.__studio={get state(){return state;},get model(){return modelSpec;},get robot(){return robot;},get mapSample(){return mapSample;},get sensorOverlayCount(){return sensorOverlays.size;},seek,selectTab,setPlaying,loadSession,cameraView,setPreparationMode,showPreparationMap,setPreparationGoal,pickPreparationGoal,updateLayers,setSensorOverlay,removeSensorOverlay,appendLiveFrame};
+    window.dispatchEvent(new CustomEvent('studio:session',{detail:{session,id}}));
     const url=new URL(window.location);url.searchParams.set('session',id);history.replaceState({},'',url);
   } catch(e) {if(generation===state.loadGeneration){$('loading-overlay').hidden=true;error(`Cannot open this recording: ${e.message}`);console.error(e);}}
 }
@@ -379,6 +484,7 @@ function tick(now) {
 }
 async function initialize() {
   try{initializeScene();}catch(e){error(`3D renderer could not start: ${e.message}`);$('loading-overlay').hidden=true;return;}
+  initializeWorkbench();
   $('session-picker').addEventListener('change',e=>loadSession(e.target.value));
   $('play').addEventListener('click',()=>{if(!state.session)return;if(state.time>=state.session.metadata.duration_s)seek(0);setPlaying(!state.playing);});
   $('restart').addEventListener('click',()=>{if(state.session){setPlaying(false);seek(0);}});

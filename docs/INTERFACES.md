@@ -11,8 +11,8 @@ Inspected 2026-10-15 against the local files below. Reference checker passed; cu
 | `pose` | One message: `pose` + exactly 1280 bytes null-padded JSON + little-endian arrays | Requested motion; joints in IsaacLab order, pelvis quaternion wxyz; no root position | Actual Flow packer parity, real recorded references repacked, exact named-joint comparisons |
 | `g1_debug` | One message: `g1_debug` + msgpack map; no protocol version on wire | Measured joints, reference targets, scaled last policy action, optional encoder vector | Source inspection plus explicitly synthetic protocol fixtures; no fresh C++ packet captured |
 | `robot_config` | One message: `robot_config` + msgpack map | Runner configuration, no source timestamp | Source inspection and fixture decoding |
-| `cloud` | Flow packed v1 header + `points[N,3]`, `origin[3]`, `stamp[1]` | Source world/frame/type requires confirmation | Actual source packer parity; deterministic stride decimation to at most 5000 points |
-| `odom` | Flow packed v1 header + `pos[3]`, `quat_wxyz[4]`, other optional fields, `stamp[1]` | Source world/frame/type requires confirmation | Actual source packer parity; no live LIO runtime exercised |
+| `cloud` | Flow packed v1 header + `points[N,3]`, `origin[3]`, `stamp[1]` | Source world/frame/type and clock domain require confirmation | Actual source packer parity; deterministic stride decimation to at most 5000 points |
+| `odom` | Flow packed v1 header + `pos[3]`, `quat_wxyz[4]`, other optional fields, `stamp[1]` | Source world/frame/type and clock domain require confirmation | Actual source packer parity; no live LIO runtime exercised |
 
 Malformed framing, unsupported versions/endian/dtypes, duplicate field names, nonfinite numeric arrays, invalid joint counts, bad quaternions, oversized packets, invalid dimensions and trailing bytes fail decoding. No packet is promoted to a healthy default. The decoder accepts the verified **Flow** v1 subset; the C++ generic packed reader supports more field variants which are not claimed here.
 
@@ -41,6 +41,7 @@ The selected smoke `closed_loop.npz` stores `references[T,10,67]`: joints `[0:29
 6. `pose.frame_index` identifies requested motion frames. Chunks overlap and may trigger catch-up/reset, so these indices are not packet sequence numbers. Drop count and active playback position remain unavailable from this stream alone.
 7. The ROS LIO bridge sends `time.monotonic()` at forwarding/filter time, not the original sensor header timestamp. It also emits an all-zero `ang_w` placeholder. Raw fields are retained, with no claim of measured zero angular velocity or true sensor-to-control latency.
 8. `g1_debug` source comments describe older field counts; the current writer also packs `motor_temperature`. The decoder preserves extra fields rather than trusting the introductory table.
+9. `cloud.stamp` is **simulation time** in `sim/realtime/robot_sim.py`, while the ROS LIO bridge uses **host-monotonic forwarding time** for `cloud.stamp` and `odom.stamp`. The packed schema carries no clock-domain tag. The decoder preserves the numeric stamp but returns `source_clock: "unknown"` for both topics, even when an optional `wall` field exists. Timestamp magnitude does not identify the source clock. Collector receipt time remains explicitly `collector_host_monotonic`; no source-to-receipt latency is inferred. A future source-specific adapter must supply verified producer attribution and clock alignment before overriding this unknown domain. `pose.timestamp_monotonic` has an explicit field meaning and retains its separate source-host-monotonic contract; it is still not aligned to the collector by assumption.
 
 ## Recording and communication diagnostics
 

@@ -2,6 +2,18 @@
 
 Scope: local, read-only replay cockpit first; integrations consume telemetry. No hardware access or external publication.
 
+## Simulation workbench extension (delivered and exercised)
+
+1. Add a local map/scenario catalog with bounded JSON imports, explicit world coordinates, start/goal validation, and reproducible Flow/SONIC test settings. Scans remain observed data; they do not imply collision geometry or known free space.
+2. Run the actual reference CPU Flow planner + SONIC ONNX + MuJoCo backend in one owned subprocess with bounded duration, resources and output. Report this as in-process simulation, not C++/DDS deployment parity. Preserve all reference repositories and environments.
+3. Stream actual sampled state, policy targets, timing and consumed simulated perception from the owned run. Save the final session for the existing replay cockpit. Browser lifetime never controls worker lifetime.
+4. Add a sensor inventory and pinnable sensor views for recorded/live simulated data, with causal timestamps and explicit unavailable physical camera/IMU/hardware streams. Integrate preparation map/goal picking, test status and result loading into the browser.
+5. Exercise a real short CPU run, API boundaries, goal/map checks, fresh/stale handling and browser controls; document evidence and remaining full DDS/hardware gaps, then commit locally.
+
+Delivered: the connected preparation, CPU policy-testing and sensor workspace. All 88 unit/integration tests and 25 browser checks passed. Fresh runs verified actual source state/reference parity, live measured timing, causal perception, saved scenario/result recovery, duplicate-worker exclusion, browser disconnect and owned-worker stale/cancel behavior. The frozen CPU backend is distinct from full C++/DDS rehearsal; scanned-world reconstruction, additional policy bundles and physical sensor collectors remain open. Exact evidence is in `docs/ACCEPTANCE.md`.
+
+## Original replay slice
+
 1. Inspect actual source and explicitly identified rehearsal artifacts. Verify reference framing, joint names, clock alignment, model identity, and observable SONIC fields.
 2. Implement bounded, versioned replay adapters for a real recorded MuJoCo/SONIC lockstep run and a separate recorded C++/DDS rehearsal. Preserve their different evidence claims. Render the matching local G1 model without committing vendor assets.
 3. Build a synchronized browser cockpit with reference ghost/window, joints, planner latency, perception availability, timeline and provenance. Expose configured topology separately from recorded/runtime observations.
