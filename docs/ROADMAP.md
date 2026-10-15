@@ -1,5 +1,14 @@
 # Delivery roadmap
 
+## Current implementation status (2026-10-15)
+
+- M1 implemented: actual recorded lockstep SONIC replay, matching articulated model, reference ghost/window, synchronized timeline, named-joint errors, planner latency, source hashes, and MCAP roundtrip. A second recording exercises the historical separated C++/DDS process chain with explicit missing-reference limitations.
+- Parts of M2/M3 implemented: bounded loopback-only ZMQ capture and actual-source binary decoders; real recorded values transmitted/recorded and opened in the browser with observed fresh → stale → disconnected transitions; final map snapshot, configured topology and unavailable-metric handling.
+- New full C++/DDS rehearsal blocked: source hard-codes domain 0, and NVML reports driver/library mismatch. No upstream edits or new full controller run performed. Runtime ROS/DDS discovery, synchronized raw LiDAR history and new full deployment captures remain open.
+- Live read-only bring-up is documented, not enabled or hardware validated.
+
+See `docs/ACCEPTANCE.md` for executable evidence. The original sequence below remains a roadmap, not a claim that all milestones passed.
+
 ## M0 — reference/bootstrap (this commit)
 Local Git repository, verified path/HEAD inventory, pipeline/safety rules and tested read-only reference checker. No dashboard, ROS installation or simulator launch.
 

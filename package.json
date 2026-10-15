@@ -1,0 +1,9 @@
+{
+  "name": "g1-deploy-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"test:browser": "node tools/browser_acceptance.mjs"},
+  "dependencies": {"three": "0.180.0"},
+  "devDependencies": {"@playwright/test": "1.61.1"}
+}

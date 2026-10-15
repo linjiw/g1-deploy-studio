@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>G1 Deploy Studio · Replay cockpit</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315232b'/%3E%3Ctext x='4' y='23' fill='%2356d9d0' font-size='20' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="G1 Deploy Studio home"><span class="brand-icon">G1</span><span>Deploy <strong>Studio</strong><small>ROBOTICS / REHEARSAL WORKSPACE</small></span></a>
+    <div class="session-select"><label for="session-picker">RECORDING</label><select id="session-picker" aria-label="Select recorded session" data-testid="session-select"><option>Loading recordings…</option></select></div>
+    <div class="header-status"><span class="badge amber">◷ REPLAY</span><span class="read-only">◈ Read-only consumer</span></div>
+  </header>
+
+  <div id="error-banner" class="error-banner" role="alert" hidden></div>
+  <main class="workspace">
+    <aside class="left-panel panel">
+      <div class="section-label">WORKSPACE <span>01</span></div>
+      <h1>Deployment<br>rehearsal</h1>
+      <p class="intro">Inspect the motion.<br>Understand the pipeline.</p>
+      <div class="divider"></div>
+      <div class="section-label" id="active-session-label">ACTIVE SESSION</div>
+      <h2 id="session-title">Opening recording</h2>
+      <div class="fact"><span>Backend</span><strong id="backend-value">Unavailable</strong></div>
+      <div class="fact"><span>Robot</span><strong id="model-value">Unavailable</strong></div>
+      <div class="fact"><span>Clock</span><strong id="clock-value">Unavailable</strong></div>
+      <div class="fact"><span>Frames</span><strong id="frames-value">—</strong></div>
+      <p class="source-note" id="recording-kind">Reading source provenance…</p>
+      <div class="divider"></div>
+      <div class="section-label">CAMERA</div>
+      <div class="segmented cameras" role="group" aria-label="Camera view">
+        <button id="camera-orbit" class="active" data-camera="orbit" aria-pressed="true">Orbit</button><button id="camera-follow" data-camera="follow" aria-pressed="false">Follow</button><button id="camera-top" data-camera="top" aria-pressed="false">Top</button>
+      </div>
+      <div class="section-label layer-heading">VIEW LAYERS</div>
+      <div class="layers">
+        <label><input id="layer-robot" type="checkbox" checked><span class="layer-dot bone"></span>Robot ground truth</label>
+        <label><input id="layer-reference" type="checkbox" checked><span class="layer-dot cyan"></span>Reference ghost</label>
+        <label><input id="layer-future" type="checkbox" checked><span class="layer-dot amber-dot"></span>Predicted motion</label>
+        <label><input id="layer-trajectory" type="checkbox" checked><span class="layer-dot slate"></span>Full recorded trajectory</label>
+        <label><input id="layer-environment" type="checkbox" checked><span class="layer-dot purple"></span>Simulation scene</label>
+        <label><input id="layer-perception" type="checkbox"><span class="layer-dot green"></span>Observed map snapshot</label>
+        <label><input id="layer-frames" type="checkbox" checked><span class="layer-dot axis"></span>Coordinate frames</label>
+      </div>
+      <div class="boundary-note"><span class="lock-mark">◇</span><div><strong>Observation only</strong><p>No motor publisher. No robot connection. Playback cannot actuate hardware.</p></div></div>
+    </aside>
+
+    <section class="center-panel" aria-label="Synchronized robot scene and playback">
+      <div class="viewport-shell">
+        <div class="viewport-top"><div><span class="eyebrow">DIGITAL TWIN</span><h2>Motion workspace <span id="world-frame">world</span></h2></div><span id="source-badge" class="badge ground-truth">SIMULATOR GROUND TRUTH</span></div>
+        <div id="viewport" data-testid="viewport" aria-label="Interactive G1 digital twin"></div>
+        <div id="loading-overlay" class="loading-overlay"><div class="loader"></div><span>Decoding recorded robot state…</span></div>
+        <div id="scene-unavailable" class="scene-unavailable" hidden><span>◇</span><h3>World pose was not captured</h3><p>This transport recording contains real reference values and receiver observations. Inspect Intent, Joints and Graph for available data.</p><small>No root pose is inferred from reference joint values.</small></div>
+        <div class="viewport-meta"><span id="pose-caption">Pose unavailable</span><span id="reference-caption">Reference unavailable</span></div>
+        <div class="scene-help">Drag to orbit <span>·</span> Scroll to zoom <span>·</span> Right-drag to pan</div>
+        <div class="scene-scale"><span></span>metres · Z up</div>
+      </div>
+
+      <div class="metric-strip" aria-label="Metrics at the selected time">
+        <div><span>STATE AGE</span><strong id="metric-state">—</strong><small id="metric-state-note">Unavailable</small></div>
+        <div><span>REFERENCE AGE</span><strong id="metric-reference">—</strong><small id="metric-reference-note">Unavailable</small></div>
+        <div><span>PLANNER LATENCY</span><strong id="metric-latency">—</strong><small>Recorded planner wall time</small></div>
+        <div><span>JOINT TRACKING RMSE</span><strong id="metric-tracking">—</strong><small>Pose vs reference, radians</small></div>
+      </div>
+
+      <section class="timeline-panel panel" aria-label="Session playback">
+        <div class="timeline-heading"><span class="section-label">SESSION TIMELINE</span><span id="frame-counter">Frame — / —</span><span class="badge subtle" id="playback-state">PAUSED</span></div>
+        <div class="event-rail" id="event-rail" aria-label="Recorded events"></div>
+        <input id="timeline" data-testid="timeline" type="range" min="0" max="1" value="0" step="0.001" aria-label="Seek session time">
+        <div class="timeline-ticks"><span>00:00.000</span><span id="timeline-middle">—</span><span id="timeline-end">—</span></div>
+        <div class="playback-controls"><button class="icon-button" id="restart" aria-label="Restart playback" title="Restart">↤</button><button class="play-button" id="play" data-testid="play" aria-label="Play recording">▶ <span>Play</span></button><div class="time-readout"><strong id="current-time" data-testid="current-time">00:00.000</strong><span>/ <span id="duration-time">—</span></span></div><label class="speed-label" for="speed">Speed <select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label></div>
+      </section>
+    </section>
+
+    <aside class="inspector panel" aria-label="Deployment inspector">
+      <div class="inspector-heading"><span class="section-label">DEPLOYMENT INSPECTOR</span><span class="status-dot"></span></div>
+      <div class="tabs" role="tablist" aria-label="Inspector views"><button role="tab" id="tab-intent" aria-controls="panel-intent" aria-selected="true" class="active" data-tab="intent">Intent</button><button role="tab" id="tab-joints" aria-controls="panel-joints" aria-selected="false" data-tab="joints">Joints</button><button role="tab" id="tab-health" aria-controls="panel-health" aria-selected="false" data-tab="health">Health</button><button role="tab" id="tab-perception" aria-controls="panel-perception" aria-selected="false" data-tab="perception">Map</button><button role="tab" id="tab-graph" aria-controls="panel-graph" aria-selected="false" data-tab="graph">Graph</button><button role="tab" id="tab-source" aria-controls="panel-source" aria-selected="false" data-tab="source">Source</button></div>
+      <div class="inspector-content">
+        <section role="tabpanel" id="panel-intent" aria-labelledby="tab-intent"><div id="intent-content"></div></section>
+        <section role="tabpanel" id="panel-joints" aria-labelledby="tab-joints" hidden><div id="joints-content"></div></section>
+        <section role="tabpanel" id="panel-health" aria-labelledby="tab-health" hidden><div id="health-content"></div></section>
+        <section role="tabpanel" id="panel-perception" aria-labelledby="tab-perception" hidden><div id="perception-content"></div></section>
+        <section role="tabpanel" id="panel-graph" aria-labelledby="tab-graph" hidden><div id="graph-content"></div></section>
+        <section role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden><div id="source-content"></div></section>
+      </div>
+      <div class="inspector-footer"><span id="inspector-time">SYNCHRONIZED · 00:00.000</span><span>v1</span></div>
+    </aside>
+  </main>
+  <footer class="app-footer"><span><i></i> LOCAL REPLAY · LOOPBACK ONLY</span><span id="footer-source">Source verification pending</span><span>G1 DEPLOY STUDIO</span></footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
