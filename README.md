@@ -26,6 +26,8 @@ The recording selector opens three explicitly selected local sources without cop
 
 Use play/pause, seek and speed to inspect the same session clock across panels. Orbit, Follow and Top cameras and layer switches control the digital twin. The inspector contains intent, joint errors, health, configured communication topology, and source fingerprints. Missing metrics remain unavailable. Simulation truth is never labelled physical measurement.
 
+To open the longer rehearsal with the Health panel, map overlay and playback already enabled, use `http://127.0.0.1:8790/?session=sonic-dds-tutorial&panel=health&map=1&play=1`. These optional view parameters apply after the recording loads; they affect only browser replay. The map remains an explicitly labelled final accumulated snapshot. Normal session links start paused.
+
 `config/sessions.json` registers the demonstrated paths. For a different local recording, create ignored `config/local.json` with the same `sessions` structure and run:
 
 ```bash

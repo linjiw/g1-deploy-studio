@@ -393,9 +393,18 @@ async function initialize() {
     const {sessions}=await json('/api/sessions');
     if(!sessions?.length)throw new Error('No recordings configured. See the local configuration instructions.');
     $('session-picker').innerHTML=sessions.map(s=>`<option value="${escape(s.id)}">${escape(s.label??s.title??s.id)}</option>`).join('');
-    const requested=new URLSearchParams(location.search).get('session');
+    const view=new URLSearchParams(location.search);
+    const requested=view.get('session');
     const selected=sessions.some(s=>s.id===requested)?requested:sessions[0].id;
     $('session-picker').value=selected;await loadSession(selected);
+    // Explicit replay-view links configure only this browser after data/model
+    // loading succeeds. They never start a producer or change recorded data.
+    if(state.sessionId!==selected||!$('loading-overlay').hidden||!$('error-banner').hidden)return;
+    if(requested&&requested!==selected)return;
+    const panel=view.get('panel');
+    if([...document.querySelectorAll('[data-tab]')].some(button=>button.dataset.tab===panel))selectTab(panel);
+    if(view.get('map')==='1'&&!$('layer-perception').disabled){$('layer-perception').checked=true;updateLayers();}
+    if(view.get('play')==='1')setPlaying(true);
   }catch(e){error(e.message);$('loading-overlay').hidden=true;}
 }
 initialize();
