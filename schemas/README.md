@@ -1,6 +1,6 @@
 # Telemetry schemas
-Define versioned message contracts per docs/ARCHITECTURE.md before implementing producers. This directory currently contains no production schema.
-# Implemented v1 replay contract
+
+## Implemented v1 replay contract
 
 `telemetry-v1.schema.json` describes the normalized replay envelope. The Python adapters additionally enforce finite values, quaternion validity, exact source shapes, monotonic clocks, recorded sample alignment, named joint mapping, and input-size bounds. Each session retains artifact fingerprints and source checkout provenance; a current checkout revision is never represented as the historical recording revision.
 
