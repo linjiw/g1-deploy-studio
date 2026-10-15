@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "note": "Observed local references; not clean-tree guarantees or immutable dependency locks. No credentials or remote URLs.",
+  "repositories": [
+    {
+      "id": "flow_deploy",
+      "path": "/home/linjiw/code/g1-student-deploy",
+      "observed_head": "df53fd02d153759746779cc6674a8644a0faf757",
+      "required_paths": [
+        "README.md",
+        "g1deploy/node.py",
+        "g1deploy/contract.py",
+        "g1deploy/zmq_stream.py",
+        "g1deploy/adapters/ros2_lio_bridge.py",
+        "sim/realtime/rehearse.py",
+        "docs/HARDWARE.md",
+        "docs/READINESS.md"
+      ]
+    },
+    {
+      "id": "sonic_runner",
+      "path": "/home/linjiw/lucid-sonic/lucid-g1-deploy",
+      "observed_head": "e994a9857add86dbba086aa90e41b7dee3bebb94",
+      "required_paths": [
+        "README.md",
+        "runner/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp",
+        "runner/src/g1/g1_deploy_onnx_ref/include/output_interface/zmq_output_handler.hpp",
+        "runner/src/g1/g1_deploy_onnx_ref/include/output_interface/ros2_output_handler.hpp",
+        "runner/thirdparty/unitree_sdk2",
+        "sdk/unitree_sdk2py",
+        "sim/gear_sonic_sim/unitree_sdk2py_bridge.py",
+        "docs/ETHERNET_AND_SDK.md",
+        "docs/HARDWARE_RUNS.md"
+      ]
+    },
+    {
+      "id": "grandloco_deploy",
+      "path": "/home/linjiw/newton-terrain/deploy_g1",
+      "observed_head": null,
+      "required_paths": [
+        "README.md",
+        "runner.py",
+        "policy_io.py",
+        "sim_g1.py",
+        "mapping_node.py",
+        "msgs.py",
+        "third_party/unitree_sdk2_python",
+        "third_party/unitree_mujoco",
+        "third_party/unitree_rl_gym"
+      ]
+    },
+    {
+      "id": "sonic_backend",
+      "path": "/home/linjiw/groot-wbc-sonic-sim-trackb",
+      "observed_head": "305d83c0a79e4c74bfc1a78d79613b13ef728517",
+      "required_paths": [
+        "gear_sonic_deploy",
+        "external_dependencies/unitree_sdk2_python"
+      ]
+    },
+    {
+      "id": "flow",
+      "path": "/home/linjiw/flow",
+      "observed_head": "9bd50c205b26ab03160a930002f7a11965c98fe8",
+      "required_paths": [
+        "research/CLOSED_LOOP_TEACHER_RESULT.md",
+        "research/ROUND_AV_PLAN.md",
+        "src/motion2scene_flow"
+      ]
+    },
+    {
+      "id": "grandloco_snapshot",
+      "path": "/home/linjiw/g1-grandloco",
+      "observed_head": "96920e82f65c81eb5a4a2c8e188c0268a29e459b",
+      "required_paths": [
+        "docs/research_log/LEDGER.md"
+      ]
+    },
+    {
+      "id": "sonic_sgs",
+      "path": "/home/linjiw/code/sonic-sgs-planner",
+      "observed_head": null,
+      "required_paths": [
+        "research/STATUS.md",
+        "research/TWO_STAGE_DESIGN.md"
+      ]
+    }
+  ]
+}
