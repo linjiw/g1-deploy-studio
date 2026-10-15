@@ -14,7 +14,9 @@ npm ci
 .venv/bin/python -m studio.server
 ```
 
-Open **http://127.0.0.1:8790**. Port 8765 was already occupied on this host and is left alone. The gateway refuses public binding and cross-origin telemetry requests. Remote access requires an authenticated tunnel; it is not a public service.
+Open **http://127.0.0.1:8790**. Keep the server process running while using the cockpit. Port 8765 was already occupied on this host and is left alone. The gateway listens on IPv4 and IPv6 loopback, refuses public binding and cross-origin telemetry requests, and supports a different browser port supplied by an authenticated desktop/SSH tunnel.
+
+When using a remote workspace, open the server URL in the desktop browser; its forwarded `localhost` port may differ from `8790`. Do not start another server on that forwarded port. If a previous tab has a failed connection, reopen the server URL after starting the gateway. An HTTP 403 with `Loopback Host required` means an incompatible Host header reached the gateway; arbitrary public hosts remain intentionally rejected.
 
 The recording selector opens three explicitly selected local sources without copying their trees:
 
@@ -61,6 +63,8 @@ python3 tools/check_references.py
 .venv/bin/python -m unittest discover -s tests -v
 # With the cockpit running:
 npm run test:browser
+# Repeat through a loopback tunnel preserving the browser's different Host port:
+npm run test:browser:forwarded
 # Real recorded values → actual source serializer → owned random-loopback ZMQ → decoder:
 .venv/bin/python tools/accept_wire.py --output-dir /absolute/data/root/new-wire-evidence
 ```

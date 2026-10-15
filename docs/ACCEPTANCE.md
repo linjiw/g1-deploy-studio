@@ -11,7 +11,22 @@ cd /home/linjiw/code/g1-deploy-studio
 .venv/bin/python -m studio.server
 ```
 
-Browser: **http://127.0.0.1:8790**. The QA server is temporary; this command starts your own session. Initial setup on another checkout is documented in README. Port 8765 was already occupied and was not disturbed.
+Browser: **http://127.0.0.1:8790**. Keep this process running while using the cockpit. The server was restarted and left running for interactive review after the forwarded-browser fix below. Initial setup on another checkout is documented in README. Port 8765 was already occupied and was not disturbed.
+
+### Forwarded-browser connection fix
+
+The desktop browser used a different local port, `localhost:64842`. Gateway logs showed those navigations reaching the server and receiving HTTP 403: the original Host guard required the backend port. Direct-host browser acceptance did not cover this case. A preserved-Host TCP forwarding regression reproduced the 403 before the fix.
+
+The gateway now accepts only the literal loopback authorities `localhost`, `127.0.0.1`, and `[::1]`, with valid browser-side ports. Any Origin must match that incoming authority exactly. Foreign hosts/origins, duplicate headers and cross-site fetches remain rejected. Startup binds separate IPv4 and IPv6 loopback sockets; no public listener or hardware interface is enabled. Request overload returns HTTP 503 instead of silently closing the connection.
+
+Connection-fix verification: **51 unit/integration tests passed**, then **13 full browser checks passed through a loopback TCP forwarder preserving the browser's different Host port and connecting to the IPv6 backend**. This covers actual replay decoding/rendering, timeline, layers, camera modes, session switching, maps, joint parity, unavailable/stale telemetry and browser disconnect behavior. This automated tunnel test is separate from confirmation that the user's desktop tab displays the page.
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+STUDIO_URL='http://[::1]:8790' npm run test:browser:forwarded
+```
+
+Evidence outside Git: `/home/linjiw/research-data/g1-deploy-studio/evidence/connection-unit-tests.txt`, `browser-forwarded/browser-failure.json` (before), and `browser-forwarded-fixed/browser-acceptance.json` plus screenshots (after).
 
 The default recording is **SONIC · recorded lockstep rehearsal**. Select **SONIC · recorded C++ / DDS tutorial** for the separate-process historical recording and final map; select **ZMQ · observed transport diagnostics** for the newly captured reference receiver timeline. Direct links use `?session=sonic-lockstep`, `?session=sonic-dds-tutorial`, and `?session=wire-local`.
 

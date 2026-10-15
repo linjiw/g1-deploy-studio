@@ -7,6 +7,7 @@ import json
 import mimetypes
 from pathlib import Path
 import re
+import socket
 import threading
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -75,14 +76,30 @@ class Gateway(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address, catalog):
-        if address[0] != "127.0.0.1":
-            raise ValueError("Replay gateway binds only 127.0.0.1; use an authenticated SSH tunnel")
+        if address[0] not in {"127.0.0.1", "::1"}:
+            raise ValueError("Replay gateway binds only literal loopback addresses; use an authenticated SSH tunnel")
+        self.address_family = socket.AF_INET6 if address[0] == "::1" else socket.AF_INET
         self.catalog = catalog
         self.slots = threading.BoundedSemaphore(12)
         super().__init__(address, Handler)
 
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            # An explicit IPv6 loopback listener, never a wildcard or dual-stack bind.
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        super().server_bind()
+
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
+            # A bounded, small response explains overload instead of resetting the
+            # tunnel's TCP connection without an HTTP response.
+            try:
+                request.settimeout(0.1)
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\n"
+                                b"Content-Length: 0\r\nRetry-After: 1\r\n"
+                                b"Connection: close\r\n\r\n")
+            except OSError:
+                pass
             request.close()
             return
         super().process_request(request, client_address)
@@ -92,6 +109,25 @@ class Gateway(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self.slots.release()
+
+
+def loopback_gateways(port, catalog):
+    """Bind both localhost families or fail without leaving a partial service."""
+    ipv4 = Gateway(("127.0.0.1", port), catalog)
+    try:
+        ipv6 = Gateway(("::1", ipv4.server_port), catalog)
+    except Exception:
+        ipv4.server_close()
+        raise
+    return [ipv4, ipv6]
+
+
+def loopback_authority(authority):
+    """Accept only local authorities, including a tunnel's different local port."""
+    if not isinstance(authority, str):
+        return False
+    match = re.fullmatch(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::([1-9][0-9]{0,4}))?", authority)
+    return bool(match and (match[1] is None or int(match[1]) <= 65535))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -126,11 +162,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Reject cross-site fetches and DNS rebinding even on a loopback listener.
-        expected = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
-        if self.headers.get("Host") not in expected:
+        # SSH/app forwarding can preserve the browser's local authority, whose
+        # port need not equal the backend port. Never trust arbitrary hostnames
+        # or X-Forwarded-* headers to establish that local boundary.
+        hosts = self.headers.get_all("Host", [])
+        if len(hosts) != 1 or not loopback_authority(hosts[0]):
             return self.respond({"error": "Loopback Host required"}, status=403)
-        origin = self.headers.get("Origin")
-        if origin and origin not in {f"http://{h}" for h in expected}:
+        origins = self.headers.get_all("Origin", [])
+        if len(origins) > 1 or (origins and origins[0] != f"http://{hosts[0]}"):
             return self.respond({"error": "Cross-origin telemetry access denied"}, status=403)
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
             return self.respond({"error": "Cross-site access denied"}, status=403)
@@ -143,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(catalog.listing())
             if path == "/api/safety":
                 return self.respond({"mode": "replay", "hardware_enabled": False, "publishers": [],
-                                     "dds_participants": 0, "binding": "127.0.0.1", "read_only": True})
+                                     "dds_participants": 0, "binding": self.server.server_address[0], "read_only": True})
             if path in ("/api/session", "/api/model", "/api/kinematics", "/api/export"):
                 key = query.get("id", [next(iter(catalog.entries))])[0]
                 if path == "/api/session":
@@ -192,14 +231,21 @@ def main():
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--config", type=Path, default=ROOT / "config/sessions.json")
     args = parser.parse_args()
-    server = Gateway(("127.0.0.1", args.port), Catalog(args.config))
-    print(f"G1 Deploy Studio: http://127.0.0.1:{server.server_port}  [REPLAY / READ ONLY]", flush=True)
+    servers = loopback_gateways(args.port, Catalog(args.config))
+    ipv4, ipv6 = servers
+    worker = threading.Thread(target=ipv6.serve_forever, daemon=True)
+    worker.start()
+    print(f"G1 Deploy Studio: http://127.0.0.1:{ipv4.server_port}  "
+          f"[REPLAY / READ ONLY; IPv4 + IPv6 loopback]", flush=True)
     try:
-        server.serve_forever()
+        ipv4.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
+        ipv4.server_close()
+        ipv6.shutdown()
+        ipv6.server_close()
+        worker.join()
 
 
 if __name__ == "__main__":

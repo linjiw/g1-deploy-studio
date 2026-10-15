@@ -1,11 +1,12 @@
 import http.client
 import json
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import unittest
 
-from studio.server import Catalog, Gateway
+from studio.server import Catalog, Gateway, loopback_gateways
 
 
 class ServerBoundaryTests(unittest.TestCase):
@@ -50,8 +51,93 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertEqual(self.get('/api/session?id=missing')[0], 422)
 
     def test_fails_closed_on_public_binding(self):
-        with self.assertRaises(ValueError):
-            Gateway(('0.0.0.0', 0), self.server.catalog)
+        for host in ['0.0.0.0', '::', 'localhost', '192.0.2.1']:
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                Gateway((host, 0), self.server.catalog)
+
+    def test_forwarded_local_authority_and_matching_origin(self):
+        for host in ['localhost:64842', '127.0.0.1:64842', '[::1]:64842', 'localhost']:
+            with self.subTest(host=host):
+                status, body = self.get('/api/safety', {'Host': host, 'Origin': 'http://' + host})
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(body)['read_only'])
+                self.assertEqual(self.get('/', {'Host': host})[0], 200)
+
+    def test_forwarded_authority_does_not_relax_origin_boundary(self):
+        invalid_hosts = ['attacker.invalid:64842', 'localhost.attacker.invalid:64842',
+                         '127.0.0.1.attacker.invalid:64842', 'user@localhost:64842',
+                         'localhost:65536', 'localhost:0', 'localhost:064842',
+                         'localhost:64842/path', 'localhost:64842,attacker.invalid',
+                         '[::]:64842', '[::ffff:127.0.0.1]:64842', '2130706433:64842', '']
+        for host in invalid_hosts:
+            with self.subTest(host=host):
+                self.assertEqual(self.get('/api/safety', {'Host': host})[0], 403)
+        for origin in ['http://localhost:8790', 'http://127.0.0.1:64842',
+                       'https://localhost:64842', 'http://attacker.invalid',
+                       'http://localhost:64842.attacker.invalid', 'null', '']:
+            with self.subTest(origin=origin):
+                self.assertEqual(self.get('/api/safety', {'Host': 'localhost:64842', 'Origin': origin})[0], 403)
+        self.assertEqual(self.get('/api/safety', {'Host': 'localhost:64842',
+                         'Origin': 'http://localhost:64842', 'Sec-Fetch-Site': 'cross-site'})[0], 403)
+        # Forwarding metadata must not authorize a foreign Host.
+        self.assertEqual(self.get('/api/safety', {'Host': 'attacker.invalid',
+                         'X-Forwarded-Host': 'localhost:64842'})[0], 403)
+
+    def test_duplicate_authorities_are_rejected(self):
+        for duplicate in ['Host', 'Origin']:
+            with self.subTest(duplicate=duplicate):
+                conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+                conn.putrequest('GET', '/api/safety', skip_host=True)
+                conn.putheader('Host', 'localhost:64842')
+                conn.putheader('Origin', 'http://localhost:64842')
+                conn.putheader(duplicate, 'localhost:64842' if duplicate == 'Host' else 'http://localhost:64842')
+                conn.endheaders()
+                response = conn.getresponse()
+                self.assertEqual(response.status, 403)
+                response.read()
+                conn.close()
+
+    def test_overload_returns_http_error_then_recovers(self):
+        for _ in range(12):
+            self.assertTrue(self.server.slots.acquire(blocking=False))
+        try:
+            self.assertEqual(self.get('/api/safety')[0], 503)
+        finally:
+            for _ in range(12):
+                self.server.slots.release()
+        self.assertEqual(self.get('/api/safety')[0], 200)
+
+    def test_both_loopback_families_share_catalog_and_port(self):
+        if not socket.has_ipv6:
+            self.skipTest('IPv6 is not supported on this host')
+        probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        try:
+            probe.bind(('::1', 0))
+        except OSError as error:
+            self.skipTest(f'IPv6 loopback is unavailable: {error}')
+        finally:
+            probe.close()
+        servers = loopback_gateways(0, self.server.catalog)
+        workers = [threading.Thread(target=server.serve_forever, daemon=True) for server in servers]
+        for worker in workers:
+            worker.start()
+        try:
+            self.assertEqual(servers[0].server_port, servers[1].server_port)
+            self.assertIs(servers[0].catalog, servers[1].catalog)
+            self.assertEqual(servers[1].socket.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY), 1)
+            for host in ['127.0.0.1', '::1']:
+                conn = http.client.HTTPConnection(host, servers[0].server_port, timeout=3)
+                conn.request('GET', '/api/safety')
+                response = conn.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(json.loads(response.read())['binding'], host)
+                conn.close()
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
+            for worker in workers:
+                worker.join()
 
     def test_disconnect_keeps_gateway_working(self):
         conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
