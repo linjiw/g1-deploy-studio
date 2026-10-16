@@ -22,7 +22,7 @@ DATA_ROOT = Path.home() / 'research-data/g1-deploy-studio/workbench'
 REFERENCE_ROOT = Path('/home/linjiw/code/g1-student-deploy')
 MAX_MAP_POINTS = 20000
 MAX_BOXES = 128
-MAX_JOBS = 32
+MAX_JOBS = 128  # bounded metadata history for repeated multi-scene reviews
 MAX_OUTPUT_BYTES = 256 * 1024 * 1024
 ACTIVE_STATES = ('starting', 'running', 'cancelling')
 TERMINAL_STATES = ('completed', 'failed', 'cancelled')
@@ -568,6 +568,11 @@ class Workbench:
                 self._terminate(process)
                 process.wait()
             self._close_lease(job)
+            if (output/'session.json').is_file() and job['status'] in ('completed', 'failed'):
+                # Freeze the completed file outside the job lock. A replay must
+                # not reread/re-encode its full recording on every sensor poll.
+                self.catalog.register(key, output/'session.json',
+                    f"Flow / SONIC · {job.get('scenario', {}).get('label', 'saved CPU simulation')}")
 
     @staticmethod
     def _terminate(process):
@@ -660,6 +665,7 @@ class Workbench:
         from studio.replay import JOINT_NAMES
         return {'schema_version': 1, 'metadata': metadata, 'joint_names': list(JOINT_NAMES),
                 'frames': [latest['frame']], 'events': latest.get('events', []),
+                'pipeline': latest.get('pipeline', {'schema_version': 1, 'flow_samples': [], 'sonic_samples': []}),
                 'perception': latest.get('perception', {'available': False}),
                 'environment': latest.get('environment', {'boxes': []}),
                 'graph': latest.get('graph', {'nodes': [], 'edges': []})}

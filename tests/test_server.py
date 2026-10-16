@@ -55,6 +55,33 @@ class ServerBoundaryTests(unittest.TestCase):
             with self.subTest(host=host), self.assertRaises(ValueError):
                 Gateway((host, 0), self.server.catalog)
 
+    def test_terminal_provider_becomes_static_and_replay_cache_is_bounded(self):
+        catalog = self.server.catalog
+        path = Path(self.tmp.name)/'finished.json'
+        payload = {'schema_version': 1, 'metadata': {'fixture': True}, 'frames': [{'time': 0}]}
+        path.write_text(json.dumps(payload))
+        calls = []
+        def provider():
+            calls.append(1)
+            return payload
+        catalog.register('finished', path, 'Fixture', provider=provider)
+        catalog.session('finished')
+        catalog.session('finished')
+        self.assertEqual(len(calls), 2, 'Active providers must refresh')
+        catalog.register('finished', path, 'Fixture')
+        first = catalog.session('finished')
+        self.assertIs(first, catalog.session('finished'))
+        self.assertEqual(len(calls), 2, 'Completed replay must stop invoking the provider')
+        for index in range(5):
+            catalog.register(f'fixture-{index}', path, 'Fixture')
+            catalog.session(f'fixture-{index}')
+        self.assertEqual(len(catalog.cache), 4)
+        self.assertNotIn('finished', catalog.cache)
+        catalog.session('fixture-1')
+        catalog.session('finished')
+        self.assertIn('fixture-1', catalog.cache, 'Recently used replay must survive eviction')
+        self.assertNotIn('fixture-2', catalog.cache)
+
     def test_forwarded_local_authority_and_matching_origin(self):
         for host in ['localhost:64842', '127.0.0.1:64842', '[::1]:64842', 'localhost']:
             with self.subTest(host=host):

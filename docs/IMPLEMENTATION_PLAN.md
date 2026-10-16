@@ -2,6 +2,15 @@
 
 Scope: local, read-only replay cockpit first; integrations consume telemetry. No hardware access or external publication.
 
+## Navigation failure review and model pipeline inspection (delivered and exercised, 2026-10-16)
+
+1. Review the preserved corridor-lateral collision and both intermediate-goal timeouts against actual planner selection, route, sensed map and execution. Preserve original inputs, scoring and all outcomes; user authorizes focused upstream deployment edits.
+2. Implement and test a general source correction supported by those findings. Keep the frozen policy/model bundle and unrelated work intact. Run the same goals and successful controls sequentially on the CPU backend; retain unsuccessful iterations as evidence.
+3. Capture bounded, actual model-boundary telemetry during those reruns. Explain sensor/map conditioning, Flow references, fused SONIC ONNX inputs/outputs and simulated control commands with exact conventions. Mark unrecorded internals unavailable; do not infer semantic tokens.
+4. Improve sensor/robot/pipeline readability, visually inspect before/after LiDAR/map/Health replays, and verify causal time/frame/joint parity, regressions and hardware isolation. Commit coherent source and cockpit changes locally with exact evidence and remaining limitations.
+
+Delivered: deployment corrections through `6a86c86` preserve the frozen weights and scorer. The identical six K4/ODE6 cases improve from two completions to five, all with 0 N recorded contact. Corridor intermediate remains a default-setting timeout; a separate K8 run completes at 9.86 s with higher computation cost and tilt. Actual bounded Flow/SONIC/PD observations now drive the synchronized Pipeline inspector and live-to-replay workflow. All 105 Studio tests, 61 focused source tests, 98 recording audits and 21 recorded-input ONNX replays passed. Browser review covers all six before/after pairs, model values, unavailable perception, responsive transport controls, large-map fitting and a fresh live observer/handoff. See `docs/PLANNER_REVIEW.md` for exact evidence, replay links and the remaining stopping/execution limitation. Full C++/DDS and hardware validation remain separate work.
+
 ## Fixed-planner goal comparison (delivered and exercised)
 
 1. Freeze six explicit development cases in `config/navigation-goal-checks.json`: preset, lateral-offset and intermediate goals on each of the slalom and corridor scenes. Keep start/yaw/seed/K4-ODE6/10 s deadline fixed. Endpoint standing clearance is checked separately from navigation outcome.

@@ -143,6 +143,20 @@ class LifecycleTests(unittest.TestCase):
         with patch('studio.workbench.os.killpg', side_effect=ProcessLookupError):
             Workbench._terminate(process)
 
+    def test_initial_live_session_includes_indexed_model_samples(self):
+        # Deliberately tiny fixture: tests snapshot indexing, not model behavior.
+        samples = {'schema_version': 1, 'flow_samples': [{'source_time': .16}],
+                   'sonic_samples': [{'source_time': .2}]}
+        frame = {'time': .2, 'pipeline': {'flow_index': 0, 'sonic_index': 0}}
+        self.w.jobs['job-live-fixture'] = {'status': 'running', 'output': self.root/'missing',
+            'latest': {'frame': frame, 'metadata': {'fixture': True}, 'pipeline': samples}}
+        session = self.w.session_data('job-live-fixture')
+        for kind in ('flow', 'sonic'):
+            selected = session['pipeline'][kind+'_samples'][session['frames'][0]['pipeline'][kind+'_index']]
+            self.assertLessEqual(selected['source_time'], frame['time'])
+        del self.w.jobs['job-live-fixture']['latest']['pipeline']
+        self.assertEqual(self.w.session_data('job-live-fixture')['pipeline']['sonic_samples'], [])
+
     def test_observed_map_option_retains_unknown_timing_and_disables_physics(self):
         c = Catalog()
         c.session = lambda key: ({'metadata': {}, 'perception': {'available': True,

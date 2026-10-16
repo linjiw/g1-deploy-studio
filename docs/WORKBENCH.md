@@ -34,6 +34,10 @@ Saved scenarios can be loaded and exported as JSON. They include map identity/ha
 
 Policy test runs the actual frozen Flow planner → fused SONIC ONNX → MuJoCo CPU chain in one owned subprocess. It uses the existing reference environment read-only. This is an in-process simulation test, separate from the C++/DDS deployment chain. Neither hardware nor DDS interfaces are opened.
 
+The disposable worker explicitly exits after its recording writes are closed, avoiding an observed native interpreter-shutdown stall. Exceptions remain nonzero process exits, and the gateway still requires a complete receipt and replay before reporting execution completion. Navigation failure (collision/timeout) remains separate from successful process execution. The 180 s wall limit, output limit and exclusive worker lease still apply. This process-lifetime workaround is not a fix or validation of the underlying native runtime's shutdown behavior.
+
+New tests capture bounded model-boundary samples for **Health → Inspect pipeline**. See [sensor and model pipeline inspection](MODEL_PIPELINE.md) for actual Flow conditioning maps, the eight SONIC observation blocks, reference/command conventions and unavailable internals.
+
 The default quick profile uses two candidates, four ODE steps and a two-second simulation horizon. The deployed bundle uses sixteen candidates and ten ODE steps. Both settings can be selected explicitly; duration is limited to 1–10 simulation seconds. Simulated time pauses while CPU planning runs. Wall duration, realtime factor, inference latency and planner latency are measurements, not a real-time scheduling guarantee.
 
 **Save & run CPU test** validates the configuration and launches the worker. Live state can attach to the viewport with Health open. The job panel distinguishes observed worker-process state and telemetry receipt age from simulation-clock freshness. **Open recorded test result** loads the full run into the existing synchronized timeline. A worker marked completed means execution/recording completed; the policy outcome can still be timeout, fall or failure. Goal distance and the source scorer's outcome remain explicit.
@@ -42,7 +46,7 @@ When source execution fails after valid samples, **Inspect recorded failure** op
 
 **Cancel this test** signals only the current gateway's owned process group. It is a simulation-job control, not a hardware emergency stop. Closing the browser does not cancel the worker. A kernel lock permits only one worker per data root, including across a gateway restart. Recovered job records are read-only and never authorize signals to a saved PID. A surviving worker retains its lock; its output can be inspected until it finishes.
 
-The gateway limits each owned worker to 180 wall seconds and 256 MiB of output, with at most 32 stored jobs, 100 scenarios and 32 imported maps. CPU threads are bounded; GPU visibility is disabled. Completed recordings and compact job history survive gateway restart. Archive owned data outside the workbench directory when storage limits are reached; the application does not delete old recordings automatically.
+The gateway limits each owned worker to 180 wall seconds and 256 MiB of output, with at most 128 stored jobs, 100 scenarios and 32 imported maps. CPU threads are bounded; GPU visibility is disabled. Completed recordings and compact job history survive gateway restart. Archive owned data outside the workbench directory when storage limits are reached; the application does not delete old recordings automatically.
 
 ## Sensors and synchronized perception
 

@@ -35,6 +35,7 @@
       <div class="segmented cameras" role="group" aria-label="Camera view">
         <button id="camera-orbit" class="active" data-camera="orbit" aria-pressed="true">Orbit</button><button id="camera-follow" data-camera="follow" aria-pressed="false">Follow</button><button id="camera-top" data-camera="top" aria-pressed="false">Top</button>
       </div>
+      <button id="camera-scene" class="fit-scene" data-camera="scene" aria-pressed="false">Fit full scene + goal</button>
       <div class="section-label layer-heading">VIEW LAYERS</div>
       <div class="layers">
         <label><input id="layer-robot" type="checkbox" checked><span class="layer-dot bone"></span>Robot ground truth</label>
@@ -64,7 +65,7 @@
         <div id="workbench-sensors" hidden></div>
       </section>
       <div class="viewport-shell">
-        <div class="viewport-top"><div><span class="eyebrow">DIGITAL TWIN</span><h2>Motion workspace <span id="world-frame">world</span></h2></div><span id="source-badge" class="badge ground-truth">SIMULATOR GROUND TRUTH</span></div>
+        <div class="viewport-top"><div><span class="eyebrow">DIGITAL TWIN</span><h2>Motion workspace <span id="world-frame">world</span></h2><p id="navigation-caption" class="navigation-caption"></p></div><span id="source-badge" class="badge ground-truth">SIMULATOR GROUND TRUTH</span></div>
         <div id="viewport" data-testid="viewport" aria-label="Interactive G1 digital twin"></div>
         <div id="preparation-caption" class="preparation-caption" hidden></div>
         <div id="sensor-dock" class="sensor-dock" aria-label="Pinned sensor views" hidden></div>
@@ -94,12 +95,13 @@
     <aside class="inspector panel" aria-label="Deployment inspector">
       <div class="inspector-heading"><span class="section-label">DEPLOYMENT INSPECTOR</span><span class="status-dot"></span></div>
       <div id="preparation-inspector-note" class="preparation-inspector-note" hidden>MAP PREPARATION · The viewport shows your draft map and goal. Diagnostics and the paused timeline belong to the selected recording; they do not validate this draft.</div>
-      <div class="tabs" role="tablist" aria-label="Inspector views"><button role="tab" id="tab-intent" aria-controls="panel-intent" aria-selected="true" class="active" data-tab="intent">Intent</button><button role="tab" id="tab-joints" aria-controls="panel-joints" aria-selected="false" data-tab="joints">Joints</button><button role="tab" id="tab-health" aria-controls="panel-health" aria-selected="false" data-tab="health">Health</button><button role="tab" id="tab-perception" aria-controls="panel-perception" aria-selected="false" data-tab="perception">Map</button><button role="tab" id="tab-graph" aria-controls="panel-graph" aria-selected="false" data-tab="graph">Graph</button><button role="tab" id="tab-source" aria-controls="panel-source" aria-selected="false" data-tab="source">Source</button></div>
+      <div class="tabs" role="tablist" aria-label="Inspector views"><button role="tab" id="tab-intent" aria-controls="panel-intent" aria-selected="true" class="active" data-tab="intent">Intent</button><button role="tab" id="tab-joints" aria-controls="panel-joints" aria-selected="false" data-tab="joints">Joints</button><button role="tab" id="tab-health" aria-controls="panel-health" aria-selected="false" data-tab="health">Health</button><button role="tab" id="tab-perception" aria-controls="panel-perception" aria-selected="false" data-tab="perception">Map</button><button role="tab" id="tab-pipeline" aria-controls="panel-pipeline" aria-selected="false" data-tab="pipeline">Pipeline</button><button role="tab" id="tab-graph" aria-controls="panel-graph" aria-selected="false" data-tab="graph">Graph</button><button role="tab" id="tab-source" aria-controls="panel-source" aria-selected="false" data-tab="source">Source</button></div>
       <div class="inspector-content">
         <section role="tabpanel" id="panel-intent" aria-labelledby="tab-intent"><div id="intent-content"></div></section>
         <section role="tabpanel" id="panel-joints" aria-labelledby="tab-joints" hidden><div id="joints-content"></div></section>
         <section role="tabpanel" id="panel-health" aria-labelledby="tab-health" hidden><div id="health-content"></div></section>
         <section role="tabpanel" id="panel-perception" aria-labelledby="tab-perception" hidden><div id="perception-content"></div></section>
+        <section role="tabpanel" id="panel-pipeline" aria-labelledby="tab-pipeline" hidden><div id="pipeline-content"></div></section>
         <section role="tabpanel" id="panel-graph" aria-labelledby="tab-graph" hidden><div id="graph-content"></div></section>
         <section role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden><div id="source-content"></div></section>
       </div>

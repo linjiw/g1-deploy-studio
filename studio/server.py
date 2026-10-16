@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
@@ -27,7 +28,7 @@ class Catalog:
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", key) or key in self.entries:
                 raise ValueError("Session IDs must be unique URL-safe identifiers")
             self.entries[key] = item
-        self.cache = {}
+        self.cache = OrderedDict()
         self.models = {}
         self.lock = threading.RLock()
         self.providers = {}
@@ -44,6 +45,8 @@ class Catalog:
             self.entries[key] = {'id': key, 'path': str(path), 'label': label}
             if provider:
                 self.providers[key] = provider
+            else:
+                self.providers.pop(key, None)
             self.cache.pop(key, None)
 
     def listing(self):
@@ -81,6 +84,11 @@ class Catalog:
                 if len(body) > 64 * 1024 * 1024:
                     raise ValueError("Session exceeds 64 MiB browser replay limit; split recording")
                 self.cache[key] = (data, body)
+                # Bound decoded recordings as the local review history grows.
+                # Live providers still refresh on every request.
+                while len(self.cache) > 4:
+                    self.cache.popitem(last=False)
+            self.cache.move_to_end(key)
             return self.cache[key]
 
     def model(self, key):

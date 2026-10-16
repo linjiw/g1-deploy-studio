@@ -70,6 +70,35 @@ class WorkerBoundaryTest(unittest.TestCase):
             capture_output=True, text=True, timeout=10)
         self.assertEqual(p.returncode, 0, p.stderr)
 
+    def test_cli_releases_process_without_running_shutdown_hooks(self):
+        # Exercise a real child exit, including output flushing. The simulated
+        # stalled shutdown hook must never keep a completed owned worker alive.
+        code = '''
+import atexit, time
+from studio import policy_worker as worker
+atexit.register(lambda: time.sleep(30))
+worker.main = lambda: print("closed-recording", end="")
+worker.run_cli()
+'''
+        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'closed-recording')
+
+    def test_cli_preserves_failure_and_argument_exit_status(self):
+        for expression, status, diagnostic in [
+            ('RuntimeError("recording failed")', 1, 'recording failed'),
+            ('SystemExit(2)', 2, ''),
+        ]:
+            code = f'''\nfrom studio import policy_worker as worker
+def fail():
+    raise {expression}
+worker.main = fail
+worker.run_cli()
+'''
+            result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, status)
+            self.assertIn(diagnostic, result.stderr)
+
     def test_atomic_snapshot_is_json_and_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'latest.json'

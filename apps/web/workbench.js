@@ -23,7 +23,7 @@ function busy(button,task) {button.disabled=true;return task().catch(report).fin
 function markDirty() {wb.scenario=null;const note=$('scenario-result');if(note)note.textContent='Draft changed. Validate and save before running.';updateTestSummary();}
 function showPreparation() {if(!wb.map)return;api()?.showPreparationMap(wb.map);api()?.setPreparationGoal(wb.config.goal_xy);api()?.setPreparationStart(wb.config.start_xy,wb.config.start_yaw_rad);}
 function syncPins() {api()?.updateView({pin:wb.pinned.size?[...wb.pinned].join(','):null});}
-function positionSensorDock() {const dock=$('sensor-dock'),viewport=document.querySelector('.viewport-shell');if(matchMedia('(max-width:600px)').matches)viewport.after(dock);else viewport.append(dock);}
+function positionSensorDock() {$('sensor-dock').classList.add('sensor-rail');document.querySelector('.viewport-shell').after($('sensor-dock'));}
 
 async function catalog(refresh=false) {
   if(wb.catalog&&!refresh)return wb.catalog;
@@ -171,14 +171,14 @@ function renderJob() {
 }
 async function openResult(id) {
   wb.live=false;wb.liveJob=null;api()?.setPreparationMode(false);
-  const sessions=await request('/api/sessions');$('session-picker').innerHTML=sessions.sessions.map(session=>`<option value="${escape(session.id)}">${escape(session.label??session.id)}</option>`).join('');$('session-picker').value=id;
+  const sessions=await request('/api/sessions');$('session-picker').innerHTML=sessions.sessions.map(session=>`<option value="${escape(session.id)}">${escape(session.label??session.id)}${session.id.startsWith('job-')?` · #${escape(session.id.slice(-8))}`:''}</option>`).join('');$('session-picker').value=id;
   if(await api().loadSession(id)){api().selectTab('health');workspace('replay');}
 }
 async function showLiveFrame() {
   const job=wb.job;
   if(!wb.live||!job?.latest?.frame)return;
   const id=job.session_id??job.id;
-  if(wb.liveJob!==id){wb.liveJob=id;const loaded=await api().loadSession(id);if(!wb.live||wb.liveJob!==id||wb.job?.id!==job.id)return;if(!loaded||api().state.sessionId!==id){wb.liveJob=null;throw new Error('The worker has not published a renderable session yet. Try attach again after its first state sample.');}if(![...$('session-picker').options].some(option=>option.value===id))$('session-picker').add(new Option('Flow / SONIC · current CPU test',id));$('session-picker').value=id;api().selectTab('health');}
+  if(wb.liveJob!==id){wb.liveJob=id;const loaded=await api().loadSession(id);if(!wb.live||wb.liveJob!==id||wb.job?.id!==job.id)return;if(!loaded||api().state.sessionId!==id){wb.liveJob=null;throw new Error('The worker has not published a renderable session yet. Try attach again after its first state sample.');}if(![...$('session-picker').options].some(option=>option.value===id))$('session-picker').add(new Option(`Flow / SONIC · current CPU test · #${id.slice(-8)}`,id));$('session-picker').value=id;api().selectTab('health');}
   if(!wb.live||wb.liveJob!==id||api().state.sessionId!==id)return;
   api().setPreparationMode(false);
   api().appendLiveFrame?.({...job.latest,runtime:job.runtime});
@@ -187,7 +187,7 @@ async function showLiveFrame() {
 function sensorPayload(sensor) {
   const payload=sensor.payload??{};
   const points=payload.points??payload.support_points??payload.ceiling_points;
-  if(Array.isArray(points))return `<canvas class="sensor-preview" data-sensor-preview="${escape(sensor.id)}" width="260" height="110" aria-label="${escape(sensor.label)} XY projection"></canvas>${fact('Displayed points',points.length.toLocaleString())}${fact('Frame',sensor.frame_id)}<p class="tiny">XY projection · ${escape(sensor.synchronized?'causal sample at the replay cursor.':'static snapshot; capture time unavailable.')}${sensor.overlay_compatible?'':' World overlay unavailable; frame transform not verified.'}</p>`;
+  if(Array.isArray(points))return `<canvas class="sensor-preview" data-sensor-preview="${escape(sensor.id)}" width="260" height="110" aria-label="${escape(sensor.label)} XY projection"></canvas>${fact('Displayed points',points.length.toLocaleString())}${fact('Frame',sensor.frame_id)}<p class="tiny">${escape(sensor.frame_id??'Unverified frame')} XY · ${escape(sensor.synchronized?'recorded sample at or before cursor.':'static snapshot; capture time unavailable.')} ${sensor.overlay_compatible?'Amber triangle: robot at cursor.':''}${sensor.overlay_compatible?'':' World overlay unavailable; frame transform not verified.'}</p>`;
   if(sensor.id==='base_pose')return `${fact('Position · m',vector(payload.position??payload.position_m))}${fact('Quaternion · wxyz',vector(payload.quaternion_wxyz))}`;
   if(sensor.id==='joints'){
     const values=payload.position??payload.positions??payload.position_rad??payload.joints??[],names=payload.names??payload.joint_names??[];
@@ -200,12 +200,18 @@ function sensorCard(sensor,pinned=false) {
   return `<article class="sensor-card ${pinned?'pinned':''}" data-sensor-card="${escape(sensor.id)}"><div class="sensor-card-heading"><strong>${escape(sensor.label)}</strong><span class="sensor-state ${available?(sensor.status==='fresh'?'available':'unknown'):'missing'}">${escape(sensor.status)}</span></div><span class="sensor-classification">${escape(sensor.classification)} · ${escape(sensor.synchronized?'session clock':'unsynchronized')}</span>${available?sensorPayload(sensor):`<p class="sensor-reason">${escape(sensor.reason??'This source was not captured.')}</p>`}${fact('Source time',number(sensor.source_time,3,'s'))}${fact('Age / update rate',`${number(sensor.age_ms,0,'ms')} / ${number(sensor.rate_hz,1,'Hz')}`)}${pinned?'':`<details><summary>Source & frame</summary>${fact('Frame',sensor.frame_id)}${fact('Clock',sensor.source_clock??sensor.source_clock_domain)}<p class="tiny">${escape(sensor.reason??'')}</p><pre>${escape(JSON.stringify({extrinsics:sensor.extrinsics,provenance:sensor.provenance},null,2))}</pre></details>`}<button class="sensor-pin" data-pin-sensor="${escape(sensor.id)}" ${!available&&!pinned?'disabled':''}>${wb.pinned.has(sensor.id)?'Detach from viewport':'Attach to viewport'}</button></article>`;
 }
 function drawSensorPreview(canvas,sensor) {
-  const points=sensor?.payload?.points??[];const context=canvas.getContext('2d');context.fillStyle='#101a23';context.fillRect(0,0,canvas.width,canvas.height);
+  const width=Math.max(1,canvas.clientWidth),height=Math.max(1,canvas.clientHeight),ratio=Math.min(2,devicePixelRatio||1);canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
+  const points=sensor?.payload?.points??[];const context=canvas.getContext('2d');context.setTransform(ratio,0,0,ratio,0,0);context.fillStyle='#101a23';context.fillRect(0,0,width,height);
   const selected=points.filter((_,index)=>index%Math.max(1,Math.ceil(points.length/2500))===0);if(!selected.length)return;
-  const xs=selected.map(point=>point[0]),ys=selected.map(point=>point[1]);const lo=[Math.min(...xs),Math.min(...ys)],hi=[Math.max(...xs),Math.max(...ys)],extent=[Math.max(.1,hi[0]-lo[0]),Math.max(.1,hi[1]-lo[1])];const scale=Math.min((canvas.width-16)/extent[0],(canvas.height-16)/extent[1]);
-  context.fillStyle='#83cdbb';for(const point of selected)context.fillRect(8+(point[0]-lo[0])*scale,canvas.height-8-(point[1]-lo[1])*scale,1.7,1.7);
-  context.font='9px monospace';context.fillStyle='#a8bbc8';context.fillText(`${number(lo[0],1)}…${number(hi[0],1)} m X`,8,12);
+  const pose=api()?.state.measuredFrame,robot=sensor.overlay_compatible&&Array.isArray(pose?.position)?pose.position:null;
+  const xy=robot?[...selected,robot]:selected,xs=xy.map(point=>point[0]),ys=xy.map(point=>point[1]);
+  const lo=[Math.min(...xs),Math.min(...ys)],hi=[Math.max(...xs),Math.max(...ys)],extent=[Math.max(.1,hi[0]-lo[0]),Math.max(.1,hi[1]-lo[1])];const scale=Math.min((width-24)/extent[0],(height-28)/extent[1]);
+  const toPixel=point=>[12+(point[0]-lo[0])*scale,height-12-(point[1]-lo[1])*scale];
+  context.fillStyle='#83cdbb';for(const point of selected){const[x,y]=toPixel(point);context.fillRect(x,y,1.7,1.7);}
+  if(robot){const[x,y]=toPixel(robot),q=pose.quaternion_wxyz??[1,0,0,0],yaw=Math.atan2(2*(q[0]*q[3]+q[1]*q[2]),1-2*(q[2]*q[2]+q[3]*q[3]));context.save();context.translate(x,y);context.rotate(-yaw);context.fillStyle='#efbb70';context.strokeStyle='#101a23';context.lineWidth=1.5;context.beginPath();context.moveTo(7,0);context.lineTo(-5,-4);context.lineTo(-3,0);context.lineTo(-5,4);context.closePath();context.fill();context.stroke();context.restore();}
+  context.font='9px monospace';context.fillStyle='#a8bbc8';context.fillText(`${number(lo[0],1)}…${number(hi[0],1)} m X → · Y ↑`,8,11);
 }
+
 function renderSensors() {
   if(!wb.sensors)return;
   const sensors=wb.sensors.sensors??[];

@@ -197,10 +197,12 @@ def execute(request, output):
         torch.set_num_threads(2)
         torch.set_num_interop_threads(1)
         from g1deploy import bundle, contract
-        from sim import lockstep
+        from sim import lockstep, episode
         from sim.episode import stand_start_state
         from g1deploy.perception import cloud_memory
         from studio.replay import decode_reference, load_session, _graph, _plan, _git_provenance
+        from studio.pipeline import PipelineRecorder, contract as pipeline_contract, SONIC_SAMPLE_EVERY
+        pipeline = PipelineRecorder()
 
         s = stand_start_state(req['start_xy'], req['start_yaw_rad'])
         np.savez(output / 'initial_state.npz', joint_names=contract.MJ_JOINTS,
@@ -218,7 +220,16 @@ def execute(request, output):
                          'g1deploy/sonic.py', 'g1deploy/perception/cloud_memory.py',
                          'g1deploy/bundle.py', 'g1deploy/route_compat.py', 'g1deploy/scoring.py',
                          'bundle/flow/src/motion2scene_flow/closed_loop/route.py',
+                         'bundle/flow/src/motion2scene_flow/closed_loop/planner.py',
+                         'bundle/flow/src/motion2scene_flow/closed_loop/feed.py',
+                         'bundle/flow/src/motion2scene_flow/closed_loop/sensor_map.py',
+                         'bundle/flow/src/motion2scene_flow/wholebody/elevation.py',
+                         'bundle/flow/src/motion2scene_flow/wholebody/passage_model.py',
+                         'bundle/flow/src/motion2scene_flow/wholebody/passage_flow.py',
                          'bundle/sonic/sonic_release_g1.onnx', 'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt')]
+        for optional_source in ('g1deploy/planner_compat.py', 'g1deploy/goal_guard.py'):
+            if (REFERENCE_ROOT / optional_source).is_file():
+                source_files.append(_hash(REFERENCE_ROOT / optional_source))
         model_identity = _hash(REFERENCE_ROOT / 'sim/assets/g1_29dof.xml')
         checkout = _git_provenance(REFERENCE_ROOT)
         checkout['recording_revision'] = checkout['head_at_read']
@@ -236,8 +247,9 @@ def execute(request, output):
                                              'fall_height_m', 'fall_tilt_rad', 'obstacle_contact_threshold_n')},
                     'units': {'position': 'm', 'joint': 'rad', 'time': 's'},
                     'hardware_validated': False, 'command_path_enabled': False, 'fixture': False,
+                    'worker_exit_strategy': 'Explicit process exit after closed recording writes; native interpreter teardown skipped',
                     'policy_identity': 'Frozen Flow student + SONIC ONNX fused 1570 → 29 · CPU',
-                    'policy_hash_at_recording': source_files[-2]['sha256'],
+                    'policy_hash_at_recording': next(f['sha256'] for f in source_files if f['path'].endswith('/sonic_release_g1.onnx')),
                     'recorded_model_hash': model_identity['sha256'],
                     'planner_configuration': dict(req['planner'], device='cpu', implementation='eager',
                                                    route_source='sensor', lidar='mjray', start='stand'),
@@ -247,9 +259,10 @@ def execute(request, output):
                                          'effort_limit_nm': contract.EFFORT_MJ.tolist(),
                                          'control_dt_s': contract.DT, 'physics_dt_s': contract.SIM_DT,
                                          'command_kind': 'PD position target; source applies clipped PD torques internally',
-                                         'torque_samples_recorded': False},
+                                         'torque_samples_recorded': True, 'torque_sample_period_s': SONIC_SAMPLE_EVERY*contract.DT},
                     'calibration_identity': 'bundled MID-360 inverted mount; simulation only',
-                    'provenance': {'artifacts': source_files + [_hash(Path(__file__))], 'model_at_recording': model_identity,
+                    'pipeline_contract': pipeline_contract(REFERENCE_ROOT / 'g1deploy/sonic.py', contract),
+                    'provenance': {'artifacts': source_files + [_hash(Path(__file__)), _hash(Path(__file__).with_name('pipeline.py'))], 'model_at_recording': model_identity,
                                    'repositories': [checkout], 'adapter': 'studio.policy_worker.v1'},
                     'limitations': ['Fresh in-process CPU Flow + SONIC + MuJoCo; not a C++/DDS or real-time deployment validation.',
                                     'CPU quick-test sampling budget differs from deployed 16 candidates / 10 ODE steps unless selected.',
@@ -258,9 +271,11 @@ def execute(request, output):
                                     'Latent SONIC tokens are not exposed by the fused ONNX model.',
                                     'Unknown map cells remain unknown in Studio; the source planner selector treats unseen cells as free.']}
         frames, perceptions, events, plans, contact_intervals = [], [], [], [], []
+        physics_positions, physics_quaternions = [], []
         current = {'inference_ms': None, 'perception': None, 'raw': np.empty((0, 3)),
                    'filtered': np.empty((0, 3)), 'origin': None, 'capture_time': None,
-                   'snapshot_time': -math.inf, 'last_write': -math.inf, 'sim': None, 'plan': None}
+                   'snapshot_time': -math.inf, 'last_write': -math.inf, 'sim': None, 'plan': None,
+                   'sonic_sample': None, 'pd_torques': [], 'goal_evaluation': None}
         progress_log = (output / 'progress.jsonl').open('w', buffering=1)
 
         def publish(frame=None, status='running', force=False):
@@ -269,7 +284,11 @@ def execute(request, output):
                 return
             current['last_write'] = now
             sim_t = frame['time'] if frame else 0
-            payload = {'schema_version': 1, 'status': status, 'frame': frame, 'metadata': metadata,
+            live_frame = dict(frame, pipeline={'schema_version': 1,
+                'flow_index': 0 if pipeline.flow_samples else None,
+                'sonic_index': 0 if pipeline.sonic_samples else None}) if frame else None
+            payload = {'schema_version': 1, 'status': status, 'frame': live_frame, 'metadata': metadata,
+                       'pipeline': pipeline.data(latest=True),
                        'perception': current['perception'], 'joint_names': list(contract.MJ_JOINTS),
                        'graph': _graph(True), 'environment': {'boxes': req['map']['boxes'],
                            'classification': 'simulator-ground-truth', 'source': str(output / 'boxes.json')},
@@ -339,17 +358,52 @@ def execute(request, output):
 
         cloud_memory.CloudMemory = ObservedMemory
         OriginalPhysics = lockstep.Physics
+        original_pd_torque = episode.pd_torque
+
+        def observed_pd_torque(*args, **kwargs):
+            result = original_pd_torque(*args, **kwargs)
+            if current['sonic_sample'] is not None:
+                current['pd_torques'].append(np.asarray(result).copy().tolist())
+            return result
+        episode.pd_torque = observed_pd_torque
+        OriginalScorer = lockstep.TaskScorer
+        scorer_observations = []
+
+        class ObservedScorer(OriginalScorer):
+            def update(self, *args, **kwargs):
+                result = super().update(*args, **kwargs)
+                row = dict(self.rows[-1], source='g1deploy.scoring.TaskScorer.update',
+                           source_time=float(self.steps*self.dt), clock_domain='simulation',
+                           classification='simulator-ground-truth', hold_steps=int(self.hold_steps),
+                           hold_elapsed_s=float(self.hold_steps*self.dt),
+                           goal_radius_m=float(self.task['goal_radius_m']),
+                           goal_speed_m_s=float(self.task['goal_speed_m_s']),
+                           goal_hold_s=float(self.task['goal_hold_s']),
+                           planner_latency_basis='Source scorer default 0; planner latency is recorded separately in frame.health')
+                # Source calls the scorer AFTER Physics.step. Preserve this timestamp;
+                # the next pre-action frame can expose it as a causal health sample.
+                scorer_observations.append(row)
+                current['goal_evaluation'] = row
+                frames[-1]['post_action']['goal_evaluation'] = row
+                return result
+        lockstep.TaskScorer = ObservedScorer
 
         class ObservedPhysics(OriginalPhysics):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 current['sim'] = self
                 original_policy = self.tracker.policy
+                signature = lambda entries: [{'name': x.name, 'shape': x.shape, 'type': x.type} for x in entries]
+                metadata['pipeline_contract']['onnx_inputs'] = signature(self.tracker.session.get_inputs())
+                metadata['pipeline_contract']['onnx_outputs'] = signature(self.tracker.session.get_outputs())
+                output_name = self.tracker.session.get_outputs()[0].name
 
                 def timed_policy(obs):
                     tic = time.perf_counter()
                     result = original_policy(obs)
                     current['inference_ms'] = (time.perf_counter()-tic)*1000
+                    current['sonic_sample'] = pipeline.sonic(len(frames), contract.DT, obs, result,
+                        current['inference_ms'], self.tracker.input_name, output_name)
                     return result
                 self.tracker.policy = timed_policy
 
@@ -357,21 +411,34 @@ def execute(request, output):
                 measured = self.measure()
                 q = measured['qpos']
                 t = float(len(frames)*.02)
+                current['sonic_sample'] = None
+                current['pd_torques'] = []
                 tic = time.perf_counter()
                 result = super().step(ref_q_mj, ref_dq_mj, ref_ori6, push)
                 interval = contact_interval(result[2], t, float((len(frames)+1)*contract.DT))
                 previous_contact = contact_intervals[-1] if contact_intervals else None
                 contact_intervals.append(interval)
+                physics_positions.append(np.asarray(result[0]).copy())
+                physics_quaternions.append(np.asarray(result[1]).copy())
+                post_measured = self.measure()
                 # Source run_episode calls feed.target; its observer below stores all 67 columns.
                 reference = decode_reference(current['reference'], q)
                 plan = _plan(current['plan'], current['plan']['tick']*.02, t) if current['plan'] else None
                 target = result[3]
+                if current['sonic_sample'] is not None:
+                    current['sonic_sample'].update(target_joints_rad=target.tolist(),
+                        reference=np.asarray(current['reference']).tolist(),
+                        applied_pd={'start_s': t, 'end_s': interval['end_s'],
+                            'joint_names': list(contract.MJ_JOINTS), 'torques_nm': current['pd_torques'],
+                            'classification': 'simulator-commanded', 'clock_domain': 'simulation',
+                            'basis': 'Actual clipped source pd_torque return applied before each physics substep'})
                 frame = {'time': t, 'sequence': len(frames), 'source_time': t,
                          'source_clock_domain': 'simulation', 'receipt_time': time.monotonic(),
                          'receipt_clock_domain': 'host-monotonic', 'sim_time': t,
                          'position': q[:3].tolist(), 'quaternion_wxyz': q[3:7].tolist(),
                          'joints': q[7:].tolist(), 'qpos': q.tolist(), 'classification': 'simulator-ground-truth',
                          'validity': 'valid', 'frame_id': 'world', 'reference': reference, 'plan': plan,
+                         'pipeline': pipeline.indices(),
                          'command': {'joints': target.tolist(), 'classification': 'commanded',
                                      'kind': 'SONIC PD position targets', 'joint_order': 'named MuJoCo',
                                      'hardware_command': False, 'time': t, 'units': 'rad'},
@@ -380,7 +447,8 @@ def execute(request, output):
                                  'frame_id': 'pelvis', 'classification': 'simulator-ground-truth',
                                  'linear_acceleration_m_s2': None},
                          'joint_velocity_rad_s': measured['dq'].tolist(),
-                         'post_action': {'time': interval['end_s'], 'qpos': self.measure()['qpos'].tolist(),
+                         'post_action': {'time': interval['end_s'], 'qpos': post_measured['qpos'].tolist(),
+                                         'root_linear_velocity_w': post_measured['root_linear_velocity_w'].tolist(),
                                          'contact': interval,
                                          'classification': 'simulator-ground-truth'},
                          'perception_index': len(perceptions)-1 if perceptions else None,
@@ -392,6 +460,7 @@ def execute(request, output):
                                     'control_step_wall_ms': (time.perf_counter()-tic)*1000,
                                     'contact_force_n': previous_contact['max_force_n'] if previous_contact else None,
                                     'contact_interval': previous_contact,
+                                    'goal_evaluation': current['goal_evaluation'],
                                     'lowcmd_age_ms': None, 'gpu_utilization': None}}
                 frames.append(frame)
                 # Compact 50 Hz stream: latest carries heavier reference/perception separately.
@@ -412,6 +481,13 @@ def execute(request, output):
         original_plan = flow.planner.FlowPlanner.plan
 
         def observed_plan(self, *args, **kwargs):
+            if 'route' not in metadata['planner_configuration']:
+                # Read the effective config emitted by this actual source run,
+                # rather than applying today's defaults to an older recording.
+                run_config = json.loads((output / 'native/run_config.json').read_text())
+                metadata['planner_configuration']['route'] = run_config['route']
+                metadata['planner_configuration']['route_configuration_source'] = 'native/run_config.json'
+            pipeline.begin_plan(self, len(frames), contract.DT)
             tic = time.perf_counter()
             result = original_plan(self, *args, **kwargs)
             row = {'tick': len(frames), 'latency_s': time.perf_counter()-tic, 'rule': result['rule'],
@@ -420,6 +496,7 @@ def execute(request, output):
                    'waypoint_xy': None, 'route_remaining_m': None}
             current['plan'] = row
             plans.append(row)
+            pipeline.end_plan(result, row['latency_s']*1000)
             events.append({'time': len(frames)*.02, 'type': 'replan', 'message': result['rule'],
                            'source': 'FlowPlanner.plan', 'latency_ms': row['latency_s']*1000})
             return result
@@ -439,6 +516,7 @@ def execute(request, output):
                           runtime_error=f'{type(exc).__name__}: {exc}')
         finally:
             progress_log.close()
+            pipeline.close()
         # Physics.step returns these same substeps directly to the source TaskScorer.
         # The native NPZ has no force channel, so preserve it as a separate owned artifact
         # and independently check its maximum against the unmodified scorer report.
@@ -447,7 +525,10 @@ def execute(request, output):
         np.savez_compressed(output / 'physics_observations.npz',
                             interval_start_s=[x['start_s'] for x in contact_intervals],
                             interval_end_s=[x['end_s'] for x in contact_intervals],
-                            obstacle_contact_n=[x['samples_n'] for x in contact_intervals])
+                            obstacle_contact_n=[x['samples_n'] for x in contact_intervals],
+                            root_positions_m=physics_positions, root_quaternions_wxyz=physics_quaternions)
+        _atomic(output / 'scorer_observations.json', scorer_observations)
+        _atomic(output / 'pipeline_observations.json', pipeline.data())
         native_path, extraction = (executed_native_recording(output, len(frames)) if episode_error else
                                    (output / 'native', None))
         session = load_session(native_path, environment_path=output / 'boxes.json')
@@ -477,10 +558,12 @@ def execute(request, output):
         report['worker_wall_to_summary_s'] = time.monotonic()-started
         report['worker_real_time_factor'] = report['elapsed_s']/report['worker_wall_to_summary_s']
         report['worker_timing_basis'] = 'Measured startup, policy execution and native decoding; excludes final session serialization'
+        report['pipeline_capture_wall_ms'] = pipeline.telemetry_wall_s*1000
+        report['pipeline_capture_timing_basis'] = 'Measured tensor copy/stat capture overhead; wrappers included in worker timing, not SONIC inference timing'
         metadata['test_result'] = report
         metadata['goal_xy'] = req['goal_xy']
         metadata['provenance']['artifacts'] += [_hash(output / p) for p in
-                                               ('task.json', 'boxes.json', 'native/closed_loop.npz', 'physics_observations.npz')]
+                                               ('task.json', 'boxes.json', 'native/run_config.json', 'native/closed_loop.npz', 'physics_observations.npz', 'scorer_observations.json', 'pipeline_observations.json')]
         if native_path != output / 'native':
             metadata['provenance']['artifacts'] += [_hash(native_path / 'closed_loop.npz'),
                                                    _hash(native_path / 'extraction.json')]
@@ -488,6 +571,7 @@ def execute(request, output):
         for frame, native in zip(frames, session['frames']):
             frame['plan'] = native['plan']
             frame['health']['planner_latency_ms'] = native['health']['planner_latency_ms']
+        session['pipeline'] = pipeline.data()
         session['frames'] = frames
         session['metadata'] = metadata
         session['perception'] = dict(current['perception'] or {'available': False},
@@ -541,5 +625,34 @@ def main(argv=None):
     execute(json.loads(args.request.read_text()), args.output)
 
 
+def run_cli():
+    """Finish the disposable CPU process without native interpreter teardown.
+
+    A recorded run has stalled after all result writes during native shutdown.
+    This worker owns no hardware, middleware participants or child processes.
+    execute closes its files and commits receipts before returning; the OS then
+    reclaims runtime threads/memory. This does not convert exceptions to success:
+    failures retain a nonzero exit and the parent still validates the receipt.
+    Imported execution/tests retain ordinary Python lifetime semantics.
+    """
+    import traceback
+    code = 0
+    try:
+        main()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        if exc.code is not None and not isinstance(exc.code, int):
+            print(exc.code, file=sys.stderr)
+    except BaseException:
+        traceback.print_exc()
+        code = 1
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        code = 1
+    os._exit(code)
+
+
 if __name__ == '__main__':
-    main()
+    run_cli()
