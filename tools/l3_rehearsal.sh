@@ -38,7 +38,10 @@ PY
 # SIGINT first (orderly shutdown); the outer one is only a backstop.
 WALL=$(( 60 + BOOT + 30 + 120 + 60 + DEADLINE + 60 ))
 INNER_WALL=$(( WALL - 30 ))
-REC_S=$(( WALL - 15 )); (( REC_S > 3600 )) && REC_S=3600   # studio.recorder caps a capture at 3600 s
+REC_S=$(( WALL - 15 ))
+if (( REC_S > 3600 )); then   # studio.recorder caps a capture at 3600 s
+  echo "WARNING: wall limit ${WALL} s exceeds the recorder cap; the wire capture stops after 3600 s" >&2; REC_S=3600
+fi
 
 mkdir -p "$BASE"
 exec 9>"$BASE/.gpu-rehearsal.lock"             # one bounded rehearsal on the shared GPU at a time
@@ -142,6 +145,7 @@ echo "rc=$RC run=$RUN"
 echo "survivors: $(wc -l < "$RUN/survivors.txt")  host_port_binds_seen: $(wc -l < "$RUN/host_ports_seen.txt")"
 echo "git changed: $(diff -q "$RUN/pre_git.txt" "$RUN/post_git.txt" >/dev/null && echo no || echo YES)  sha changed: $(diff -q "$RUN/pre_sha.txt" "$RUN/post_sha.txt" >/dev/null && echo no || echo YES)"
 echo "files written in reference repos: $(wc -l < "$RUN/written_in_reference_repos.txt")"
-echo "collector closed cleanly: $(grep -c capture_end "$RUN/capture.jsonl" 2>/dev/null || echo 0)"
+ENDS=$(grep -c capture_end "$RUN/capture.jsonl" 2>/dev/null) || true
+echo "collector closed cleanly: ${ENDS:-0}"
 echo "Studio lists this run under 'Real-time rehearsals (L3)' within 10 s."
 exit $RC

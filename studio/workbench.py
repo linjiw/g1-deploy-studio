@@ -1249,6 +1249,7 @@ class Workbench:
                'actuators': scenario.get('actuators', 'source'),
                'torque': report.get('torque'),
                'torque_at_limit': torque_at_limit(report.get('torque')),
+               'anchor_prediction': report.get('anchor_prediction'),
                'trajectory_basis': 'Decimated simulator-ground-truth root XY from progress.jsonl (time, x, y)',
                'clock_domain': 'simulation'}
         if terminal:

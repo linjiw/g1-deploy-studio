@@ -22,6 +22,7 @@ export function sampleHealth(state) {
 }
 
 const isLockstep = state => ['sonic-mujoco-lockstep'].includes(state.session?.metadata?.recording_kind);
+const modelledLatency = state => state.session?.metadata?.latency_model?.ms || 0;
 
 function card(title, body, { evidence = null, cls = '', id = '' } = {}) {
   return `<section class="card ${cls}" ${id ? `id="${id}"` : ''}><header><h4>${escape(title)}</h4>${evidence ? chip(evidence) : ''}</header>${body}</section>`;
@@ -41,9 +42,9 @@ function renderIntent(state) {
   const nav = goal ? card('Navigation target', `${fact('Goal · world XY', `[${vector(goal, 2)}] m`)}${fact('Distance now', num(dist, 3, 'm'), dist !== null && crit && dist <= crit.goal_radius_m ? 'value-good' : '')}
       ${crit ? tiny(`Success needs ≤ ${num(crit.goal_radius_m, 2, 'm')} and speed ≤ ${num(crit.goal_speed_m_s, 2, 'm/s')} held ${num(crit.goal_hold_s, 2, 's')}. Collision > ${num(crit.obstacle_contact_threshold_n, 0, 'N')}.`) : ''}`, { evidence: 'configured' }) : '';
   const plan = card('Planner selection', p ? `${fact('Selection rule', p.rule ?? 'Unavailable', 'value-amber')}${fact(p.attribution ? 'Executing for' : 'Plan age at cursor', num(p.age_s, 3, 's'))}${p.attribution ? tiny(p.attribution) : ''}${fact('Waypoint · world', p.waypoint ? `[${vector(p.waypoint, 2)}] m` : 'Unavailable')}
-      ${fact(isLockstep(state) ? 'CPU compute · physics paused' : 'Compute latency', num(p.latency_ms, 1, 'ms'))}
+      ${fact(isLockstep(state) ? (modelledLatency(state) ? 'CPU compute (host time)' : 'CPU compute · physics paused') : 'Compute latency', num(p.latency_ms, 1, 'ms'))}
       ${p.exec_check ? `<div class="fact"><span>Execution check ${chip('estimated', 'WM-v2 predicted SONIC execution, trained on Isaac; accuracy under MuJoCo is unmeasured.')}</span><strong class="${p.exec_check.ok ? 'value-good' : 'value-amber'}">${p.exec_check.ok ? 'pass' : 'fail'} · clearance ${num(p.exec_check.clearance_m * 100, 1, 'cm')} · tilt ${num(p.exec_check.tilt_rad, 2, 'rad')} · ${escape(p.exec_check.tries ?? '—')} tr${p.exec_check.tries === 1 ? 'y' : 'ies'}</strong></div>` : ''}
-      ${p.tight !== undefined && p.tight !== null ? fact('Planner level', p.tight ? `tight / narrow passage · corridor ${num(p.corridor_m, 2, 'm')}` : 'nominal') : ''}${isLockstep(state) ? tiny('Lockstep pauses simulated time while planning, so this latency does not delay the plan in simulation. On the robot a replan has ~160 ms.') : ''}`
+      ${p.tight !== undefined && p.tight !== null ? fact('Planner level', p.tight ? `tight / narrow passage · corridor ${num(p.corridor_m, 2, 'm')}` : 'nominal') : ''}${isLockstep(state) ? tiny(modelledLatency(state) ? `Planner latency is modelled: each plan drives SONIC ${modelledLatency(state)} ms after it is requested, while physics keeps running. The CPU compute time above is host time, not simulated time. On the robot a replan has ~160 ms.` : 'Lockstep pauses simulated time while planning, so this latency does not delay the plan in simulation. On the robot a replan has ~160 ms.') : ''}`
       : notice('No planner selection recorded at this cursor.', 'neutral'), { evidence: 'commanded' });
   const ref = card(wire ? 'Observed pose reference' : 'SONIC reference window', r ? `${fact('Shape', `${r.shape?.join(' × ') ?? '—'} floats`)}${fact('Horizon', `${windowRows.length} rows · ${num(windowRows.at(-1)?.offset_s, 1, 's')}`)}
       <div class="window-bars">${windowRows.slice(0, 15).map(w => `<span title="offset ${num(w.offset_s, 3, 's')}">${num(w.offset_s, 1)}</span>`).join('')}</div>
@@ -148,7 +149,7 @@ function torqueSummary(t, actuators = null) {
     ${actuators ? fact('Actuator profile', `${actuators.label ?? actuators.profile}`) : fact('Actuator profile', 'source model (run predates profiles)')}
     ${t.exceedance_substeps ? `<table class="joint-table ref-table"><thead><tr><th>Substeps at/above</th>${refs.map(([, l]) => `<th>${escape(l)}</th>`).join('')}</tr></thead>
       <tbody><tr><td>all joints</td>${refs.map(([k]) => `<td>${ref(k) === null ? (k in t.exceedance_substeps ? '0' : '—') : escape(ref(k))}</td>`).join('')}</tr></tbody></table>` : ''}
-    <table class="joint-table"><thead><tr><th>Joint</th><th>Peak cmd</th><th>Model</th><th>Training</th><th>At limit</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${escape(n.replace('_joint', ''))}</td><td class="${atLimit(n) ? 'value-bad' : ''}">${num(v, 1)}</td><td>${num(t.model_limit_nm[n], 0)}</td><td>${num(t.training_effort_nm?.[n], 0)}</td><td>${atLimit(n) ? (t.saturated_substeps?.[n] ? escape(`${t.saturated_substeps[n]} substeps`) : 'yes (peak)') : 'no'}</td></tr>`).join('')}</tbody></table>
+    <table class="joint-table"><thead><tr><th>Joint</th><th>Peak cmd</th><th>Model</th><th>Training</th><th>At limit</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${escape(n.replace('_joint', ''))}</td><td class="${atLimit(n) ? 'value-bad' : ''}">${num(v, 1)}</td><td>${num(t.model_limit_nm[n], 0)}</td><td>${num(t.training_effort_nm?.[n], 0)}</td><td>${atLimit(n) ? (t.saturated_substeps?.[n] ? escape(`${t.saturated_substeps[n]} substep${t.saturated_substeps[n] === 1 ? '' : 's'}`) : 'yes (peak)') : 'no'}</td></tr>`).join('')}</tbody></table>
     ${tiny(`Commanded PD torque (N·m), ${t.total_substeps} substeps. The source clips to the training effort, then MuJoCo clamps to the model limit; "at limit" means the command reached the smaller of the two. Runs recorded before 2026-10-20 counted only the model clamp, so "yes (peak)" is derived from the recorded peak.`)}</details>`;
 }
 
@@ -184,7 +185,10 @@ function renderHealth(state) {
   const opt = (name, value, reason, render) => { if (value === null || value === undefined) { missing.push([name, reason]); return ''; } return render(value); };
   const evaluation = f.health?.goal_evaluation;
   const goalCard = evaluation && finite(evaluation.source_time) && evaluation.source_time <= state.time + 1e-9
-    ? card('Goal check · completed physics', `${fact('Evaluator sample', num(evaluation.source_time, 3, 's'))}${fact('Distance / required', `${num(evaluation.goal_distance_xy_m, 3)} / ≤ ${num(evaluation.goal_radius_m, 2, 'm')}`)}${fact('Speed / required', `${num(evaluation.root_speed_xy_m_s, 3)} / ≤ ${num(evaluation.goal_speed_m_s, 2, 'm/s')}`)}${fact('Hold / required', `${num(evaluation.hold_elapsed_s, 2)} / ${num(evaluation.goal_hold_s, 2, 's')}`)}`, { evidence: 'sim-truth', id: 'goal-evaluation' }) : '';
+    ? card('Goal check · completed physics', `${fact('Evaluator sample', num(evaluation.source_time, 3, 's'))}${fact('Distance / required', `${num(evaluation.goal_distance_xy_m, 3)} / ≤ ${num(evaluation.goal_radius_m, 2, 'm')}`)}${fact('Speed / required', `${num(evaluation.root_speed_xy_m_s, 3)} / ≤ ${num(evaluation.goal_speed_m_s, 2, 'm/s')}`)}${fact('Hold / required', `${num(evaluation.hold_elapsed_s, 2)} / ${num(evaluation.goal_hold_s, 2, 's')}`)}${
+      // The last recorded evaluator sample precedes the scorer's final update by one tick.
+      state.session.metadata.test_result?.outcome === 'goal_completion' && state.frameIndex === state.session.frames.length - 1 && evaluation.hold_elapsed_s < evaluation.goal_hold_s
+        ? tiny('The source scorer completed the hold on the final tick; this sample is the tick before it.') : ''}`, { evidence: 'sim-truth', id: 'goal-evaluation' }) : '';
   const timing = card('Timing vs budget', `<div class="budget-row">${budget(lock ? 'CPU planner compute' : 'Planner compute', h.planner_latency_ms, 160, 'deploy replan')}${budget('SONIC inference', h.sonic_inference_ms, 20, 'control tick')}${budget('Control step wall', h.control_step_wall_ms, 20, 'control tick')}</div>
     ${lock ? tiny('CPU lockstep: physics pauses while the planner runs, so these are compute measurements, not real-time deadline results.') : ''}`, { evidence: 'observed' });
   const streams = card('Freshness at cursor', `${opt('State age', h.state_age_ms, 'No state stream', v => fact('State age', `${num(v, 1, 'ms')}${h.state_stale ? ' · STALE' : ''}`, h.state_stale ? 'value-amber' : ''))}

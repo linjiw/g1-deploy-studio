@@ -56,7 +56,8 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 2026-10-20 | Predictive anchoring for the Flow callback is a Studio-side deployment adapter (`studio/latency_anchor.py`); Flow code is unchanged |
 | 2026-10-20 | L3 isolation: owner-approved network namespace (domain 0 cannot leave a loopback-only namespace) instead of an upstream domain change first |
 | 2026-10-20 | The 7 `.pyc` files a probe agent wrote into the g1-student-deploy venv were removed |
-| 2026-10-20 | Independent review session (3 high, 8 medium, 14 low): all fixed except the items listed above. Torque is counted at the effective limit (source clip or model clamp), scenario identity includes the actuator profile, and saved scenarios keep `source`. Evidence: `~/research-data/g1-deploy-studio/evidence/review-20261020/REVIEW.md` |
+| 2026-10-20 | Independent review session (3 high, 8 medium, 14 low, 12 nits; `evidence/review-20261020/REVIEW.md`). Then an independent verification (`evidence/verify-20261020/VERIFY.md`): 22 fixed and 3 partial; it also found one regression from a fix (following a detached run after a reload). The partial items, the regression and the remaining nits were fixed afterwards. One label stays by design: the HUD's "Speed (fd)" on recordings without a velocity field is a finite difference |
+| 2026-10-20 | Torque is counted at the effective limit (source clip or model clamp); scenario identity includes the actuator profile; saved scenarios keep `source`; under latency the shown plan is the executing one, live and recorded |
 
 ## Verify
 

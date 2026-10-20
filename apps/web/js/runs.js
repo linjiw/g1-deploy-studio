@@ -65,12 +65,12 @@ function reportHtml(rows) {
 
 function csv(rows) {
   const cols = ['id', 'label', 'policy_id', 'map_id', 'criterion', 'actuators', 'latency_ms', 'latency_anchor', 'candidates', 'ode_steps', 'seed', 'start_x', 'start_y', 'start_yaw', 'goal_x', 'goal_y',
-    'outcome', 'category', 'elapsed_s', 'final_m', 'closest_m', 'reach_post_hoc', 'reach_time_s', 'path_efficiency', 'max_contact_n', 'max_tilt_rad', 'planner_p95_ms', 'torque_at_limit_joints'];
+    'outcome', 'category', 'elapsed_s', 'final_m', 'closest_m', 'reach_post_hoc', 'reach_time_s', 'path_efficiency', 'max_contact_n', 'max_tilt_rad', 'planner_p95_ms', 'torque_at_limit_joints', 'anchor_xy_error_p50_m'];
   const q = v => v === null || v === undefined ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v);
   return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.actuators ?? 'source', r.latency?.ms ?? 0, r.latency?.anchor ?? 'measured', r.planner?.candidates, r.planner?.ode_steps, r.seed,
     r.start_xy?.[0], r.start_xy?.[1], r.start_yaw_rad, r.goal_xy?.[0], r.goal_xy?.[1], r.outcome, category(r), r.metrics.elapsed_s, r.metrics.final_goal_distance_m,
     r.derived?.closest_m, r.derived?.reach_post_hoc?.reached, r.derived?.reach_post_hoc?.time_s, r.derived?.path_efficiency, r.metrics.max_contact_n, r.metrics.max_tilt_rad,
-    r.metrics.planner_p95_ms, (r.torque_at_limit ?? Object.keys(r.torque?.saturated_substeps ?? {})).length].map(q).join(','))].join('\n');
+    r.metrics.planner_p95_ms, (r.torque_at_limit ?? Object.keys(r.torque?.saturated_substeps ?? {})).join(';'), r.anchor_prediction?.xy_m?.p50].map(q).join(','))].join('\n');
 }
 
 export const runs = { table: [], selected: new Set(), filters: { map: '', policy: '', outcome: '' }, maps: new Map(), canvas: null, colorBy: 'outcome', hover: null };
@@ -90,7 +90,8 @@ export async function refreshRuns() {
 
 function filtered() {
   const f = runs.filters;
-  return runs.table.filter(r => (!f.map || r.map_id === f.map) && (!f.policy || r.policy_id === f.policy) && (!f.outcome || (r.outcome ?? r.status) === f.outcome));
+  return runs.table.filter(r => (!f.map || r.map_id === f.map) && (!f.policy || r.policy_id === f.policy) && (!f.outcome || (r.outcome ?? r.status) === f.outcome)
+    && (!f.actuators || (r.actuators ?? 'source') === f.actuators));
 }
 
 function policyColor(id) {
@@ -113,9 +114,10 @@ export function render() {
   }).filter(s => s.n || s.unscored);
   root.innerHTML = `<div class="panel-section"><label class="field">Arena<select id="runs-map"><option value="">All</option>${maps.map(m => `<option value="${escape(m)}" ${runs.filters.map === m ? 'selected' : ''}>${escape(mapOptionLabel(m, maps))}</option>`).join('')}</select></label>
       <div class="grid-fields"><label>Policy<select id="runs-policy"><option value="">All</option>${policies.map(p => `<option value="${escape(p)}" ${runs.filters.policy === p ? 'selected' : ''}>${escape(p)}</option>`).join('')}</select></label>
-      <label>Outcome<select id="runs-outcome"><option value="">All</option>${outcomes.map(o => `<option value="${escape(o)}" ${runs.filters.outcome === o ? 'selected' : ''}>${escape(String(o).replaceAll('_', ' '))}</option>`).join('')}</select></label></div>
+      <label>Outcome<select id="runs-outcome"><option value="">All</option>${outcomes.map(o => `<option value="${escape(o)}" ${runs.filters.outcome === o ? 'selected' : ''}>${escape(String(o).replaceAll('_', ' '))}</option>`).join('')}</select></label>
+      <label>Actuators<select id="runs-actuators"><option value="">All</option>${['g1-current', 'g1-rev1', 'source'].map(a => `<option value="${a}" ${runs.filters.actuators === a ? 'selected' : ''}>${escape(ACTUATOR_SHORT[a])}</option>`).join('')}</select></label></div>
       <div class="field-row compact"><label class="check"><input type="radio" name="runs-color" value="outcome" ${runs.colorBy === 'outcome' ? 'checked' : ''}> Color by outcome</label><label class="check"><input type="radio" name="runs-color" value="policy" ${runs.colorBy === 'policy' ? 'checked' : ''}> by policy</label><button id="runs-refresh">Refresh</button></div></div>
-    ${stats.length ? `<div class="panel-section"><h4>Outcomes in view</h4>${stats.map(s => `<div class="stat-row"><i style="background:${policyColor(s.id)}"></i><span>${escape(s.id)}</span><strong>${s.goals}/${s.n} goals</strong><small>${s.contact} with contact${s.contactUnknown ? ` · ${s.contactUnknown} contact unknown` : ''}${s.unscored ? ` · ${s.unscored} not scored (killed/cancelled/running)` : ''}${s.mixed ? ' · conditions mixed: see the report below' : ''}</small></div>`).join('')}<p class="tiny">Pooled over every condition in view. Per-condition rates with confidence intervals are in the robustness report below.</p></div>` : ''}
+    ${stats.length ? `<div class="panel-section"><h4>Outcomes in view</h4>${stats.map(s => `<div class="stat-row"><i style="background:${policyColor(s.id)}"></i><span>${escape(s.id)}</span><span class="pooled">${s.goals}/${s.n} goals</span><small>${s.contact} with contact${s.contactUnknown ? ` · ${s.contactUnknown} contact unknown` : ''}${s.unscored ? ` · ${s.unscored} not scored (killed/cancelled/running)` : ''}${s.mixed ? ' · conditions mixed: see the report below' : ''}</small></div>`).join('')}<p class="tiny">Pooled over every condition in view. Per-condition rates with confidence intervals are in the robustness report below.</p></div>` : ''}
     ${reportHtml(rows)}
     <div class="panel-section runs-list">${rows.length ? rows.map(r => `<div class="run-row ${runs.selected.has(r.id) ? 'selected' : ''}">
         <label class="run-check" title="Compare"><input type="checkbox" data-run-select="${escape(r.id)}" ${runs.selected.has(r.id) ? 'checked' : ''} ${r.trajectory ? '' : 'disabled'}><i style="background:${runColor(r)}"></i></label>
@@ -126,6 +128,7 @@ export function render() {
   $('runs-map').addEventListener('change', e => { runs.filters.map = e.target.value; render(); });
   $('runs-policy').addEventListener('change', e => { runs.filters.policy = e.target.value; render(); });
   $('runs-outcome').addEventListener('change', e => { runs.filters.outcome = e.target.value; render(); });
+  $('runs-actuators').addEventListener('change', e => { runs.filters.actuators = e.target.value; render(); });
   root.querySelectorAll('input[name=runs-color]').forEach(r => r.addEventListener('change', () => { runs.colorBy = r.value; render(); drawCompare(); }));
   $('runs-refresh').addEventListener('click', () => refreshRuns().catch(e => emit('workbench:error', e.message)));
   $('runs-select-all')?.addEventListener('click', () => { runs.selected = new Set(rows.filter(r => r.trajectory).slice(0, 64).map(r => r.id)); render(); drawCompare(); });

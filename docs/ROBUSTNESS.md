@@ -5,10 +5,12 @@
 > - **200 ms planner latency:**
 >   - Planning from stale state collapses WX to 1/12; the bundle collapses the same way (Addendum B).
 >   - Predictive anchoring restores 11/12 on the deprecated 88 N·m hip model (Addendum C).
->   - On the current-G1 limits the policies were trained for (139/139/88), the same setup holds only 7/12: it reaches the goal and does not settle (Addendum D). Addendum E adds more seeds and the 160 ms robot budget.
+>   - On the current-G1 limits the policies were trained for (139/139/88), the same setup holds 21/36 over three seeds (4–10/12 per seed). Failures mostly reach the goal and do not settle (Addenda D–E).
+> - **160 ms, the robot's replan budget:** with predictive anchoring on the current-G1 limits, WX holds **12/12** (Addendum E). The cliff lies between 160 and 200 ms.
+> - **Torque:** every run under latency reaches a torque limit, most often the 50 N·m ankle clip. Corrected after the review (Addendum E).
 > - **Every number below is CPU MuJoCo lockstep from standing starts.** It is not hardware evidence. Results depend on the actuator profile, which every run now records.
 >
-> The original write-up follows unchanged; it used the source actuator model (88/88/88).
+> The original write-up follows, with dated correction notes. It used the source actuator model (88/88/88) and the earlier path-efficiency definition (straight distance / path length; now progress / path, bounded by 1).
 
 **Question.** If we pick random navigation goals, how does the current best Flow policy (WX-RF) behave, and is it robust?
 
@@ -138,7 +140,7 @@ The values are *commanded* per physics substep (source `pd_torque`, simulator-co
 | P5 WX K16/ODE10 | 0/4 | — | 0 / 4 956 |
 | P6 bundle lat 200p | 4/12 | L hip roll 3 · 121.9; L hip pitch 1 · 122.6; R hip pitch 1 · 89.3 | 24 / 11 888 |
 
-Only hip pitch and hip roll ever exceeded the limit; knees (limit 139) and ankles never did. At latency 0 the excursions are short spikes. Under WX + 200 ms they are sustained, which agrees with the visible jitter (§4). The robot contract still has the open 139 vs 88 N·m hip-limit question ([ROBOT_CONTRACT.md](ROBOT_CONTRACT.md)). This campaign shows that question matters for WX: its training-effort commands were clamped in MuJoCo even in successful runs. *(Correction, Addendum E: this counted only the MuJoCo clamp. The source PD clip at the training effort, 139 N·m at knees and 50 N·m at ankles, was not counted. Re-derived from peaks, knees and ankles also reached their limits; P1 had 4/24 runs at a limit and P3 12/12.)*
+*(Corrected 2026-10-20, Addendum E.)* With the source model, the MuJoCo clamp at 88 N·m bound the hip pitch and roll. The source PD also clips every command at the training effort (139 N·m at knees, 50 N·m at ankles), and that clip was not counted at first. Re-derived from the recorded peaks, knees and ankles reached their limits too: P1 had 4/24 runs at a limit, P3 12/12. At latency 0 the excursions are short spikes; under WX + 200 ms they are sustained, which agrees with the visible jitter (§4). The hip-limit question is resolved per hardware revision (Addendum D, ROBOT_CONTRACT.md).
 
 ## 4. Behaviours worth knowing (job ids, screenshots in `screens/`)
 
@@ -178,7 +180,7 @@ The bundle comparison favours WX, but it is not like for like: WX is *privileged
 
 ## 6. Tool errors (excluded) and product/UX issues found
 
-1. **Bug, confirmed by the lead engineer; fix pending release.** WX-RF fails at its first replan on any box-free map.
+1. **Bug, confirmed by the lead engineer; fixed and released (15959b7); Addendum A reran the scenarios.** WX-RF fails at its first replan on any box-free map.
    - Error: `ValueError: Out of range float values are not JSON compliant`.
    - Cause: the planner reports infinite clearance, which Studio's wrapper copies as `float(inf)` (`studio/flow_policy_worker.py:371`, pipeline clearance fields) into JSON written with `allow_nan=False` (`policy_worker._atomic`). Flow's own `native/plans.json` writes `null`.
    - Repro: Arena → template *Empty floor* → save → Rehearse → WX-RF, any preset.
@@ -218,7 +220,7 @@ No gateway outage, suite failure or worker failure other than item 1 occurred, a
 
 ## 8. Suggested follow-ups
 
-- Re-run the 6 open-floor WX scenarios after the JSON fix is released; the lead plans to do this. Scenario ids are in `campaign_state.json` under the tags `P1:open:*`.
+- Re-run the 6 open-floor WX scenarios after the JSON fix is released; the lead plans to do this. Scenario ids are in `campaign_state.json` under the tags `P1:open:*`. *(Done: Addendum A, 24/24.)*
 - Check WX latency on the Flow side with a latency-aware callback. Then measure dose-response at 60, 100 and 160 ms on the P3 presets.
 - Score WX with `arena_reach` and with arrive-and-hold side by side on more seeds, to separate "cannot stop" from "cannot reach".
 - Decide the hip effort limit (139 vs 88 N·m) before reading torque-clamped runs as hardware-plausible. *(Done: resolved per hardware revision, Addendum D and ROBOT_CONTRACT.md.)*

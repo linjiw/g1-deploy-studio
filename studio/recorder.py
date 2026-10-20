@@ -2,6 +2,10 @@
 
 Run ``python -m studio.recorder --help``. This module never creates a DDS
 participant or a ZMQ PUB socket. It is independent of the browser lifecycle.
+
+SIGINT/SIGTERM end a capture normally: ``capture_end`` and the summary are written,
+``stopped_by`` is ``signal`` and the exit code is 0 (a stop request is not an error).
+Further signals during the final flush are absorbed; the disk writer gets at most 3 s.
 """
 from __future__ import annotations
 

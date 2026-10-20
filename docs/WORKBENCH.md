@@ -98,3 +98,5 @@ Bundle-profile runs also record causal LiDAR and maps at 5 Hz. WX runs record no
 `GET /api/workbench`, `/api/map?id=`, `/api/scenarios`, `/api/jobs[?id=&light=1&perception_after=]`, `/api/suites[?id=]`, `/api/runs`, `/api/policies`, `/api/robot`, `/api/sensors?session=&time=[&masks=1]`, `/api/session?id=` (gzip + ETag), `/api/version`.
 
 `POST /api/scenarios`, `/api/arenas`, `/api/maps/import`, `/api/jobs`, `/api/jobs/cancel`, `/api/suites`, `/api/suites/cancel`. No other mutation or control endpoint exists.
+
+A scenario request without `policy_id` uses the frozen bundle. That is a stable API default, while the UI preselects the adopted profile; scripts should always pass `policy_id`. Without `actuators`, a new request uses `g1-current`.

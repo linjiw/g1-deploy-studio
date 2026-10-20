@@ -427,4 +427,6 @@ body.arena-preview .vp-hud, body.arena-preview .viewport-meta { display: none; }
 .discrepancy.st-resolved .sev { color: var(--c-green); border-color: currentColor; }
 .discrepancy.st-mitigated .sev { color: var(--c-blue); border-color: currentColor; }
 .discrepancy .resolution { color: var(--c-green); }
+.stat-row .pooled { color: var(--muted); font-weight: 500; }
+.actuator-token { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
 

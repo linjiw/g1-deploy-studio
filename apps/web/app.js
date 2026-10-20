@@ -126,7 +126,7 @@ function updateModeBadge() {
   }
   const fid = fidelity(m), level = fid.short ?? (fid.level === 'L2-approx' ? 'L2≈' : fid.level);
   const detached = live && state.liveStatus === 'detached';
-  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\./.test(m.provenance?.adapter ?? '') ? `REPLAY · CPU REHEARSAL · ${level}` : `REPLAY · RECORDED LOCKSTEP · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : m.fidelity === 'L3' ? 'REPLAY · REAL-TIME CHAIN · L3' : 'REPLAY · L0';
+  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\.(flow_)?policy_worker/.test(m.provenance?.adapter ?? '') ? `REPLAY · CPU REHEARSAL · ${level}` : `REPLAY · RECORDED LOCKSTEP · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : m.fidelity === 'L3' ? 'REPLAY · REAL-TIME CHAIN · L3' : 'REPLAY · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;
@@ -304,6 +304,12 @@ async function attachLive(job) {
   const terminal = ['completed', 'failed', 'cancelled'].includes(job.status);
   if (rh.attached !== job.id) {
     if (terminal && !job.result_session_id) return;  // ended without a replayable recording
+    if (job.status === 'detached') {
+      // After a reload, a restarted gateway serves no live session for a run it does not own: follow its
+      // status from the job API only and open the recording when it finishes (rehearse:finished).
+      if (rh.followDetached !== job.id) { rh.followDetached = job.id; emit('workbench:error', `Following ${job.id}, which a previous gateway started; its recording opens when it finishes.`); }
+      return;
+    }
     rh.attached = job.id;
     const ok = await loadSession(job.id, { keepCamera: true });
     if (!ok) { rh.attached = null; return; }
@@ -356,7 +362,8 @@ on('rehearse:job', job => { if (state.workspace === 'rehearse' || rh.attached ==
 on('rehearse:started', () => { rh.attached = null; $('workbench-error').hidden = true; });
 on('rehearse:finished', async job => {
   await refreshSessionList(state.sessionId);
-  const viewing = rh.attached === job.id && state.sessionId === job.id;
+  const viewing = (rh.attached === job.id && state.sessionId === job.id) || rh.followDetached === job.id;
+  if (rh.followDetached === job.id) { rh.followDetached = null; emit('workbench:clear', `Following ${job.id}, which a previous gateway started; its recording opens when it finishes.`); }
   if (viewing && job.result_session_id) {
     const keepTime = state.time;
     await loadSession(job.result_session_id, { keepCamera: true });
@@ -400,6 +407,7 @@ on('arena:preview3d', enabled => {
   setPreviewing(enabled);
   if (enabled) {
     $('session-title').textContent = `Arena draft · ${arena.label || 'unsaved'}`;
+    $('navigation-caption').textContent = 'Draft arena geometry, starts and goals. Save it, then use Rehearse to run a policy on it.';
     $('source-badge').className = 'chip chip-configured'; $('source-badge').textContent = 'CONFIGURED';
   } else if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
   if (enabled) { const q = activePreset(); scene.setArenaPreview(arenaDocument(), { start: q?.start_xy, yaw: q?.start_yaw_rad, goal: q?.goal_xy }); scene.fitScene(); }

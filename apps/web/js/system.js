@@ -66,15 +66,21 @@ export function sessionKind(session) {
   return 'reference';
 }
 
+// Under a latency model the plan edge is not "physics paused": each plan lands L ms after its request.
+function latencyTopic(edge, session) {
+  const ms = session?.metadata?.latency_model?.ms;
+  return edge.id === 'flow-feed' && ms ? `plan lands +${ms} ms (physics runs)` : null;
+}
+
 // Evidence per edge for the open session (never upgrades configured to observed).
 const PRIVILEGED_UNUSED = new Set(['lidar-perception', 'state-perception', 'perception-route']);
 function edgeEvidence(edge, kind, session) {
   if (kind === 'privileged') {
     if (PRIVILEGED_UNUSED.has(edge.id)) return { evidence: 'unavailable', transport: 'inproc', topic: 'not used: privileged block', basis: 'This block plans from the exact configured boxes; no LiDAR, perception map or sensed route exists in the run' };
     if (edge.id === 'route-flow') return { evidence: 'configured', transport: 'inproc', topic: 'privileged cost route on exact boxes (SIM-TRUTH)', basis: 'Route computed from the simulator\'s exact collision boxes, not from sensing' };
-    return { evidence: 'observed', transport: edge.lockstep[0], topic: edge.lockstep[1], basis: 'Observed by Studio wrappers inside the owned CPU worker (Flow callback)' };
+    return { evidence: 'observed', transport: edge.lockstep[0], topic: latencyTopic(edge, session) ?? edge.lockstep[1], basis: 'Observed by Studio wrappers inside the owned CPU worker (Flow callback)' };
   }
-  if (kind === 'worker') return { evidence: 'observed', transport: edge.lockstep[0], topic: edge.lockstep[1], basis: 'Observed by Studio wrappers inside the owned CPU worker' };
+  if (kind === 'worker') return { evidence: 'observed', transport: edge.lockstep[0], topic: latencyTopic(edge, session) ?? edge.lockstep[1], basis: 'Observed by Studio wrappers inside the owned CPU worker' };
   if (kind === 'lockstep') return { evidence: 'recorded', transport: edge.lockstep[0], topic: edge.lockstep[1], basis: 'In-process lockstep recording (no DDS/ZMQ)' };
   if (kind === 'wire') {
     if (edge.id === 'feed-sonic') return { evidence: 'observed', transport: 'zmq', topic: 'pose v1 at Studio subscriber', basis: 'Receiver-side observation of recorded reference packets' };

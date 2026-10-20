@@ -379,7 +379,12 @@ def execute(request, output):
             sync()
             post = sim.measure()
             reference = decode_reference(tgt, q)
-            plan = _plan(current['plan'], current['plan']['tick'] * DT, t) if current['plan'] else None
+            if latency_ticks and current.get('executing'):
+                row, start_tick, request_tick = current['executing']
+                plan = dict(_plan(row, start_tick * DT, t), requested_at_s=request_tick * DT, executing_since_s=start_tick * DT,
+                            attribution=f"executing plan: requested at {request_tick * DT:.2f} s, driving SONIC since {start_tick * DT:.2f} s")
+            else:
+                plan = _plan(current['plan'], current['plan']['tick'] * DT, t) if current['plan'] else None
             if current['sonic_sample'] is not None:
                 current['sonic_sample'].update(target_joints_rad=np.asarray(target).tolist(), reference=np.asarray(tgt).tolist())
             frame = {'time': t, 'sequence': len(frames), 'source_time': t, 'source_clock_domain': 'simulation',
@@ -425,6 +430,10 @@ def execute(request, output):
             if latency_ticks:
                 tick = len(frames)
                 plan, anchor_q, anchor_dq, elapsed = delayed.target_args(plan, anchor_q, anchor_dq, elapsed, tick)
+                # Live view: the executing plan's row (it landed at request + latency), not the latest request.
+                start_tick, request_tick = delayed.starts[-1] if delayed.starts else (None, None)
+                row = next((r for r in reversed(plans) if r['tick'] == request_tick), None)
+                current['executing'] = (row, start_tick, request_tick) if row is not None else None
                 if predict:
                     # A predicted plan lands at its anchor tick: compare the predicted anchor (estimated)
                     # with the measured pre-action state the callback holds at this tick (simulator truth).
