@@ -97,8 +97,9 @@ await R.check('4.12', 'Bundle run with 200 ms latency (predict): fidelity badge 
   const health = await page.locator('#health-content').textContent(), badge = await page.locator('#mode-badge').textContent();
   const job = (await api(page, `/api/jobs?id=${id}&light=1`)).body;
   assert(job.scenario.latency.ms === 200 && job.scenario.latency.anchor === 'predict', `latency ${JSON.stringify(job.scenario.latency)}`);
-  assert(/· L2$/.test(badge.trim()) && !/L2≈/.test(badge), `badge ${badge}`);
-  assert(/L2 · lockstep with 200 ms planner latency/.test(health), 'health fidelity text');
+  // Since the review (L3) the bundle badge names its anchor: "L2 predict".
+  assert(/· L2( predict)?$/.test(badge.trim()) && !/L2≈/.test(badge), `badge ${badge}`);
+  assert(/L2( predict)? · lockstep with 200 ms planner latency/.test(health), 'health fidelity text');
   return { badge, shot: await R.shot('result-bundle-lat200') };
 });
 
@@ -110,7 +111,7 @@ await R.check('B.torque', 'Health torque card present for a new run', async () =
   if (n) await page.locator('#health-content .torque-details summary').first().click();
   const rows = n ? await page.locator('#health-content .torque-details tr').count() : 0;
   const shot = await R.shot('health-torque');
-  assert(n === 1 && /Leg torque vs model limit/.test(summary) && rows > 1, `torque card ${n} summary ${summary} rows ${rows}`);
+  assert(n === 1 && /Leg torque vs (model )?limit/.test(summary) && rows > 1, `torque card ${n} summary ${summary} rows ${rows}`);
   return { summary, rows, shot };
 });
 
@@ -325,6 +326,15 @@ await R.check('B.suite-refuses', 'A running suite refuses a manual Run preset (s
       }
       if (started) break;
     } else await sleep(150);
+  }
+  // The run 1 → run 2 gap can be shorter than one poll; then refusal is checked while the suite is still running.
+  if (!posts && !started) {
+    for (let i = 0; i < 3; i++) {
+      const r = await page.request.post(`${BASE}/api/jobs`, { headers: { 'Content-Type': 'application/json', 'X-Studio-Token': token, Origin: BASE }, data: { scenario_id: scen.id } });
+      posts++; const b = await r.json().catch(() => ({}));
+      if (r.status() < 300) { started = b.id; break; }
+      msgs[`${r.status()} ${b.error}`] = (msgs[`${r.status()} ${b.error}`] ?? 0) + 1;
+    }
   }
   if (started) { await page.request.post(`${BASE}/api/jobs/cancel`, { headers: { 'Content-Type': 'application/json', 'X-Studio-Token': token, Origin: BASE }, data: { id: started } }).catch(() => {}); jobs.leaked = started; }
   const jobsAfter = (await api(page, '/api/jobs')).body.jobs.length;

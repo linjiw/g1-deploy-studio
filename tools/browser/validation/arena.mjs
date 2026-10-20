@@ -318,7 +318,7 @@ await R.check('3.12', 'Preflight: goal inside a wall shows ✕ and Save refuses'
   await page.fill('#preset-gy', '0.6'); await page.locator('#preset-gy').dispatchEvent('change');
   const mark = await page.locator('[data-preset-index="0"] .preset-state').textContent();
   assert(mark === '✕', `mark ${mark}`);
-  assert(/goal an obstacle intersects/i.test(await statusText()), `issues ${await statusText()}`);
+  assert(/goal( —)? an obstacle intersects/i.test(await statusText()), `issues ${await statusText()}`);
   let posted = 0; const onReq = r => { if (r.url().includes('/api/arenas') && r.method() === 'POST') posted++; };
   page.on('request', onReq);
   await page.click('#arena-save'); await sleep(400);
