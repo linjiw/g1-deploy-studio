@@ -10,11 +10,13 @@ const { browser, context } = await launch();
 const probe = await context.newPage();
 await probe.goto(`${BASE}/`);
 const target = (await api(probe, '/api/jobs')).body.jobs.find(j => j.status === 'completed' && j.result_session_id === j.id)?.id;
+// Start on another recording: at startup the app opens the newest run, which would otherwise be the target itself.
+const other = (await api(probe, '/api/sessions')).body.sessions.find(s => s.available && s.id !== target)?.id;
 await probe.close();
 
 for (const variant of ['natural', 'delay-sessions', 'delay-session']) {
   await R.check(`N9-${variant}`, `Terminal first attach (${variant}): one recording load, replay mode, no "No recording" banner, picker names the run`, async () => {
-    assert(target, 'needs one completed owned run on this gateway');
+    assert(target && other, 'needs one completed owned run and one other recording on this gateway');
     const page = await context.newPage();
     R.watch(page);
     const loads = [];
@@ -34,10 +36,10 @@ for (const variant of ['natural', 'delay-sessions', 'delay-session']) {
     if (variant === 'delay-sessions') await page.route(/\/api\/sessions(\?.*)?$/, async route => { if (fake) await sleep(1500); return route.continue(); });
     if (variant === 'delay-session') await page.route(/\/api\/session\?/, async route => {
       if (fake && new URL(route.request().url()).searchParams.get('id') === target) await sleep(1500); return route.continue(); });
-    await page.goto(`${BASE}/?workspace=rehearse`);
+    await page.goto(`${BASE}/?workspace=rehearse&session=${encodeURIComponent(other)}`);
     await page.waitForFunction(() => window.__studio?.state?.session && document.querySelector('#loading-overlay').hidden && document.querySelector('#rh-run'), null, { timeout: 120000 });
     await sleep(1500);
-    fake = true;
+    loads.length = 0; fake = true;
     await page.evaluate(async () => { const m = await import('/js/rehearse.js'); await m.refreshActive(); });
     await sleep(6000);
     const final = await page.evaluate(() => {

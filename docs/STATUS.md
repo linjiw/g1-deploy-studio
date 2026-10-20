@@ -5,7 +5,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 
 - **Service:** http://127.0.0.1:8790/ (systemd user unit `g1-deploy-studio`, see [SERVICE.md](SERVICE.md)). The served commit is shown in the status bar and at `/api/version`.
 - **Remote:** `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open http://localhost:8790/.
-- **Video introduction:** `~/research-data/g1-deploy-studio/evidence/video-20261020/` (7:17, narrated, subtitles; rebuild with [tools/video](../tools/video/README.md)).
+- **Video introduction:** `~/research-data/g1-deploy-studio/evidence/video-20261020/` (7:19, narrated, subtitles; rebuild with [tools/video](../tools/video/README.md)).
 
 ## Capabilities
 
