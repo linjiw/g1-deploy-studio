@@ -1,11 +1,16 @@
 import json
+import os
 from pathlib import Path
+import signal
+import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
 
-from studio.recorder import BoundedRecorder, StreamHealth, validate_endpoint
+from studio.recorder import BoundedRecorder, StreamHealth, capture_zmq, validate_endpoint
 
 
 class EndpointTests(unittest.TestCase):
@@ -78,3 +83,48 @@ class RecorderTests(unittest.TestCase):
             self.assertEqual(path.stat().st_size, 0)
             with self.assertRaises(FileExistsError):
                 BoundedRecorder(path)
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+class StopTests(unittest.TestCase):
+    """A stop request ends the capture normally: summary, capture_end and the reason are written."""
+
+    def test_stop_event_ends_capture_with_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stop = threading.Event()
+            stop.set()
+            out = Path(tmp) / 'capture.jsonl'
+            t0 = time.monotonic()
+            result = capture_zmq([f'tcp://127.0.0.1:{free_port()}'], ['g1_debug'], out, duration=30, stop_event=stop)
+            self.assertLess(time.monotonic() - t0, 5)
+            self.assertEqual(result['stopped_by'], 'signal')
+            records = [json.loads(line) for line in out.read_text().splitlines()]
+            self.assertEqual(records[-1]['record'], 'capture_end')
+            self.assertEqual(records[-1]['stopped_by'], 'signal')
+
+    def test_sigint_prints_summary_and_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / 'capture.jsonl'
+            proc = subprocess.Popen([sys.executable, '-m', 'studio.recorder', '--endpoint', f'tcp://127.0.0.1:{free_port()}',
+                                     '--topic', 'g1_debug', '--output', str(out), '--duration', '30'],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                    cwd=Path(__file__).resolve().parents[1], env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+            deadline = time.monotonic() + 10
+            while not out.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(0.3)
+            proc.send_signal(signal.SIGINT)
+            stdout, stderr = proc.communicate(timeout=10)
+            self.assertEqual(proc.returncode, 0, stderr)
+            self.assertNotIn('Traceback', stderr)
+            self.assertEqual(json.loads(stdout)['stopped_by'], 'signal')
+            self.assertEqual(json.loads(out.read_text().splitlines()[-1])['stopped_by'], 'signal')
+
+
+if __name__ == '__main__':
+    unittest.main()

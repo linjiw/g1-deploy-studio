@@ -13,6 +13,7 @@ import ipaddress
 import json
 from pathlib import Path
 import queue
+import signal
 import threading
 import time
 from urllib.parse import urlsplit
@@ -174,11 +175,13 @@ class BoundedRecorder:
 
 
 def capture_zmq(endpoints, topics, output, *, duration=10.0, queue_size=64,
-                max_bytes=256 * 1024 * 1024, stale_after_s=0.5, include_wire=True):
+                max_bytes=256 * 1024 * 1024, stale_after_s=0.5, include_wire=True, stop_event=None):
     """Capture local streams and transport state; return exact capture stats.
 
     Topics are observed independently even when they share a publisher. No
     source-latency claims are made without an explicit clock-alignment receipt.
+    ``stop_event`` (set by SIGINT/SIGTERM in ``main``) ends the capture normally,
+    so the summary and ``capture_end`` are always written; ``stopped_by`` says why.
     """
     import zmq
     from zmq.utils.monitor import recv_monitor_message
@@ -190,6 +193,8 @@ def capture_zmq(endpoints, topics, output, *, duration=10.0, queue_size=64,
     if not 0 < duration <= 3600 or queue_size > 4096 or stale_after_s <= 0:
         raise ValueError("invalid capture duration, queue size, or freshness threshold")
     session = str(uuid.uuid4())
+    stop_event = stop_event or threading.Event()
+    stopped_by = "duration"
     start = time.monotonic()
     recorder = BoundedRecorder(output, queue_size=queue_size, max_bytes=max_bytes)
     context = zmq.Context()
@@ -220,6 +225,9 @@ def capture_zmq(endpoints, topics, output, *, duration=10.0, queue_size=64,
             sock.connect(endpoint)
         last_status = start
         while time.monotonic() - start < duration and not recorder.limit_reached and recorder.error is None:
+            if stop_event.is_set():
+                stopped_by = "signal"
+                break
             for sock, _ in poller.poll(50):
                 now = time.monotonic()
                 if sock in monitors:
@@ -259,6 +267,10 @@ def capture_zmq(endpoints, topics, output, *, duration=10.0, queue_size=64,
                                  "streams": {e + "#" + t.decode(): h.snapshot(now) for (e, t), h in health.items()},
                                  "recorder": recorder.stats()})
                 last_status = now
+        if stopped_by == "duration" and (recorder.limit_reached or recorder.error is not None):
+            stopped_by = "file_limit" if recorder.limit_reached else "writer_error"
+    except KeyboardInterrupt:
+        stopped_by = "signal"  # a SIGINT that arrived before the handler or outside the poll
     finally:
         for sock in sockets:
             sock.disable_monitor()
@@ -269,10 +281,10 @@ def capture_zmq(endpoints, topics, output, *, duration=10.0, queue_size=64,
         now = time.monotonic()
         final_health = {e + "#" + t.decode(): h.snapshot(now) for (e, t), h in health.items()}
         recorder.submit({"record": "capture_end", "receipt_timestamp": now,
-                         "duration_s": now - start, "streams": final_health})
+                         "duration_s": now - start, "stopped_by": stopped_by, "streams": final_health})
         stats = recorder.close()
     return {"output": str(Path(output).resolve()), "session_id": session, "duration_s": now - start,
-            "streams": final_health, "recorder": stats, "hardware_command_path": False}
+            "stopped_by": stopped_by, "streams": final_health, "recorder": stats, "hardware_command_path": False}
 
 
 def main():
@@ -284,8 +296,11 @@ def main():
     parser.add_argument("--queue-size", type=int, default=64)
     parser.add_argument("--max-bytes", type=int, default=256 * 1024 * 1024)
     args = parser.parse_args()
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
     result = capture_zmq(args.endpoint, args.topic, args.output, duration=args.duration,
-                         queue_size=args.queue_size, max_bytes=args.max_bytes)
+                         queue_size=args.queue_size, max_bytes=args.max_bytes, stop_event=stop)
     print(json.dumps(result, indent=2))
     if result["recorder"]["writer_error"]:
         raise SystemExit(1)
