@@ -48,7 +48,10 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertEqual(self.get('/api/sessions', {'Origin': 'https://attacker.invalid'})[0], 403)
         self.assertEqual(self.get('/api/sessions', {'Sec-Fetch-Site': 'cross-site'})[0], 403)
         self.assertEqual(self.get('/api/control', method='POST')[0], 405)
-        self.assertEqual(self.get('/api/session?id=missing')[0], 422)
+        # A configured source whose file is absent is Not Found, without its filesystem path.
+        status, body = self.get('/api/session?id=missing')
+        self.assertEqual(status, 404)
+        self.assertIn('no replayable recording', json.loads(body)['error'])
 
     def test_fails_closed_on_public_binding(self):
         for host in ['0.0.0.0', '::', 'localhost', '192.0.2.1']:

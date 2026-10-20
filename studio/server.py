@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import OrderedDict
 import gzip
 import hashlib
@@ -28,6 +29,24 @@ SEND_CHUNK = 256 * 1024
 COMPRESSIBLE = ('application/json', 'text/', 'application/javascript', 'model/stl',
                 'image/svg+xml')
 QUIET_PREFIXES = ('/api/sensors', '/api/jobs', '/assets/', '/vendor/', '/api/version')
+INDEX_HTML = ROOT / 'apps/web/index.html'
+INLINE_SCRIPT = re.compile(rb'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', re.S)
+_script_policy = {}
+
+
+def script_policy(index=INDEX_HTML):
+    """script-src allowing only same-origin files and the hashed inline scripts of index.html (the importmap)."""
+    try:
+        stat = index.stat()
+        key = (str(index), stat.st_mtime_ns, stat.st_size)
+        if _script_policy.get('key') != key:
+            hashes = [f"'sha256-{base64.b64encode(hashlib.sha256(body).digest()).decode()}'"
+                      for body in INLINE_SCRIPT.findall(index.read_bytes())]
+            _script_policy.update(key=key, value=' '.join(["script-src 'self'", *hashes]))
+        return _script_policy['value']
+    except OSError:
+        return "script-src 'self'"
+
 
 
 class Encoded:
@@ -64,6 +83,10 @@ def build_identity(root=ROOT):
             'committed_at': git('log', '-1', '--format=%cI'),
             'dirty': None if status is None else bool(status), 'root': str(root),
             'started_unix_s': time.time()}
+
+
+class NoRecording(LookupError):
+    """A known session whose recording does not exist (e.g. a run cancelled before writing one)."""
 
 
 class Catalog:
@@ -117,6 +140,9 @@ class Catalog:
 
     def _decode(self, key, item):
         from studio.replay import load_session
+        if not Path(item['path']).exists():
+            status = item.get('status')
+            raise NoRecording(f"{key} has no replayable recording" + (f" (status: {status})" if status else ''))
         suffix = Path(item['path']).suffix.lower()
         if suffix == '.json':
             from studio.workbench import read_json
@@ -309,7 +335,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", f"default-src 'self'; {script_policy()}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'")
         self.end_headers()
 
     def _write(self, data):
@@ -471,6 +497,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond_cached(self.server.static_file(target, kind), cache)
         except (BrokenPipeError, ConnectionResetError):
             return
+        except NoRecording as error:
+            self.respond({"error": str(error)}, status=404)
         except KeyError:
             self.respond({"error": "Unknown session or resource"}, status=404)
         except (ValueError, FileNotFoundError) as error:

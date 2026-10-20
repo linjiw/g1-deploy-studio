@@ -69,7 +69,8 @@ function segmentBlocked(a, b, boxes, pad = 0.15) {
 export function randomPresets({ count = 8, minDist = 1.5, maxDist = 4.5, seed = 1, randomStart = false, heading = 'toward', replace = true, baseStart = null, obstructed = false } = {}) {
   const r = rng(seed * 7919 + 17), doc = { boxes: arena.boxes, bounds: arenaBounds(arena.boxes, []) };
   const lo = doc.bounds.min.map(v => v + 0.6), hi = doc.bounds.max.map(v => v - 0.6);
-  // A fixed base start makes the same seed reproduce the same presets, whatever is active now.
+  // The base is the active preset's start (shared by every generated preset in fixed-start
+  // mode), so the same seed and start reproduce the same presets; the note records the start.
   const base = p('Base', baseStart ?? arena.presets[arena.active]?.start_xy ?? [0, 0], arena.presets[arena.active]?.start_yaw_rad ?? 0, [3, 0]);
   const out = [];
   for (let attempt = 0; out.length < count && attempt < (obstructed ? 20000 : 4000); attempt++) {
@@ -384,6 +385,9 @@ function presetIssues() {
 // ---------------------------------------------------------------- panel
 function updateStatus() {
   const node = $('arena-status'); if (!node) return;
+  const save = $('arena-save'), go = $('arena-rehearse');
+  if (save) save.textContent = arena.savedId ? 'Saved ✓' : 'Save arena';
+  if (go) go.disabled = !arena.savedId;
   const issues = presetIssues();
   node.innerHTML = `<div class="arena-counts"><span><strong>${arena.boxes.length}</strong> boxes</span><span><strong>${arena.presets.length}</strong> presets</span><span>${arena.savedId ? `<span class="chip chip-recorded">SAVED ${escape(arena.savedId.slice(-6))}</span>` : '<span class="chip chip-unavailable">UNSAVED DRAFT</span>'}</span></div>
     ${issues.length ? `<ul class="issues">${issues.map(i => `<li>${escape(i)}</li>`).join('')}</ul>` : '<p class="tiny ok">Preflight: every start and goal clears the standing footprint. Route feasibility is not checked; only a rehearsal can tell.</p>'}`;
@@ -442,8 +446,9 @@ export function renderPanel() {
 
 function bindPanel() {
   const num_ = id => Number($(id).value);
-  $('arena-label').addEventListener('input', e => { arena.label = e.target.value; arena.savedId = null; });
-  $('arena-label').addEventListener('change', () => renderPanel());
+  // Text fields update in place: re-rendering the panel on 'change' (fired on blur by the
+  // mousedown of the next click) would replace the clicked button before its 'click'.
+  $('arena-label').addEventListener('input', e => { arena.label = e.target.value; arena.savedId = null; updateStatus(); });
   $('arena-base').addEventListener('change', e => {
     const v = e.target.value; if (!v) return;
     if (v.startsWith('tpl:')) applyTemplate(v.slice(4), Number($('arena-seed').value) || 7);
@@ -467,8 +472,11 @@ function bindPanel() {
   document.querySelectorAll('[data-preset-remove]').forEach(b => b.addEventListener('click', () => { arena.presets.splice(Number(b.dataset.presetRemove), 1); arena.active = Math.min(arena.active, arena.presets.length - 1); changed(); draw(); }));
   const q = preset();
   if (q) {
-    $('preset-label').addEventListener('input', e => { q.label = e.target.value || 'Preset'; arena.savedId = null; draw(); });
-    $('preset-label').addEventListener('change', () => renderPanel());
+    $('preset-label').addEventListener('input', e => {
+      q.label = e.target.value || 'Preset'; arena.savedId = null;
+      const row = document.querySelector(`[data-preset-select="${arena.active}"]`); if (row) row.textContent = q.label;
+      updateStatus(); draw();
+    });
     const bindPreset = (id, apply) => $(id).addEventListener('change', () => { const v = num_(id); if (finite(v)) { apply(v); changed(false); draw(); } });
     bindPreset('preset-sx', v => { q.start_xy[0] = v; }); bindPreset('preset-sy', v => { q.start_xy[1] = v; });
     bindPreset('preset-yaw', v => { q.start_yaw_rad = wrap(rad(v)); });
@@ -481,7 +489,7 @@ function bindPanel() {
     arena.rg = { count: Math.max(1, Math.min(16, Number($('rg-count').value) || 8)), minDist: Number($('rg-min').value) || 1.5,
       maxDist: Number($('rg-max').value) || 4.5, seed: Math.max(0, Number($('rg-seed').value) || 0), randomStart: $('rg-start').checked,
       heading: $('rg-heading').value, replace: !$('rg-append').checked, obstructed: $('rg-obstructed').checked,
-      baseStart: arena.rg?.baseStart ?? arena.presets[arena.active]?.start_xy?.slice() ?? [0, 0] };
+      baseStart: arena.presets[arena.active]?.start_xy?.slice() ?? [0, 0] };
     const made = randomPresets(arena.rg);
     if (made.length < arena.rg.count) emit('arena:error', `Only ${made.length} of ${arena.rg.count} goals fit the distance band and preflight; widen the band or enlarge the arena.`);
   });

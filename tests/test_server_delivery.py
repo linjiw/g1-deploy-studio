@@ -4,6 +4,7 @@ new mutation routes, and the session catalog's single-flight decode and bounded 
 Every gateway binds loopback port 0 on a temporary catalog. No route here can start
 a worker: the attached workbench reports its backend as unavailable.
 """
+import base64
 import copy
 import gzip
 import hashlib
@@ -150,6 +151,18 @@ class SessionDeliveryTests(GatewayCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn('job-live', self.catalog.cache)
 
+    def test_run_without_recording_is_a_clean_404(self):
+        # A run cancelled before writing session.json stays listed, but a replay
+        # request gets a plain "no recording" answer, not a filesystem error.
+        missing = self.base / 'jobs/job-cancelled/run/session.json'
+        self.catalog.register('job-cancelled', missing, 'Cancelled · no recording', extra={'status': 'cancelled'})
+        status, _, body = self.call('/api/session?id=job-cancelled')
+        self.assertEqual(status, 404)
+        error = json.loads(body)['error']
+        self.assertIn('no replayable recording', error)
+        self.assertIn('cancelled', error)
+        self.assertNotIn(str(self.base), error)
+
     def test_sensor_masks_are_omitted_unless_requested(self):
         default = {s['id']: s for s in self.get_json('/api/sensors?session=fixture&time=0.5')['sensors']}
         for layer in ('map_support', 'map_ceiling'):
@@ -202,6 +215,16 @@ class SessionDeliveryTests(GatewayCase):
                 status, _, body = self.call(bad)
                 self.assertEqual(status, 404)
                 self.assertNotIn(b'facet', body)
+
+    def test_script_policy_hashes_the_importmap_instead_of_unsafe_inline(self):
+        status, headers, _ = self.call('/')
+        self.assertEqual(status, 200)
+        policy = dict(part.strip().split(' ', 1) for part in headers['content-security-policy'].split(';'))
+        self.assertNotIn('unsafe-inline', policy['script-src'])
+        html = (server_module.ROOT / 'apps/web/index.html').read_bytes()
+        importmap = html.split(b'<script type="importmap">', 1)[1].split(b'</script>', 1)[0]
+        digest = base64.b64encode(hashlib.sha256(importmap).digest()).decode()
+        self.assertEqual(policy['script-src'], f"'self' 'sha256-{digest}'")
 
     def test_static_files_revalidate_with_etag(self):
         web = self.base / 'site/apps/web'

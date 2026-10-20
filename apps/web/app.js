@@ -278,7 +278,9 @@ function setRobotView(enabled) {
 // ------------------------------------------------------------------ live rehearsal attach
 async function attachLive(job) {
   if (!job?.latest?.frame) return;
+  const terminal = ['completed', 'failed', 'cancelled'].includes(job.status);
   if (rh.attached !== job.id) {
+    if (terminal && !job.result_session_id) return;  // ended without a replayable recording
     rh.attached = job.id;
     const ok = await loadSession(job.id, { keepCamera: true });
     if (!ok) { rh.attached = null; return; }
