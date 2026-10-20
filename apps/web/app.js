@@ -31,6 +31,7 @@ const WORKSPACES = {
 function showError(message) { $('error-banner').textContent = message; $('error-banner').hidden = false; clearTimeout(showError.t); showError.t = setTimeout(() => { $('error-banner').hidden = true; }, 9000); }
 window.addEventListener('studio:error', e => showError(e.detail));
 on('workbench:error', message => { $('workbench-error').textContent = message; $('workbench-error').hidden = false; });
+on('workbench:clear', message => { if ($('workbench-error').textContent === message) $('workbench-error').hidden = true; });
 on('arena:error', message => { $('workbench-error').textContent = message; $('workbench-error').hidden = false; });
 
 // ------------------------------------------------------------------ sessions
@@ -121,11 +122,12 @@ function updateModeBadge() {
     return;
   }
   const fid = fidelity(m), level = fid.level === 'L2-approx' ? 'L2≈' : fid.level;
-  $('mode-badge').textContent = live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? `REPLAY · CPU REHEARSAL · ${level}` : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : 'REPLAY · L0';
+  const detached = live && state.liveStatus === 'detached';
+  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? `REPLAY · CPU REHEARSAL · ${level}` : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : 'REPLAY · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;
-  $('run-outcome').innerHTML = live ? outcomeChip(null, 'running') : result?.outcome ? outcomeChip(result.outcome) : '';
+  $('run-outcome').innerHTML = live ? outcomeChip(null, detached ? 'detached' : 'running') : result?.outcome ? outcomeChip(result.outcome) : '';
   $('run-outcome').title = result?.outcome ? `Whole-run source scorer outcome · ${num(result.elapsed_s, 2, 's')} · final ${num(result.final_goal_distance_xy_m, 2, 'm')}` : '';
 }
 function updatePolicyChip() {
@@ -142,8 +144,10 @@ function updateRecordingWarning() {
   const m = state.session?.metadata ?? {};
   const node = $('recording-warning');
   if (m.mode === 'simulation') {
-    node.hidden = state.liveStatus !== 'failed';
-    node.textContent = `WORKER FAILED · ${m.termination_reason ?? m.error ?? 'The worker stopped before normal completion.'} Showing received live samples; open the recorded failure for all captured execution.`;
+    node.hidden = !['failed', 'detached'].includes(state.liveStatus);
+    node.textContent = state.liveStatus === 'detached'
+      ? 'RUN DETACHED · The gateway restarted while this worker kept running. Following its files read-only; this gateway does not own it and cannot cancel it. The recording opens when the worker finishes.'
+      : `WORKER FAILED · ${m.termination_reason ?? m.error ?? 'The worker stopped before normal completion.'} Showing received live samples; open the recorded failure for all captured execution.`;
     return;
   }
   node.hidden = !m.incomplete && m.recording_complete !== false;
@@ -288,7 +292,7 @@ async function attachLive(job) {
     if (inspector.tab !== 'health') selectTab('health', state);
   }
   // The job status from the gateway is authoritative: a killed worker cannot update its own latest.json.
-  if (state.sessionId === job.id) appendLiveFrame({ ...job.latest, status: ['completed', 'failed', 'cancelled'].includes(job.status) ? job.status : job.latest.status, runtime: job.runtime });
+  if (state.sessionId === job.id) appendLiveFrame({ ...job.latest, status: ['completed', 'failed', 'cancelled', 'detached'].includes(job.status) ? job.status : job.latest.status, runtime: job.runtime });
 }
 function appendLiveFrame(latest) {
   const frame = latest.frame;
@@ -326,7 +330,7 @@ function appendLiveFrame(latest) {
   updateRecordingWarning(); updateModeBadge();
   renderFrame(true);
   const terminal = ['completed', 'failed', 'cancelled'].includes(latest.status);
-  $('playback-state').textContent = terminal ? `RUN ${latest.status.toUpperCase()}` : 'LIVE';
+  $('playback-state').textContent = terminal ? `RUN ${latest.status.toUpperCase()}` : latest.status === 'detached' ? 'RUN DETACHED · FOLLOWING FILES' : 'LIVE';
 }
 
 on('rehearse:job', job => { if (state.workspace === 'rehearse' || rh.attached === job.id) attachLive(job).catch(e => showError(e.message)); });

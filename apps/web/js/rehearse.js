@@ -9,6 +9,9 @@ export const rh = {
 };
 
 const ACTIVE = ['queued', 'starting', 'running', 'cancelling'];
+// 'detached': after a gateway restart a surviving worker this gateway does not own keeps
+// running; follow its files read-only until its receipt makes it terminal.
+const FOLLOW = [...ACTIVE, 'detached'];
 const BUDGETS = [['Quick', 2, 4], ['Balanced', 4, 6], ['Wide', 8, 6]];
 
 export async function initRehearse(catalog) {
@@ -118,6 +121,12 @@ function bind() {
 }
 
 function report(error) { emit('workbench:error', error.message ?? String(error)); }
+let pollError = null;
+function pollFailed(error) {
+  pollError = `Lost contact with the gateway (${error.message ?? error}); retrying. A running worker is not affected by the page.`;
+  report({ message: pollError });
+}
+function pollRecovered() { if (pollError) emit('workbench:clear', pollError); pollError = null; }
 async function guarded(task) {
   if (rh.busy) return; rh.busy = true;
   try { await task(); } catch (error) { report(error); } finally { rh.busy = false; render(); }
@@ -151,14 +160,18 @@ async function runSuite() {
   if (total > limit) throw new Error(`This suite has ${total} runs; the limit is ${limit}. Reduce presets or seeds.`);
   const ids = [];
   for (const q of presets()) for (let s = 0; s < rh.seeds; s++) ids.push((await saveScenario(q, rh.settings.seed + s)).id);
+  // The previous run is not part of this suite: stop following it (pollSuite attaches the suite's runs).
+  clearTimeout(rh.timer); rh.job = null; rh.attached = null; rh.lastPerception = -Infinity; renderJob();
   const suffix = ` · ${policy()?.short_label ?? rh.policyId} · ${ids.length} runs`;
   rh.suite = await request('/api/suites', { label: `${rh.map.label.slice(0, 100 - suffix.length)}${suffix}`, scenario_ids: ids });
   pollSuite();
 }
 
 async function cancel() {
-  if (rh.suite && ['queued', 'running'].includes(rh.suite.status)) rh.suite = await request('/api/suites/cancel', { id: rh.suite.id });
-  else if (rh.job) await request('/api/jobs/cancel', { id: rh.job.id });
+  if (rh.suite && ['queued', 'running'].includes(rh.suite.status)) {
+    rh.suite = await request('/api/suites/cancel', { id: rh.suite.id });
+    renderSuite(); pollSuite();
+  } else if (rh.job && ACTIVE.includes(rh.job.status)) await request('/api/jobs/cancel', { id: rh.job.id });
   poll();
 }
 
@@ -179,10 +192,11 @@ async function poll() {
     rh.job = await request(`/api/jobs?id=${encodeURIComponent(rh.job.id)}&light=1&perception_after=${rh.lastPerception}`);
     if (rh.job.latest?.perception?.time > rh.lastPerception) rh.lastPerception = rh.job.latest.perception.time;
     emit('rehearse:job', rh.job);
+    pollRecovered();
     if (previous !== rh.job.status) render(); else renderJob();
-    if (!ACTIVE.includes(rh.job.status)) { emit('rehearse:finished', rh.job); return; }
-  } catch (error) { report(error); }
-  rh.timer = setTimeout(poll, 350);
+    if (!FOLLOW.includes(rh.job.status)) { emit('rehearse:finished', rh.job); return; }
+  } catch (error) { pollFailed(error); rh.timer = setTimeout(poll, 1000); return; }
+  rh.timer = setTimeout(poll, rh.job.status === 'detached' ? 1000 : 350);
 }
 
 async function pollSuite() {
@@ -196,9 +210,10 @@ async function pollSuite() {
       render();  // a new suite run: refresh the action bar (Cancel shown, Run disabled)
       poll();
     }
+    pollRecovered();
     renderSuite();
     if (!['queued', 'running', 'cancelling'].includes(rh.suite.status)) { render(); emit('rehearse:suite-finished', rh.suite); return; }
-  } catch (error) { report(error); }
+  } catch (error) { pollFailed(error); }
   rh.suiteTimer = setTimeout(pollSuite, 1000);
 }
 
