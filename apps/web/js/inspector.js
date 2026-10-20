@@ -190,7 +190,9 @@ function renderHealth(state) {
       state.session.metadata.test_result?.outcome === 'goal_completion' && state.frameIndex === state.session.frames.length - 1 && evaluation.hold_elapsed_s < evaluation.goal_hold_s
         ? tiny('The source scorer completed the hold on the final tick; this sample is the tick before it.') : ''}`, { evidence: 'sim-truth', id: 'goal-evaluation' }) : '';
   const timing = card('Timing vs budget', `<div class="budget-row">${budget(lock ? 'CPU planner compute' : 'Planner compute', h.planner_latency_ms, 160, 'deploy replan')}${budget('SONIC inference', h.sonic_inference_ms, 20, 'control tick')}${budget('Control step wall', h.control_step_wall_ms, 20, 'control tick')}</div>
-    ${lock ? tiny('CPU lockstep: physics pauses while the planner runs, so these are compute measurements, not real-time deadline results.') : ''}`, { evidence: 'observed' });
+    ${lock ? tiny(modelledLatency(state)
+      ? `CPU host time. Simulated time does not wait for these: each plan drives SONIC ${modelledLatency(state)} ms after it is requested (modelled latency), so they are compute measurements, not real-time deadline results.`
+      : 'CPU lockstep: physics pauses while the planner runs, so these are compute measurements, not real-time deadline results.') : ''}`, { evidence: 'observed' });
   const streams = card('Freshness at cursor', `${opt('State age', h.state_age_ms, 'No state stream', v => fact('State age', `${num(v, 1, 'ms')}${h.state_stale ? ' · STALE' : ''}`, h.state_stale ? 'value-amber' : ''))}
     ${opt('Reference age', h.reference_age_ms, 'No reference timestamp', v => fact('Reference age', num(v, 1, 'ms')))}
     ${opt('Receiver status', h.stream_status, 'Only for transport captures', v => fact('Receiver status', v))}

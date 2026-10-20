@@ -7,6 +7,7 @@ The reference interpreter and source tree are consumed read-only.
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import math
@@ -85,6 +86,10 @@ class TorqueTracker:
                 'reference_limits_nm': {k: dict(zip(self.names, v.tolist())) for k, v in self.references.items()},
                 'total_substeps': int(self.substeps),
                 'basis': 'Commanded = source pd_torque output per physics substep, already clipped to the training effort; MuJoCo then clamps to actuatorfrcrange (model limit). Reference counts are at-or-above. Simulator-commanded, not measured motor torque.'}
+
+
+def _attribution(request_tick, start_tick, dt=0.02):
+    return f'executing plan: requested at {request_tick*dt:.2f} s, driving SONIC since {start_tick*dt:.2f} s'
 
 
 def validate_latency(value):
@@ -359,7 +364,9 @@ def execute(request, output):
                     'fidelity': 'L2' if req['latency']['ms'] else 'L1',
                     'latency_model': {'ms': req['latency']['ms'], 'anchor': req['latency']['anchor'],
                                       'implementation': 'g1-student-deploy sim.lockstep run_episode(latency_s, anchor_mode, inflight=1)',
-                                      'basis': 'A plan requested at tick t becomes usable at t + latency while physics keeps running.'},
+                                      'basis': 'A plan requested at tick t becomes usable at t + latency while physics keeps running.',
+                                      'plan_attribution': ('Frames show the executing plan: the plan object the source passes to '
+                                                           'feed.target at that tick (observed, not re-derived)') if req['latency']['ms'] else None},
                     'control_contract': {'joint_names': list(contract.MJ_JOINTS),
                                          'kp_nm_per_rad': contract.KP_MJ.tolist(),
                                          'kd_nm_per_rad_s': contract.KD_MJ.tolist(),
@@ -379,10 +386,13 @@ def execute(request, output):
                                     'Unknown map cells remain unknown in Studio; the source planner selector treats unseen cells as free.']}
         frames, perceptions, events, plans, contact_intervals = [], [], [], [], []
         physics_positions, physics_quaternions = [], []
+        # Under latency a replan drives SONIC only from request + L ticks (the first plan at once).
+        latency_ticks = int(round(req['latency']['ms'] / 1000 / contract.DT))  # source lockstep rounding
+        plan_objects, executing_starts = {}, []  # id(plan) -> (plan, row) with a strong ref; (start, request) ticks
         current = {'inference_ms': None, 'perception': None, 'raw': np.empty((0, 3)),
                    'filtered': np.empty((0, 3)), 'origin': None, 'capture_time': None,
                    'snapshot_time': -math.inf, 'last_write': -math.inf, 'sim': None, 'plan': None,
-                   'sonic_sample': None, 'pd_torques': [], 'goal_evaluation': None}
+                   'sonic_sample': None, 'pd_torques': [], 'goal_evaluation': None, 'executing': None}
         progress_log = (output / 'progress.jsonl').open('w', buffering=1)
 
         def publish(frame=None, status='running', force=False):
@@ -536,7 +546,12 @@ def execute(request, output):
                 post_measured = self.measure()
                 # Source run_episode calls feed.target; its observer below stores all 67 columns.
                 reference = decode_reference(current['reference'], q)
-                plan = _plan(current['plan'], current['plan']['tick']*.02, t) if current['plan'] else None
+                if latency_ticks and current['executing']:
+                    row, start_tick = current['executing']
+                    plan = dict(_plan(row, start_tick*contract.DT, t), requested_at_s=row['tick']*contract.DT,
+                                executing_since_s=start_tick*contract.DT, attribution=_attribution(row['tick'], start_tick))
+                else:
+                    plan = _plan(current['plan'], current['plan']['tick']*.02, t) if current['plan'] else None
                 target = result[3]
                 if current['sonic_sample'] is not None:
                     current['sonic_sample'].update(target_joints_rad=target.tolist(),
@@ -566,7 +581,7 @@ def execute(request, output):
                                          'classification': 'simulator-ground-truth'},
                          'perception_index': len(perceptions)-1 if perceptions else None,
                          'health': {'state_age_ms': 0, 'reference_age_ms': 0,
-                                    'planner_latency_ms': plan['latency_ms'] if plan else None,
+                                    'planner_latency_ms': current['plan']['latency_s']*1000 if current['plan'] else None,
                                     'tracking_rmse_rad': float(np.sqrt(np.mean((q[7:]-ref_q_mj[0])**2))),
                                     'command_tracking_rmse_rad': float(np.sqrt(np.mean((q[7:]-target)**2))),
                                     'sonic_inference_ms': current['inference_ms'],
@@ -589,6 +604,12 @@ def execute(request, output):
         def observed_target(*args, **kwargs):
             result = original_target(*args, **kwargs)
             current['reference'] = np.asarray(result[0]).copy()
+            # run_episode passes the active plan object: record the tick each plan starts driving SONIC.
+            entry = plan_objects.get(id(args[0])) if args else None
+            if entry is not None and entry[0] is args[0] and (
+                    current['executing'] is None or current['executing'][0] is not entry[1]):
+                current['executing'] = (entry[1], len(frames))
+                executing_starts.append((len(frames), entry[1]['tick']))
             return result
         flow.feed.target = observed_target
         original_plan = flow.planner.FlowPlanner.plan
@@ -609,6 +630,7 @@ def execute(request, output):
                    'waypoint_xy': None, 'route_remaining_m': None}
             current['plan'] = row
             plans.append(row)
+            plan_objects[id(result)] = (result, row)
             pipeline.end_plan(result, row['latency_s']*1000)
             events.append({'time': len(frames)*.02, 'type': 'replan', 'message': result['rule'],
                            'source': 'FlowPlanner.plan', 'latency_ms': row['latency_s']*1000})
@@ -693,6 +715,19 @@ def execute(request, output):
         for frame, native in zip(frames, session['frames']):
             frame['plan'] = native['plan']
             frame['health']['planner_latency_ms'] = native['health']['planner_latency_ms']
+        if latency_ticks and executing_starts:
+            # The native decoder attributes a frame to the latest request; under latency attribute it to
+            # the plan executing at that tick (review N8, as the WX worker does).
+            start_ticks = [s for s, _ in executing_starts]
+            for i, frame in enumerate(frames):
+                k = bisect.bisect_right(start_ticks, i) - 1
+                start_tick, request_tick = executing_starts[k] if k >= 0 else (None, None)
+                source = session['frames'][request_tick]['plan'] if request_tick is not None else None
+                frame['plan'] = None if source is None else dict(
+                    source, time=start_tick*contract.DT, age_s=(i-start_tick)*contract.DT,
+                    requested_at_s=request_tick*contract.DT, executing_since_s=start_tick*contract.DT,
+                    attribution=_attribution(request_tick, start_tick))
+        metadata['latency_model']['executing_plan_starts'] = executing_starts if latency_ticks else None
         session['pipeline'] = pipeline.data()
         session['frames'] = frames
         session['metadata'] = metadata

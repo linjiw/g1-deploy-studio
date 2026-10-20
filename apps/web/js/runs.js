@@ -42,7 +42,8 @@ export function report(rows) {
       timeToGoal: median(goals.map(r => r.metrics.elapsed_s)), reachTime: median(reach.map(r => r.derived.reach_post_hoc.time_s)),
       efficiency: median(goals.map(r => r.derived?.path_efficiency)), contactRuns: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length,
       saturatedRuns: list.filter(r => (r.torque_at_limit ?? Object.keys(r.torque?.saturated_substeps ?? {})).length).length, torqueKnown: list.filter(r => r.torque).length,
-      plannerP95: median(list.map(r => r.metrics.planner_p95_ms)), finalMedian: median(list.map(r => r.metrics.final_goal_distance_m)) };
+      plannerP95: median(list.map(r => r.metrics.planner_p95_ms)), finalMedian: median(list.map(r => r.metrics.final_goal_distance_m)),
+      anchorRuns: list.filter(r => finite(r.anchor_prediction?.xy_m?.p50)).length, anchorP50: median(list.map(r => r.anchor_prediction?.xy_m?.p50)) };
   });
 }
 const pct = (k, n) => n ? `${Math.round(100 * k / n)}%` : '—';
@@ -58,7 +59,7 @@ function reportHtml(rows) {
       <div class="report-main"><strong>${g.reach}/${g.n}</strong> post-hoc Flow reach <span>${pct(g.reach, g.n)}${ciText(g.reachCi)}</span></div>
       <div class="report-cats">${Object.entries(g.cats).map(([c, k]) => `<span class="cat cat-${escape(c)}">${escape(CATEGORY_LABEL[c] ?? c)} ${k}</span>`).join('')}</div>
       <div class="report-meta">median time to goal ${num(g.timeToGoal, 2, 's')} · to reach ${num(g.reachTime, 2, 's')} · path efficiency ${num(g.efficiency, 2)} · final ${num(g.finalMedian, 2, 'm')} · planner p95 ${num(g.plannerP95, 0, 'ms')}</div>
-      <div class="report-meta">${g.contactRuns} run${g.contactRuns === 1 ? '' : 's'} with obstacle contact · ${g.torqueKnown ? `${g.saturatedRuns}/${g.torqueKnown} with leg torque at the limit (source clip or model clamp)` : 'torque not recorded'}</div></div>`).join('')}
+      <div class="report-meta">${g.contactRuns} run${g.contactRuns === 1 ? '' : 's'} with obstacle contact · ${g.torqueKnown ? `${g.saturatedRuns}/${g.torqueKnown} with leg torque at the limit (source clip or model clamp)` : 'torque not recorded'}${g.anchorRuns ? ` · predicted-anchor error median ${num(g.anchorP50, 3, 'm')} (${g.anchorRuns} predict run${g.anchorRuns === 1 ? '' : 's'}, estimated vs simulator truth)` : ''}</div></div>`).join('')}
     <p class="tiny">Rates are over distinct scenarios that completed scoring; worker/tool errors are listed, not counted as policy failures. 95% Wilson intervals. Source scorer = the run's own criterion; post-hoc reach = Flow arena protocol (0.4 m, 2 m/s, 0.1 s, contact ≤5 N) re-evaluated on the recorded trajectory. CPU lockstep simulation, single robot model; not a hardware success rate.</p>
     <div class="field-row compact"><button id="runs-select-all">Select all in view</button><button id="runs-export">↓ CSV</button><button id="runs-export-json">↓ JSON</button></div></div>`;
 }
@@ -70,7 +71,13 @@ function csv(rows) {
   return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.actuators ?? 'source', r.latency?.ms ?? 0, r.latency?.anchor ?? 'measured', r.planner?.candidates, r.planner?.ode_steps, r.seed,
     r.start_xy?.[0], r.start_xy?.[1], r.start_yaw_rad, r.goal_xy?.[0], r.goal_xy?.[1], r.outcome, category(r), r.metrics.elapsed_s, r.metrics.final_goal_distance_m,
     r.derived?.closest_m, r.derived?.reach_post_hoc?.reached, r.derived?.reach_post_hoc?.time_s, r.derived?.path_efficiency, r.metrics.max_contact_n, r.metrics.max_tilt_rad,
-    r.metrics.planner_p95_ms, (r.torque_at_limit ?? Object.keys(r.torque?.saturated_substeps ?? {})).join(';'), r.anchor_prediction?.xy_m?.p50].map(q).join(','))].join('\n');
+    r.metrics.planner_p95_ms, torqueCell(r), r.anchor_prediction?.xy_m?.p50].map(q).join(','))].join('\n');
+}
+
+// Empty = torque not recorded (older runs); 'none' = recorded, no leg joint reached its effective limit.
+function torqueCell(r) {
+  const hits = r.torque_at_limit ?? (r.torque ? Object.keys(r.torque.saturated_substeps ?? {}) : null);
+  return hits === null ? null : hits.length ? hits.join(';') : 'none';
 }
 
 export const runs = { table: [], selected: new Set(), filters: { map: '', policy: '', outcome: '' }, maps: new Map(), canvas: null, colorBy: 'outcome', hover: null };
@@ -142,7 +149,7 @@ export function render() {
 }
 
 function mapLabel(id) { return runs.catalogMaps?.find(m => m.id === id)?.label ?? id; }
-const ACTUATOR_SHORT = { 'g1-current': 'G1 139/139/88', 'g1-rev1': 'rev1 88/139/88', source: 'src 88/88/88' };
+export const ACTUATOR_SHORT = { 'g1-current': 'G1 139/139/88', 'g1-rev1': 'rev1 88/139/88', source: 'src 88/88/88' };
 // Arena filter labels: disambiguate identical names with the arena id suffix.
 function mapOptionLabel(id, ids) {
   const label = mapLabel(id);

@@ -304,6 +304,7 @@ async function attachLive(job) {
   const terminal = ['completed', 'failed', 'cancelled'].includes(job.status);
   if (rh.attached !== job.id) {
     if (terminal && !job.result_session_id) return;  // ended without a replayable recording
+    if (terminal && rh.followDetached === job.id) return;  // rehearse:finished opens the followed run's recording once
     if (job.status === 'detached') {
       // After a reload, a restarted gateway serves no live session for a run it does not own: follow its
       // status from the job API only and open the recording when it finishes (rehearse:finished).
@@ -311,8 +312,10 @@ async function attachLive(job) {
       return;
     }
     rh.attached = job.id;
+    // A run that ended before its first live attach: this load already is the recording.
+    if (terminal) rh.recordingOpened = job.id;
     const ok = await loadSession(job.id, { keepCamera: true });
-    if (!ok) { rh.attached = null; return; }
+    if (!ok) { rh.attached = null; if (rh.recordingOpened === job.id) rh.recordingOpened = null; return; }
     cameraView('follow', true);
     if (inspector.tab !== 'health') selectTab('health', state);
   }
@@ -364,7 +367,9 @@ on('rehearse:finished', async job => {
   await refreshSessionList(state.sessionId);
   const viewing = (rh.attached === job.id && state.sessionId === job.id) || rh.followDetached === job.id;
   if (rh.followDetached === job.id) { rh.followDetached = null; emit('workbench:clear', `Following ${job.id}, which a previous gateway started; its recording opens when it finishes.`); }
-  if (viewing && job.result_session_id) {
+  const opened = rh.recordingOpened === job.id;  // attachLive already started loading this recording
+  rh.recordingOpened = null;
+  if (viewing && job.result_session_id && !opened) {
     const keepTime = state.time;
     await loadSession(job.result_session_id, { keepCamera: true });
     seek(keepTime);

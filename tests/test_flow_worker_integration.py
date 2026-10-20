@@ -83,3 +83,40 @@ class FlowWorkerIntegrationTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(ENABLED, 'set STUDIO_INTEGRATION=1 (needs the deploy interpreter and the frozen bundle)')
+class BundleWorkerLatencyIntegrationTests(unittest.TestCase):
+    """Under latency the bundle worker shows the executing plan, not the newest in-flight one (review N8)."""
+
+    def test_frames_are_attributed_to_the_executing_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / 'bundle-latency'
+            request = {'schema_version': 1, 'id': 'bundle-latency', 'goal_xy': [2.0, 0.0], 'start_xy': [0, 0], 'start_yaw_rad': 0,
+                       'duration_s': 3, 'seed': 0, 'planner': {'candidates': 2, 'ode_steps': 4}, 'criterion': 'arrive_hold',
+                       'latency': {'ms': 200, 'anchor': 'measured'},
+                       'policy': {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle'},
+                       'map': {'id': 'flat', 'label': 'Flat', 'kind': 'boxes', 'frame_id': 'world', 'boxes': []}}
+            path = Path(tmp) / 'request.json'
+            path.write_text(json.dumps(request))
+            env = dict(os.environ, PYTHONPATH=str(ROOT), CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2', PYTHONDONTWRITEBYTECODE='1')
+            done = subprocess.run([str(DEPLOY_PYTHON), '-B', str(ROOT / 'studio/policy_worker.py'), '--request', str(path),
+                                   '--output', str(out)], capture_output=True, text=True, timeout=600, env=env, cwd=ROOT)
+            self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+            session = json.loads((out / 'session.json').read_text())
+            plans = json.loads((out / 'native/plans.json').read_text())
+        starts = session['metadata']['latency_model']['executing_plan_starts']
+        requests = sorted(p['tick'] for p in plans)
+        self.assertEqual(starts[0], [requests[0], requests[0]])  # the first plan drives SONIC at once
+        self.assertGreater(len(starts), 1)
+        self.assertTrue(all(start == request + 10 for start, request in starts[1:]))  # 200 ms = 10 ticks
+        for i, frame in enumerate(session['frames']):
+            plan = frame['plan']
+            current = max(s for s in starts if s[0] <= i)
+            self.assertAlmostEqual(plan['executing_since_s'], current[0] * 0.02)
+            self.assertAlmostEqual(plan['requested_at_s'], current[1] * 0.02)
+            self.assertAlmostEqual(plan['age_s'], (i - current[0]) * 0.02)
+            self.assertIn('executing plan', plan['attribution'])
+        # Some frames fall inside a latency window, where the newest request is not the executing plan.
+        newest = lambda i: max(r for r in requests if r <= i)
+        self.assertTrue(any(newest(i) * 0.02 != f['plan']['requested_at_s'] for i, f in enumerate(session['frames'])))

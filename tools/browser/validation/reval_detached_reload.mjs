@@ -14,7 +14,11 @@ const page = await context.newPage();
 const R = recorder('reval-detached-reload');
 R.watch(page);
 const sessionMisses = [];
-page.on('response', r => { if (r.url().includes('/api/session?') && r.status() === 404) sessionMisses.push(r.url()); });
+const sessionLoads = [];
+page.on('response', r => {
+  if (!r.url().includes('/api/session?')) return;
+  if (r.status() === 404) sessionMisses.push(r.url()); else if (r.status() === 200) sessionLoads.push(r.url());
+});
 const ready = () => page.waitForFunction(() => window.__studio?.state?.session && document.querySelector('#loading-overlay').hidden, null, { timeout: 120000 });
 
 await page.goto(`${BASE}/`); await ready();
@@ -30,15 +34,18 @@ await R.check('N1', 'Reload during a detached run: no /api/session 404 loop, and
   const status = (await api(page, `/api/jobs?id=${job.id}`)).body.status;
   await page.goto(`${BASE}/?workspace=rehearse`); await ready();
   await page.click('#workspace-rehearse').catch(() => {});
-  sessionMisses.length = 0;
+  sessionMisses.length = 0; sessionLoads.length = 0;
   await page.waitForFunction(id => window.__studio.state.sessionId === id && window.__studio.state.session?.metadata?.mode === 'replay', job.id, { timeout: 180000 }).catch(() => {});
   const opened = await page.evaluate(() => ({ id: window.__studio.state.sessionId, mode: window.__studio.state.session?.metadata?.mode }));
   const shot = await R.shot('detached-reload-opened');
+  await sleep(1500);  // a duplicate load would follow the first within the finish handler
+  const loads = sessionLoads.filter(u => new URL(u).searchParams.get('id') === job.id).length;
   const final = (await api(page, `/api/jobs?id=${job.id}`)).body;
   assert(status === 'detached' || status === 'completed', `after the restart the job was ${status}`);
   assert(sessionMisses.length <= 1, `${sessionMisses.length} /api/session 404s while following`);
   assert(final.status === 'completed' && opened.id === job.id && opened.mode === 'replay', `final ${final.status}; opened ${JSON.stringify(opened)}`);
-  return { job: job.id, statusAfterRestart: status, misses: sessionMisses.length, opened, shot };
+  assert(loads === 1, `the recording was loaded ${loads} times (VERIFY2: once is enough)`);
+  return { job: job.id, statusAfterRestart: status, misses: sessionMisses.length, recordingLoads: loads, opened, shot };
 }, { expectHttp: [new RegExp(`failed .*127\\.0\\.0\\.1:${PORT}`), /50\d /, /403 /] });
 await R.save({});
 await browser.close();

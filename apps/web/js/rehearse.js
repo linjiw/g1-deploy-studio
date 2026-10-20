@@ -1,6 +1,7 @@
 // Rehearse: choose a policy profile + arena preset, run the owned CPU worker,
 // follow it live and run bounded suites. Simulation only; no hardware path.
 import { $, escape, num, vector, fact, chip, request, outcomeChip, finite, emit, on, ago } from './util.js';
+import { ACTUATOR_SHORT } from './runs.js';
 
 export const rh = {
   catalog: null, policyId: null, mapId: null, map: null, presetIndex: 0,
@@ -259,7 +260,7 @@ function renderSuite() {
   if (!s) { node.innerHTML = ''; return; }
   const done = s.runs.filter(r => r.outcome).length, goals = s.runs.filter(r => r.outcome === 'goal_completion').length;
   node.innerHTML = `<h4>Suite · ${escape(s.status)}</h4><p class="tiny">${escape(s.label)} · ${done}/${s.runs.length} finished · ${goals} goal${goals === 1 ? '' : 's'} · started ${escape(ago(s.created_unix_s))}</p>
-    <table class="suite-table"><tbody>${s.runs.map(r => `<tr><td>${outcomeChip(r.outcome, r.status)}</td><td>${escape(r.preset ?? r.label ?? r.scenario_id)}${r.seed !== undefined && r.seed !== null ? ` · s${escape(r.seed)}` : ''}${r.actuators ? ` · <span class="actuator-token">${escape(r.actuators)}</span>` : ''}</td><td>${r.job_id && r.outcome ? `<button class="link-button" data-open-session="${escape(r.job_id)}">open</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
+    <table class="suite-table"><tbody>${s.runs.map(r => `<tr><td>${outcomeChip(r.outcome, r.status)}</td><td>${escape(r.preset ?? r.label ?? r.scenario_id)}${r.seed !== undefined && r.seed !== null ? ` · s${escape(r.seed)}` : ''}${r.actuators ? ` · <span class="actuator-token" title="Actuator limits (hip pitch/roll/yaw)">${escape(ACTUATOR_SHORT[r.actuators] ?? r.actuators)}</span>` : ''}</td><td>${r.job_id && r.outcome ? `<button class="link-button" data-open-session="${escape(r.job_id)}">open</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
   node.querySelectorAll('[data-open-session]').forEach(b => b.addEventListener('click', () => emit('open-session', b.dataset.openSession)));
 }
 
