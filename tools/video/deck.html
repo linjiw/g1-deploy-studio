@@ -291,6 +291,12 @@ slide('validation', `
     ${(D.validation || []).map((v, i) => `<div class="card" data-in="${0.8 + i * 0.35}" data-a="rise"><div class="stat" style="color:${v.color}"><span data-in="${0.9 + i * 0.35}" data-a="count" data-v="${v.v}" data-d="1.2">${v.v}</span><small>${v.unit || ''}</small></div><div class="statcap">${v.cap}</div></div>`).join('')}
   </div>
   <div class="card" style="margin-top:34px" data-in="2.6" data-a="rise"><p>${D.securityLine || ''}</p></div>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 34px">
+    <div class="card" data-in="3.2" data-a="rise"><h3 style="font-size:28px">An independent validator broke it — then re-checked</h3>
+      ${(D.validatorFound || []).map((x, i) => `<p data-in="${3.5 + i * 0.25}" style="margin-top:8px">· ${x}</p>`).join('')}</div>
+    <div class="card" data-in="3.6" data-a="rise"><h3 style="font-size:28px">Honesty is tested, not assumed</h3>
+      ${(D.honesty || []).map((x, i) => `<p data-in="${3.9 + i * 0.25}" style="margin-top:8px">· ${x}</p>`).join('')}</div>
+  </div>
   ${footer('05 · TRUST')}`);
 
 slide('roadmap', `

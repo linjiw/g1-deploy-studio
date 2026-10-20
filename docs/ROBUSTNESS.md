@@ -384,3 +384,52 @@ The legend is the same as in Addendum B. Entries count crossings into the 0.3 m 
 - `comparison.md` / `comparison.json`, `suite.json` and `runs-final.json`;
 - `acceptance.json`, `anchor-bias.txt` and `ab-measured-bit-identity.txt`;
 - UI screenshots, and the driver and analysis scripts in `scripts/`.
+
+## Addendum D: the actuator model changes the latency result
+
+Research established that the G1 hip limits depend on the hardware revision (`mode_machine`; see ROBOT_CONTRACT.md). The source MJCF is the deprecated 88/88/88 model, and every earlier run in this report used it.
+
+Three suites repeated the 12 P3 scenarios on the release service (89fa56c) with an actuator profile: WX-RF, K8/ODE6, seed 0, arrive & hold, 10 s. Script: `tools/campaign/actuator_followup.py`.
+- F4 `suite-2a9d22b35a90`: 0 ms, `g1-current` (139/139/88).
+- F5 `suite-19dc4381e568`: 200 ms predict, `g1-rev1` (88/139/88).
+- F3 `suite-f841d602d296`: 200 ms predict, `g1-current`.
+
+| Preset | 0 ms · g1-current (F4) | 200 ms predict · g1-rev1 (F5) | 200 ms predict · g1-current (F3) | F3 job |
+|---|---|---|---|---|
+| clutter #0 | G 3.0 | G 3.2 τ | G 3.2 | `job-e8b3d50327ec` |
+| clutter #1 | G 5.1 | G 5.3 τ | G 6.1 | `job-8ffae843d43c` |
+| clutter #2 | G 3.1 | G 3.1 | G 3.1 | `job-b361c90cd3db` |
+| clutter #3 | G 3.5 | G 6.8 τ | G 6.8 | `job-c9148d8aa7c2` |
+| clutter #4 | G 9.7 | G 8.8 τ | G 9.1 | `job-bd72e0a1f770` |
+| clutter #5 | G 3.5 | G 3.0 τ | T 0.25 r | `job-cf92ea784bb8` |
+| doorway #0 | G 4.0 | G 5.8 τ | G 5.8 | `job-bf9991bc7fea` |
+| doorway #1 | G 3.9 | G 6.3 τ | T 0.85 | `job-fb2bdbfe835a` |
+| doorway #2 | G 3.6 | G 9.9 τ | T 0.16 r | `job-d3a3b6a9f618` |
+| doorway #3 | G 3.6 | G 5.3 τ | T 0.46 r | `job-d8c60bd96cc7` |
+| doorway #4 | G 6.6 | F @9.1 τ | T 0.47 | `job-75a251ab9d63` |
+| doorway #5 | G 5.8 | G 7.8 τ | G 9.1 | `job-9fb5b9233fc7` |
+| **Arrive & hold** | **12/12** [76–100] | **11/12** [65–99] | **7/12** [32–81] | |
+| Post-hoc reach | 12/12 | 11/12 | 10/12 | |
+| Runs with leg torque clamped | 0/12 | 11/12 | 0/12 | |
+| Runs above the rev_1_0 hip-pitch limit (88 N·m) | 2/12 | 11/12 | 11/12 | |
+| Median time to goal | 3.76 s | 5.76 s | 6.10 s | |
+| Falls / collisions | 0 / 0 | 1 / 0 | 0 / 0 | |
+
+Legend as in Addendum B.
+
+**Reading.** n = 12, one seed, CPU lockstep. Treat these as indications, not rates.
+
+1. **In lockstep the actuator model does not matter.** WX holds 12/12 with the trained-for 139/139/88 limits (F4), as it did on the 88/88/88 source model (P1), with the same median time (3.76 s).
+2. **At 200 ms with predictive anchoring it does.**
+   - With the hip pitch clamped at 88 N·m, WX holds 11/12: F5 on rev_1_0 limits, and Addendum C on the source model. It has one fall, with torque clamped in 11/12 runs.
+   - With the full 139 N·m it holds 7/12 (F3). There is no clamping, no contact and no fall. Four of its five failures are timeouts within 0.5 m of the goal, so it gets there and does not settle into a hold.
+   - All five scenarios that differ between F3 and F5 favour the clamped model (sign test p ≈ 0.13 at this n). This is suggestive, not established.
+3. **The earlier "predict fixes latency" result is therefore conditional on the actuator model.** Addendum C's 11/12 used the deprecated model, whose hip clamp damps the motion. On the robot the policies were trained for (current G1, 139 N·m), the predicted-anchor deployment at 200 ms is borderline.
+   - The cause is the one Addendum C measured: the prediction is optimistic, because SONIC lags the plan. With more hip torque available, the overshoot near the goal is larger and the hold is harder to complete.
+4. **Hip-pitch commands above 88 N·m are routine for WX** (11/12 runs at 200 ms, 2/12 in lockstep). On a rev_1_0 robot they would be clamped by the motor, as F5 shows, so a passive `mode_machine` reading must come before any hardware step.
+
+Next, all of them Flow research or deployment decisions:
+- predict the *executed* state instead of the plan (for example with WM-v2);
+- add seeds per cell;
+- run 140 and 160 ms on the trained-for limits;
+- once the operator runs `tools/l3_rehearsal.sh`, see whether the real-time chain at its real latency agrees.

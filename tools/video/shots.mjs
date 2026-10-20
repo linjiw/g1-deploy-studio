@@ -70,12 +70,13 @@ export const SHOTS = {
     await h.ready();
     await h.seek(3.0);
     await h.caption('Inspector', 'Explains the moment under the cursor — every fact carries its evidence chip');
-    for (const [tab, label, secs] of [['intent', 'Intent: target · planner selection · execution check', 3.0],
-      ['health', 'Health: outcome · fidelity · budgets · leg torque vs limit', 3.6],
-      ['joints', 'Joints: 29 joints by name, units, PD target', 3.2],
-      ['pipeline', 'Pipeline: what crossed each model boundary', 3.4]]) {
+    for (const [tab, label, secs] of [['intent', 'Intent · navigation target, planner selection, execution check', 3.0],
+      ['health', 'Health · outcome, fidelity, budgets, leg torque vs limit', 3.6],
+      ['joints', 'Joints · all 29 by name: state, reference, error, PD target', 3.2],
+      ['pipeline', 'Pipeline · what crossed each model boundary', 3.4]]) {
       await h.click(`#tab-${tab}`, { after: 0.2 });
-      await h.spot('.inspector-content', label, { dim: true });
+      await h.caption('Inspector', label);
+      await h.spot('.inspector-content', '', { dim: true });
       await h.hold(secs);
       await h.clearSpots();
     }
@@ -143,7 +144,8 @@ export const SHOTS = {
     await page.fill('#rg-count', '5'); await page.fill('#rg-seed', '7');
     await h.click('#rg-obstructed', { after: 0.3 });
     await h.click('#rg-generate', { after: 1.6 });
-    await h.spot('#arena-status', 'footprint preflight', { dim: false });
+    await page.locator('#arena-status').scrollIntoViewIfNeeded(); await h.settle(200);
+    await h.spot('#arena-status', 'footprint preflight', { dim: false, below: true });
     await h.hold(1.6);
     await h.clearSpots();
     await page.fill('#arena-label', 'Video demo · doorway + wall');

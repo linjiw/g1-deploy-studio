@@ -87,6 +87,20 @@ window.DECK_DATA = {
     { v: 118, unit: '', cap: 'independent re-validation checks across every workspace', color: '#efbb70' },
     { v: 180, unit: '+', cap: 'owned CPU rehearsals recorded with policy identity hashes', color: '#e6dfcf' },
   ],
+  validatorFound: [
+    'first click after typing an arena name was lost',
+    'random goals reused a stale start point',
+    'a cancelled suite re-attached the previous run',
+    'a run that survived a gateway restart was not followed',
+    'an errored re-run could hide a scored trial',
+  ],
+  honesty: [
+    'missing telemetry renders UNAVAILABLE, never a healthy zero',
+    'privileged runs say perception is unavailable by design',
+    'a worker that exits is never counted as policy success',
+    'every rate carries a Wilson interval and its n',
+    'render-limited playback is flagged, real time is kept',
+  ],
   securityLine: 'Loopback-only gateway (127.0.0.1 / ::1) · Host and Origin checks · per-process CSRF token · content-hashed assets · SSH tunnel for remote access · no hardware, DDS or ZMQ command path.',
   roadmap: [
     { tag: 'L3 · READY', color: '#7fb4ff', title: 'Real-time chain', text: 'Run the unchanged simulator, SONIC runner and node in the isolated namespace; compare with L1/L2 on the same scenarios.' },
