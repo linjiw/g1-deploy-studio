@@ -136,15 +136,20 @@ export function fidelity(meta = {}) {
 
 function torqueSummary(t, actuators = null) {
   if (!t?.peak_commanded_nm) return '';
+  // Effective limit = min(source training-effort clip, model clamp); a peak there means the command was clipped.
+  const limit = n => t.effective_limit_nm?.[n] ?? Math.min(t.model_limit_nm?.[n] ?? Infinity, t.training_effort_nm?.[n] ?? Infinity);
+  const atLimit = n => (t.saturated_substeps?.[n] ?? 0) > 0 || (finite(limit(n)) && t.peak_commanded_nm[n] >= limit(n) - 0.01);
   const rows = Object.entries(t.peak_commanded_nm).filter(([n]) => /hip|knee|ankle/.test(n))
-    .sort((a, b) => b[1] / (t.model_limit_nm[b[0]] ?? Infinity) - a[1] / (t.model_limit_nm[a[0]] ?? Infinity)).slice(0, 6);
-  const saturated = Object.entries(t.saturated_substeps ?? {});
-  const exceed = Object.entries(t.exceedance_substeps ?? {}).map(([ref, joints]) => [ref, Object.values(joints).reduce((a, b) => a + b, 0)]);
-  return `<details class="torque-details" ${saturated.length ? 'open' : ''}><summary>Leg torque vs model limit ${saturated.length ? `<span class="chip chip-commanded">SATURATED ${saturated.length} joint${saturated.length > 1 ? 's' : ''}</span>` : ''}</summary>
+    .sort((a, b) => b[1] / limit(b[0]) - a[1] / limit(a[0])).slice(0, 6);
+  const hits = Object.keys(t.peak_commanded_nm).filter(atLimit);
+  const ref = k => t.exceedance_substeps?.[k] ? Object.values(t.exceedance_substeps[k]).reduce((a, b) => a + b, 0) : null;
+  const refs = [['training', 'training'], ['g1-current', 'current G1'], ['g1-rev1', 'rev_1_0'], ['source', 'source 88']];
+  return `<details class="torque-details" ${hits.length ? 'open' : ''}><summary>Leg torque vs limit ${hits.length ? `<span class="chip chip-commanded">AT LIMIT ${hits.length} joint${hits.length > 1 ? 's' : ''}</span>` : ''}</summary>
     ${actuators ? fact('Actuator profile', `${actuators.label ?? actuators.profile}`) : fact('Actuator profile', 'source model (run predates profiles)')}
-    ${exceed.length ? fact('Substeps above training / current G1 / rev_1_0', ['training', 'g1-current', 'g1-rev1'].map(k => (exceed.find(e => e[0] === k) ?? [k, 0])[1]).join(' / ')) : ''}
-    <table class="joint-table"><thead><tr><th>Joint</th><th>Peak cmd</th><th>Model</th><th>Training</th><th>Clamped</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${escape(n.replace('_joint', ''))}</td><td class="${v > (t.model_limit_nm[n] ?? Infinity) ? 'value-bad' : ''}">${num(v, 1)}</td><td>${num(t.model_limit_nm[n], 0)}</td><td>${num(t.training_effort_nm?.[n], 0)}</td><td>${escape(t.saturated_substeps?.[n] ?? 0)}</td></tr>`).join('')}</tbody></table>
-    ${tiny(`Commanded PD torque (N·m) vs MuJoCo actuatorfrcrange; ${t.total_substeps} substeps. Where the training effort (contract) exceeds the model limit, MuJoCo clamps: see ROBOT_CONTRACT hip_effort_limit.`)}</details>`;
+    ${t.exceedance_substeps ? `<table class="joint-table ref-table"><thead><tr><th>Substeps at/above</th>${refs.map(([, l]) => `<th>${escape(l)}</th>`).join('')}</tr></thead>
+      <tbody><tr><td>all joints</td>${refs.map(([k]) => `<td>${ref(k) === null ? (k in t.exceedance_substeps ? '0' : '—') : escape(ref(k))}</td>`).join('')}</tr></tbody></table>` : ''}
+    <table class="joint-table"><thead><tr><th>Joint</th><th>Peak cmd</th><th>Model</th><th>Training</th><th>At limit</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${escape(n.replace('_joint', ''))}</td><td class="${atLimit(n) ? 'value-bad' : ''}">${num(v, 1)}</td><td>${num(t.model_limit_nm[n], 0)}</td><td>${num(t.training_effort_nm?.[n], 0)}</td><td>${atLimit(n) ? (t.saturated_substeps?.[n] ? escape(`${t.saturated_substeps[n]} substeps`) : 'yes (peak)') : 'no'}</td></tr>`).join('')}</tbody></table>
+    ${tiny(`Commanded PD torque (N·m), ${t.total_substeps} substeps. The source clips to the training effort, then MuJoCo clamps to the model limit; "at limit" means the command reached the smaller of the two. Runs recorded before 2026-10-20 counted only the model clamp, so "yes (peak)" is derived from the recorded peak.`)}</details>`;
 }
 
 function outcomeCard(state) {

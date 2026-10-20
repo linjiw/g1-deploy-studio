@@ -248,6 +248,23 @@ def point_status(map_data, point, clearance=.25):
 TEARDOWN_GRACE_S = 20.0
 
 
+def torque_at_limit(torque):
+    """Joints whose peak command reached the effective limit min(training clip, model clamp).
+
+    Derived from the recorded per-joint peaks, so it also covers runs recorded before the tracker
+    counted the source clip (those only counted commands beyond the model range).
+    """
+    if not isinstance(torque, dict) or not isinstance(torque.get('peak_commanded_nm'), dict):
+        return None
+    model, training = torque.get('model_limit_nm') or {}, torque.get('training_effort_nm') or {}
+    hits = set(torque.get('saturated_substeps') or {})
+    for joint, peak in torque['peak_commanded_nm'].items():
+        limits = [v for v in (model.get(joint), training.get(joint)) if isinstance(v, (int, float))]
+        if limits and isinstance(peak, (int, float)) and peak >= min(limits) - 0.01:
+            hits.add(joint)
+    return sorted(hits)
+
+
 def _wrap_yaw(value):
     """Normalise to [-pi, pi]; a UI-rounded 3.141593 is the same 180-degree box, not invalid input."""
     return math.atan2(math.sin(value), math.cos(value))
@@ -578,7 +595,9 @@ class Workbench:
             self.maps[key] = data
             return copy.deepcopy(data)
 
-    def prepare(self, request):
+    def prepare(self, request, *, new_request=False):
+        """Validate a scenario. New requests default to the current actuator profile; stored scenarios
+        saved before profiles existed have no field and resolve to `source`, the model they ran on."""
         if not isinstance(request, dict):
             raise ValueError('Scenario must be an object')
         if request.get('backend_id') != 'flow-sonic-cpu':
@@ -605,7 +624,7 @@ class Workbench:
                     'policy_id': profile['id'],
                     'criterion': self._criterion(request.get('criterion', 'arrive_hold')),
                     'latency': self._latency(request.get('latency'), profile),
-                    'actuators': actuator_profiles.validate(request.get('actuators')),
+                    'actuators': actuator_profiles.validate(request.get('actuators', actuator_profiles.DEFAULT_PROFILE if new_request else 'source')),
                     'preset_label': label(request['preset_label']) if request.get('preset_label') else None,
                     'planner': {'candidates': integer(planner.get('candidates', 2), 'candidates', 1, max_k),
                                 'ode_steps': integer(planner.get('ode_steps', 4), 'ODE steps', 1, max_ode)}}
@@ -642,9 +661,12 @@ class Workbench:
         # Whole 20 ms control ticks: the simulation cannot apply a plan between ticks.
         ms = int(math.floor(ms / 20 + .5)) * 20  # half-up to whole ticks
         # Flow callback: 'predict' is Studio's latency-aware anchoring adapter (studio/latency_anchor.py) and is
-        # meaningless without latency. The bundle keeps accepting it at 0 ms (saved scenarios; the source ignores it).
+        # meaningless without latency. The bundle source ignores the anchor at 0 ms, so it is normalised to
+        # 'measured' there (one report group for identical physics).
         if anchor == 'predict' and not ms and profile.get('loader') == 'flow-callback':
             raise ValueError('Predictive anchoring needs a planner latency of at least one 20 ms tick')
+        if not ms:
+            anchor = 'measured'
         return {'ms': ms, 'anchor': anchor}
 
     @staticmethod
@@ -663,15 +685,18 @@ class Workbench:
     def _content_key(scenario):
         keys = ('label', 'map_id', 'map_sha256', 'policy_id', 'criterion', 'latency', 'duration_s',
                 'start_xy', 'goal_xy', 'start_yaw_rad', 'seed', 'planner', 'backend_id')
-        return hashlib.sha256(json.dumps({k: scenario.get(k) for k in keys}, sort_keys=True).encode()).hexdigest()
+        content = {k: scenario.get(k) for k in keys}
+        content['actuators'] = scenario.get('actuators', 'source')  # part of the physics: never reuse across profiles
+        return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
     def save_scenario(self, request):
-        scenario = self.prepare(request)
+        scenario = self.prepare(request, new_request=True)
         scenario['content_sha256'] = self._content_key(scenario)
         with self.lock:
-            # Identical requests reuse one saved scenario instead of piling up copies.
+            # Identical requests reuse one saved scenario instead of piling up copies. Keys are recomputed
+            # from content (stored keys may predate a key field such as the actuator profile).
             for existing in self.scenarios.values():
-                if existing.get('content_sha256', self._content_key(existing)) == scenario['content_sha256']:
+                if self._content_key(existing) == scenario['content_sha256']:
                     existing = self.prepare(existing) | {'id': existing['id'], 'content_sha256': scenario['content_sha256']}
                     return {'scenario': existing, 'validation': existing['validation'], 'reused': True}
             if len(self.scenarios) >= MAX_SCENARIOS:
@@ -1219,6 +1244,7 @@ class Workbench:
                # Scenarios saved before actuator profiles ran on the unpatched source model.
                'actuators': scenario.get('actuators', 'source'),
                'torque': report.get('torque'),
+               'torque_at_limit': torque_at_limit(report.get('torque')),
                'trajectory_basis': 'Decimated simulator-ground-truth root XY from progress.jsonl (time, x, y)',
                'clock_domain': 'simulation'}
         if terminal:

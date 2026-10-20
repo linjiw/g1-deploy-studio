@@ -90,6 +90,7 @@ def apply(model, joint_names, profile_id):
 def reference_limits(joint_names, training_effort):
     """Per-joint reference ceilings for exceedance counts: training effort and each hardware profile."""
     out = {'training': [float(v) for v in training_effort]}
+    out['source'] = [88.0 if _joint_kind(n) else float(t) for n, t in zip(joint_names, training_effort)]
     for pid in ('g1-current', 'g1-rev1'):
         hips = PROFILES[pid]['hips_nm']
         out[pid] = [hips[_joint_kind(n)] if _joint_kind(n) else float(t) for n, t in zip(joint_names, training_effort)]

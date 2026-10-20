@@ -35,12 +35,12 @@ LOADERS = ('deploy-bundle', 'flow-callback')
 
 
 class TorqueTracker:
-    """Peak commanded PD torque per joint and substeps beyond the model actuator range.
+    """Peak commanded PD torque per joint and substeps at the effective torque limit.
 
-    Commanded torque is the source ``pd_torque`` return written to MuJoCo ``ctrl``;
-    MuJoCo then clamps it to each joint's ``actuatorfrcrange``. Saturated substeps
-    show where the training effort limit (g1deploy.contract) and the model limit
-    disagree in practice.
+    Commanded torque is the source ``pd_torque`` return, which the source already clips to the training
+    effort (g1deploy.contract); MuJoCo then clamps it to each joint's ``actuatorfrcrange``. The effective
+    limit is therefore min(training effort, model range): a substep *at* it is saturated, whichever of the
+    two clamped. Reference ceilings (training and each hardware profile) count substeps at or above them.
     """
 
     def __init__(self, np, model, joint_names, training_effort=None):
@@ -48,6 +48,8 @@ class TorqueTracker:
         ids = [model.joint(n).id for n in self.names]
         self.limited = np.asarray(model.jnt_actfrclimited[ids], dtype=bool)
         self.range = np.asarray(model.jnt_actfrcrange[ids], dtype=float)
+        model_hi = np.where(self.limited, self.range[:, 1], np.inf)
+        self.effective = np.minimum(model_hi, np.asarray(training_effort, dtype=float)) if training_effort is not None else model_hi
         self.tick_peak = np.zeros(len(ids))
         self.saturated = np.zeros(len(ids), dtype=int)
         # Reference ceilings independent of the model clamp: training effort and each G1 hardware profile.
@@ -61,9 +63,9 @@ class TorqueTracker:
     def observe(self, torque):
         t = self.np.asarray(torque, dtype=float)
         self.tick_peak = self.np.maximum(self.tick_peak, self.np.abs(t))
-        self.saturated += self.limited & ((t < self.range[:, 0]) | (t > self.range[:, 1]))
+        self.saturated += self.np.abs(t) >= self.effective - 1e-6
         for k, ceiling in self.references.items():
-            self.exceed[k] += self.np.abs(t) > ceiling + 1e-9
+            self.exceed[k] += self.np.abs(t) >= ceiling - 1e-6
         self.substeps += 1
 
     def end_tick(self):
@@ -76,11 +78,13 @@ class TorqueTracker:
         return {'peak_commanded_nm': dict(zip(self.names, peak.round(2).tolist())),
                 'model_limit_nm': {n: (float(r[1]) if lim else None) for n, r, lim in zip(self.names, self.range, self.limited)},
                 'training_effort_nm': dict(zip(self.names, np.asarray(training_effort, dtype=float).tolist())),
+                'effective_limit_nm': {n: (float(v) if np.isfinite(v) else None) for n, v in zip(self.names, self.effective)},
                 'saturated_substeps': {n: int(c) for n, c in zip(self.names, self.saturated) if c},
+                'saturation_basis': 'at the effective limit min(source training-effort clip, model actuatorfrcrange)',
                 'exceedance_substeps': {k: {n: int(c) for n, c in zip(self.names, v) if c} for k, v in self.exceed.items()},
                 'reference_limits_nm': {k: dict(zip(self.names, v.tolist())) for k, v in self.references.items()},
                 'total_substeps': int(self.substeps),
-                'basis': 'Commanded = source pd_torque output per physics substep; MuJoCo clamps to actuatorfrcrange (model limit). Simulator-commanded, not measured motor torque.'}
+                'basis': 'Commanded = source pd_torque output per physics substep, already clipped to the training effort; MuJoCo then clamps to actuatorfrcrange (model limit). Reference counts are at-or-above. Simulator-commanded, not measured motor torque.'}
 
 
 def validate_latency(value):

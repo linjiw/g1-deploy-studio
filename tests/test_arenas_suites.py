@@ -294,11 +294,31 @@ class ArenaTests(WorkbenchCase):
 
 class PolicyPreparationTests(WorkbenchCase):
     def test_actuator_profile_defaults_to_current_g1_and_is_validated(self):
-        self.assertEqual(self.w.prepare(scenario_request())['actuators'], 'g1-current')
+        self.assertEqual(self.w.prepare(scenario_request(), new_request=True)['actuators'], 'g1-current')
         self.assertEqual(self.w.prepare(scenario_request(actuators='g1-rev1'))['actuators'], 'g1-rev1')
         for bad in ('mode15', 88, ['source']):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self.w.prepare(scenario_request(actuators=bad))
+
+    def test_saved_scenarios_without_a_profile_keep_the_source_model(self):
+        # A scenario stored before profiles existed (no field) must re-run on `source`, the model it ran on.
+        legacy = self.w.prepare(scenario_request(), new_request=True)
+        legacy.pop('actuators'); legacy['id'] = 'scenario-legacy0001'
+        self.w.scenarios[legacy['id']] = legacy
+        self.assertEqual(self.w.prepare(self.w.scenarios[legacy['id']])['actuators'], 'source')
+        # A new default request is a different (current-G1) scenario; an explicit `source` one is the same physics.
+        self.assertFalse(self.w.save_scenario(scenario_request()).get('reused'))
+        reused = self.w.save_scenario(scenario_request(actuators='source'))
+        self.assertTrue(reused.get('reused'))
+        self.assertEqual((reused['scenario']['id'], reused['scenario']['actuators']), ('scenario-legacy0001', 'source'))
+
+    def test_dedupe_never_reuses_a_scenario_with_another_actuator_profile(self):
+        rev1 = self.w.save_scenario(scenario_request(actuators='g1-rev1'))['scenario']
+        other = self.w.save_scenario(scenario_request(actuators='source'))
+        self.assertFalse(other.get('reused'))
+        self.assertNotEqual(other['scenario']['id'], rev1['id'])
+        self.assertEqual(other['scenario']['actuators'], 'source')
+        self.assertTrue(self.w.save_scenario(scenario_request(actuators='g1-rev1')).get('reused'))
 
     def test_default_policy_and_criterion(self):
         scenario = self.w.prepare(scenario_request())

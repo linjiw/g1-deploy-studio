@@ -420,7 +420,7 @@ Three suites repeated the 12 P3 scenarios on the release service (89fa56c) with 
 | doorway #5 | G 5.8 | G 7.8 τ | G 9.1 | `job-9fb5b9233fc7` |
 | **Arrive & hold** | **12/12** [76–100] | **11/12** [65–99] | **7/12** [32–81] | |
 | Post-hoc reach | 12/12 | 11/12 | 10/12 | |
-| Runs with leg torque clamped | 0/12 | 11/12 | 0/12 | |
+| Runs with leg torque at the limit (source clip or model clamp; re-derived, see Addendum E) | 4/12 | 12/12 | 12/12 | |
 | Runs above the rev_1_0 hip-pitch limit (88 N·m) | 2/12 | 11/12 | 11/12 | |
 | Median time to goal | 3.76 s | 5.76 s | 6.10 s | |
 | Falls / collisions | 0 / 0 | 1 / 0 | 0 / 0 | |
@@ -431,10 +431,12 @@ Legend as in Addendum B.
 
 1. **In lockstep the actuator model does not matter.** WX holds 12/12 with the trained-for 139/139/88 limits (F4), as it did on the 88/88/88 source model (P1), with the same median time (3.76 s).
 2. **At 200 ms with predictive anchoring it does.**
-   - With the hip pitch clamped at 88 N·m, WX holds 11/12: F5 on rev_1_0 limits, and Addendum C on the source model. It has one fall, with torque clamped in 11/12 runs.
-   - With the full 139 N·m it holds 7/12 (F3). There is no clamping, no contact and no fall. Four of its five failures are timeouts within 0.5 m of the goal, so it gets there and does not settle into a hold.
+   - With the hip pitch clamped at 88 N·m, WX holds 11/12: F5 on rev_1_0 limits, and Addendum C on the source model. F5 has one fall, and torque was at the limit in every run.
+   - With the full 139 N·m it holds 7/12 (F3), with no contact and no fall. Four of its five failures are timeouts within 0.5 m of the goal, so it gets there and does not settle into a hold.
+   - *Correction (review H1).* An earlier version said F3 had no clamping. In fact the source PD clips at the training effort (139 N·m at hips and knees, 50 N·m at the ankles) before MuJoCo, and the tracker did not count that clip. Re-derived from the recorded peaks, every F3 run reached a limit: the hips in 7 runs, the knees in 6, the ankles in 10.
    - All five scenarios that differ between F3 and F5 favour the clamped model (sign test p ≈ 0.13 at this n). This is suggestive, not established.
-3. **The earlier "predict fixes latency" result is therefore conditional on the actuator model.** Addendum C's 11/12 used the deprecated model, whose hip clamp damps the motion. On the robot the policies were trained for (current G1, 139 N·m), the predicted-anchor deployment at 200 ms is borderline.
+3. **The earlier "predict fixes latency" result is therefore conditional on the actuator model.** Addendum C's 11/12 used the deprecated model. On the robot the policies were trained for (current G1, 139 N·m), the predicted-anchor deployment at 200 ms is borderline.
+   - A plausible mechanism is that the 88 N·m hip clamp damps the motion. It is not established: the sign test above is p ≈ 0.13, and Addendum E shows strong seed variance at 200 ms.
    - The cause is the one Addendum C measured: the prediction is optimistic, because SONIC lags the plan. With more hip torque available, the overshoot near the goal is larger and the hold is harder to complete.
 4. **Hip-pitch commands above 88 N·m are routine for WX** (11/12 runs at 200 ms, 2/12 in lockstep). On a rev_1_0 robot they would be clamped by the motor, as F5 shows, so a passive `mode_machine` reading must come before any hardware step.
 
@@ -443,3 +445,37 @@ Next, all of them Flow research or deployment decisions:
 - add seeds per cell;
 - run 140 and 160 ms on the trained-for limits;
 - once the operator runs `tools/l3_rehearsal.sh`, see whether the real-time chain at its real latency agrees.
+
+## Addendum E: seeds, the 160 ms robot budget, and re-derived torque
+
+**Why.** Addendum D rested on one seed. The review also found that torque clipped by the source PD at the training effort was not counted as "at limit" (review H1; fixed in the tracker).
+
+Three suites ran on the release service (df19f85) on the same 12 P3 scenarios: WX-RF K8/ODE6, predictive anchor, `g1-current` (139/139/88), arrive & hold, 10 s. Script: `tools/campaign/firm_followup.py`.
+- G1 `suite-08dd8a403a44`: 160 ms, seed 0. 160 ms is the robot's replan budget (8 ticks).
+- G2 `suite-8a4545859da7`: 200 ms, seed 1.
+- G3 `suite-b56d6b491b64`: 200 ms, seed 2.
+
+| Condition (WX-RF · predict · g1-current) | Arrive & hold | Post-hoc reach | Failures | Runs at a torque limit (hip / knee / ankle) |
+|---|---|---|---|---|
+| 0 ms, seed 0 (F4, Addendum D) | **12/12** [76–100] | 12/12 | — | 4/12 (2 / 1 / 3) |
+| **160 ms, seed 0 (G1)** | **12/12** [76–100] | 12/12 | — | 9/12 (1 / 4 / 8) |
+| 200 ms, seed 0 (F3) | 7/12 [32–81] | 10/12 | 4 timeouts ≤ 0.5 m, 1 > 0.5 m | 12/12 (7 / 6 / 10) |
+| 200 ms, seed 1 (G2) | 4/12 [14–61] | 8/12 | 3 timeouts ≤ 0.5 m, 3 > 0.5 m, 2 collisions | 12/12 (9 / 11 / 12) |
+| 200 ms, seed 2 (G3) | 10/12 [55–95] | 11/12 | 1 timeout ≤ 0.5 m, 1 collision | 12/12 (7 / 6 / 12) |
+| **200 ms, seeds 0–2 pooled** | **21/36** [42–73] | 29/36 | | 36/36 |
+| 200 ms, `g1-rev1`, seed 0 (F5) | 11/12 [65–99] | 11/12 | 1 fall | 12/12 (11 / 5 / 10) |
+
+The torque columns are re-derived from the recorded per-joint peaks (`studio.workbench.torque_at_limit`): a joint counts when its peak reached min(training clip, model clamp). New runs count this per substep. For comparison, the source-model campaign gives 4/24 runs at a limit for P1 (0 ms) and 12/12 for P3 (200 ms measured).
+
+**Reading.** CPU lockstep, one budget. Seeds vary planner sampling only.
+
+1. **At the robot's 160 ms budget, predictive anchoring holds 12/12 on the trained-for hardware limits.** Median time to goal is 4.94 s, against 3.76 s in lockstep. If the deployed planner meets its 160 ms budget, the 200 ms collapse is not the operating point.
+2. **200 ms is past a cliff.** Arrive & hold varies from 4/12 to 10/12 across seeds and pools to 21/36. Collisions appear (3/36), and every run reaches a torque limit, mostly at the ankles (50 N·m) and hips (139 N·m).
+3. **The single-seed comparison in Addendum D (rev_1_0 11/12 vs current 7/12) is within this seed variance.** Do not read it as an actuator effect without more seeds of F5.
+4. **Torque limits are reached in lockstep too** (4/12 at 0 ms, mostly ankles), and far more often under latency. A 35 N·m ankle limit (newest Unitree URDF; not settled, see ROBOT_CONTRACT) would bind harder.
+
+Next:
+- run F5 (rev_1_0) with seeds 1–2;
+- run 180 ms on `g1-current` to locate the cliff;
+- after the operator's first `tools/l3_rehearsal.sh` run, compare L3 at its measured latency with this table. The L3 simulator clips the hips at 88/88/88, so compare it with the `source` profile.
+

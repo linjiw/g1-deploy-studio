@@ -67,16 +67,39 @@ class TorqueExceedanceTests(unittest.TestCase):
         actuators.apply(model, JOINTS, 'g1-current')
         training = [139.0, 139.0, 88.0, 139.0, 139.0, 139.0, 88.0, 88.0]
         tracker = TorqueTracker(np, model, JOINTS, training)
-        tracker.observe([120, 0, 0, 0, 0, 0, 0, 0])   # above rev1 hip pitch (88), within current (139)
-        tracker.observe([-150, 0, 0, 0, 0, 0, 0, 0])  # above every ceiling and the patched model clamp
+        tracker.observe([120, 0, 0, 0, 0, 0, 0, 0])   # above rev1 hip pitch (88), below current (139)
+        tracker.observe([-139, 0, 0, 0, 0, 0, 0, 0])  # exactly at the source training clip = effective limit (H1)
         tracker.end_tick()
         summary = tracker.summary(training)
+        self.assertEqual(summary['saturated_substeps'], {'left_hip_pitch_joint': 1}, 'a command sitting on the clip is saturation')
         self.assertEqual(summary['exceedance_substeps']['g1-rev1'], {'left_hip_pitch_joint': 2})
+        self.assertEqual(summary['exceedance_substeps']['source'], {'left_hip_pitch_joint': 2})
         self.assertEqual(summary['exceedance_substeps']['g1-current'], {'left_hip_pitch_joint': 1})
         self.assertEqual(summary['exceedance_substeps']['training'], {'left_hip_pitch_joint': 1})
-        self.assertEqual(summary['saturated_substeps'], {'left_hip_pitch_joint': 1})
+        self.assertEqual(summary['effective_limit_nm']['left_hip_pitch_joint'], 139.0)
         self.assertEqual(summary['model_limit_nm']['left_hip_pitch_joint'], 139.0)
         self.assertEqual(summary['reference_limits_nm']['g1-rev1']['left_hip_pitch_joint'], 88.0)
+
+    def test_effective_limit_is_the_smaller_of_clip_and_model(self):
+        from studio.policy_worker import TorqueTracker
+        model = fake_model()  # source model: hips clamp at 88 in MuJoCo, training clip 139
+        tracker = TorqueTracker(np, model, JOINTS, [139.0, 139.0, 88.0, 139.0, 139.0, 139.0, 88.0, 88.0])
+        tracker.observe([100, 0, 0, 0, 0, 0, 0, 0]); tracker.end_tick()
+        summary = tracker.summary([139.0] * 8)
+        self.assertEqual(summary['effective_limit_nm']['left_hip_pitch_joint'], 88.0)
+        self.assertEqual(summary['saturated_substeps'], {'left_hip_pitch_joint': 1})
+
+
+class TorqueAtLimitDerivationTests(unittest.TestCase):
+    def test_recorded_peaks_at_the_clip_count_even_without_saturated_substeps(self):
+        from studio.workbench import torque_at_limit
+        legacy = {'peak_commanded_nm': {'left_hip_pitch_joint': 139.0, 'left_knee_joint': 120.0, 'left_ankle_pitch_joint': 50.0},
+                  'model_limit_nm': {'left_hip_pitch_joint': 139.0, 'left_knee_joint': 139.0, 'left_ankle_pitch_joint': 50.0},
+                  'training_effort_nm': {'left_hip_pitch_joint': 139.0, 'left_knee_joint': 139.0, 'left_ankle_pitch_joint': 50.0},
+                  'saturated_substeps': {}}
+        self.assertEqual(torque_at_limit(legacy), ['left_ankle_pitch_joint', 'left_hip_pitch_joint'])
+        self.assertIsNone(torque_at_limit(None))
+        self.assertEqual(torque_at_limit({'peak_commanded_nm': {'x': 1.0}}), [])
 
 
 if __name__ == '__main__':

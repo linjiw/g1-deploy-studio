@@ -106,7 +106,8 @@ class LatencyAndReuseTests(unittest.TestCase):
             with self.subTest(ms=ms), self.assertRaisesRegex(ValueError, 'at least one 20 ms tick'):
                 self.w.prepare(self.request(policy_id=wx, latency={'ms': ms, 'anchor': 'predict'}))
         # The bundle keeps its source behaviour (predict at 0 ms is accepted and ignored by run_episode).
-        self.assertEqual(self.w.prepare(self.request(latency={'ms': 0, 'anchor': 'predict'}))['latency'], {'ms': 0, 'anchor': 'predict'})
+        # The bundle source ignores the anchor without latency: normalised so identical physics share one group.
+        self.assertEqual(self.w.prepare(self.request(latency={'ms': 0, 'anchor': 'predict'}))['latency'], {'ms': 0, 'anchor': 'measured'})
         measured = self.w.save_scenario(self.request(policy_id=wx, latency={'ms': 200, 'anchor': 'measured'}))
         predicted = self.w.save_scenario(self.request(policy_id=wx, latency={'ms': 200, 'anchor': 'predict'}))
         self.assertNotEqual(measured['scenario']['id'], predicted['scenario']['id'], 'anchors are distinct scenarios')

@@ -41,7 +41,7 @@ export function report(rows) {
     return { key, n, repeats: scored.length - list.length, errors: errors.length, goals: goals.length, ci: wilson(goals.length, n), reach: reach.length, reachCi: wilson(reach.length, n), cats,
       timeToGoal: median(goals.map(r => r.metrics.elapsed_s)), reachTime: median(reach.map(r => r.derived.reach_post_hoc.time_s)),
       efficiency: median(goals.map(r => r.derived?.path_efficiency)), contactRuns: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length,
-      saturatedRuns: list.filter(r => Object.keys(r.torque?.saturated_substeps ?? {}).length).length, torqueKnown: list.filter(r => r.torque).length,
+      saturatedRuns: list.filter(r => (r.torque_at_limit ?? Object.keys(r.torque?.saturated_substeps ?? {})).length).length, torqueKnown: list.filter(r => r.torque).length,
       plannerP95: median(list.map(r => r.metrics.planner_p95_ms)), finalMedian: median(list.map(r => r.metrics.final_goal_distance_m)) };
   });
 }
@@ -58,19 +58,19 @@ function reportHtml(rows) {
       <div class="report-main"><strong>${g.reach}/${g.n}</strong> post-hoc Flow reach <span>${pct(g.reach, g.n)}${ciText(g.reachCi)}</span></div>
       <div class="report-cats">${Object.entries(g.cats).map(([c, k]) => `<span class="cat cat-${escape(c)}">${escape(CATEGORY_LABEL[c] ?? c)} ${k}</span>`).join('')}</div>
       <div class="report-meta">median time to goal ${num(g.timeToGoal, 2, 's')} · to reach ${num(g.reachTime, 2, 's')} · path efficiency ${num(g.efficiency, 2)} · final ${num(g.finalMedian, 2, 'm')} · planner p95 ${num(g.plannerP95, 0, 'ms')}</div>
-      <div class="report-meta">${g.contactRuns} run${g.contactRuns === 1 ? '' : 's'} with obstacle contact · ${g.torqueKnown ? `${g.saturatedRuns}/${g.torqueKnown} with leg torque clamped at the model limit` : 'torque not recorded'}</div></div>`).join('')}
+      <div class="report-meta">${g.contactRuns} run${g.contactRuns === 1 ? '' : 's'} with obstacle contact · ${g.torqueKnown ? `${g.saturatedRuns}/${g.torqueKnown} with leg torque at the limit (source clip or model clamp)` : 'torque not recorded'}</div></div>`).join('')}
     <p class="tiny">Rates are over distinct scenarios that completed scoring; worker/tool errors are listed, not counted as policy failures. 95% Wilson intervals. Source scorer = the run's own criterion; post-hoc reach = Flow arena protocol (0.4 m, 2 m/s, 0.1 s, contact ≤5 N) re-evaluated on the recorded trajectory. CPU lockstep simulation, single robot model; not a hardware success rate.</p>
     <div class="field-row compact"><button id="runs-select-all">Select all in view</button><button id="runs-export">↓ CSV</button><button id="runs-export-json">↓ JSON</button></div></div>`;
 }
 
 function csv(rows) {
   const cols = ['id', 'label', 'policy_id', 'map_id', 'criterion', 'actuators', 'latency_ms', 'latency_anchor', 'candidates', 'ode_steps', 'seed', 'start_x', 'start_y', 'start_yaw', 'goal_x', 'goal_y',
-    'outcome', 'category', 'elapsed_s', 'final_m', 'closest_m', 'reach_post_hoc', 'reach_time_s', 'path_efficiency', 'max_contact_n', 'max_tilt_rad', 'planner_p95_ms', 'torque_saturated_joints'];
+    'outcome', 'category', 'elapsed_s', 'final_m', 'closest_m', 'reach_post_hoc', 'reach_time_s', 'path_efficiency', 'max_contact_n', 'max_tilt_rad', 'planner_p95_ms', 'torque_at_limit_joints'];
   const q = v => v === null || v === undefined ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v);
   return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.actuators ?? 'source', r.latency?.ms ?? 0, r.latency?.anchor ?? 'measured', r.planner?.candidates, r.planner?.ode_steps, r.seed,
     r.start_xy?.[0], r.start_xy?.[1], r.start_yaw_rad, r.goal_xy?.[0], r.goal_xy?.[1], r.outcome, category(r), r.metrics.elapsed_s, r.metrics.final_goal_distance_m,
     r.derived?.closest_m, r.derived?.reach_post_hoc?.reached, r.derived?.reach_post_hoc?.time_s, r.derived?.path_efficiency, r.metrics.max_contact_n, r.metrics.max_tilt_rad,
-    r.metrics.planner_p95_ms, Object.keys(r.torque?.saturated_substeps ?? {}).length].map(q).join(','))].join('\n');
+    r.metrics.planner_p95_ms, (r.torque_at_limit ?? Object.keys(r.torque?.saturated_substeps ?? {})).length].map(q).join(','))].join('\n');
 }
 
 export const runs = { table: [], selected: new Set(), filters: { map: '', policy: '', outcome: '' }, maps: new Map(), canvas: null, colorBy: 'outcome', hover: null };
