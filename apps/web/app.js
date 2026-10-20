@@ -17,6 +17,8 @@ const state = {
   playing: false, speed: 1, loop: false, loading: false, loadGeneration: 0, runtime: null, liveStatus: null,
   workspace: 'replay', live: null, catalog: null, robot: null, sessions: [],
 };
+// Playback clock anchor (see tick): wall time and simulated time at the last re-anchor.
+let anchor = { wall: performance.now(), sim: 0, speed: 1 }, frameTimes = [];
 state.freeze = on_ => { state.frozenFrame = on_ ? state.frame : null; renderFrame(true); };
 
 const WORKSPACES = {
@@ -222,35 +224,51 @@ function updateHud(sample) {
 
 // ------------------------------------------------------------------ playback
 function setPlaying(value) {
+  // Pausing lands on the wall-clock time of the pause, not on the last rendered frame.
+  const landing = !value && state.playing && state.session && !state.loading;
+  if (landing) state.time = Math.min(state.session.metadata.duration_s, anchor.sim + (performance.now() - anchor.wall) / 1000 * anchor.speed);
   state.playing = value;
   $('play').innerHTML = value ? 'Ⅱ <span>Pause</span>' : '▶ <span>Play</span>';
   $('play').setAttribute('aria-label', value ? 'Pause recording' : 'Play recording');
   $('playback-state').textContent = value ? 'PLAYING' : state.session?.metadata?.mode === 'simulation' ? 'LIVE' : 'PAUSED';
   updateView({ play: value ? '1' : null });
   if (value && scene.view.camera_mode === 'scene' && state.session?.metadata?.goal_xy) cameraView('follow', true);
-  lastTick = performance.now();
+  reanchor();
+  if (!value) $('render-rate').hidden = true;
+  if (landing) renderFrame();
 }
 function seek(time) {
   if (!state.session) return;
   if (state.frozenFrame && time < state.frozenFrame.time) state.frozenFrame = null;
   state.time = Math.max(state.session.frames[0].time, Math.min(state.session.metadata.duration_s, time));
+  reanchor();
   renderFrame();
   updateViewSoon({ time: state.time.toFixed(3) });
 }
 function step(ticks) { setPlaying(false); seek(state.time + ticks * 0.02 + 1e-6); }
-let lastTick = performance.now();
+// Playback follows the wall clock from an anchor (re-set on play, seek, speed change and when
+// the tab becomes visible), so 1x is real time at any frame rate; slow rendering only drops
+// frames, which the render-rate badge reports, and never slows simulated time.
+function reanchor() { anchor = { wall: performance.now(), sim: state.time, speed: state.speed }; frameTimes = []; }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) reanchor(); });
 function tick(now) {
   if (state.playing && state.session && !state.loading) {
-    // Allow up to 0.5 s per frame so 1x stays real time even under slow software rendering.
-    const dt = Math.min((now - lastTick) / 1000, 0.5);
-    state.time = Math.min(state.session.metadata.duration_s, state.time + dt * state.speed);
+    if (anchor.speed !== state.speed) reanchor();
+    state.time = Math.min(state.session.metadata.duration_s, anchor.sim + (now - anchor.wall) / 1000 * state.speed);
     renderFrame();
+    frameTimes.push(now); while (frameTimes.length && now - frameTimes[0] > 2000) frameTimes.shift();
+    if (now - (tick.rateShown ?? 0) > 1000) {  // an overlay, refreshed at most 1 Hz: never a layout change
+      tick.rateShown = now;
+      const fps = frameTimes.length > 4 ? (frameTimes.length - 1) / ((now - frameTimes[0]) / 1000) : null;
+      const limited = fps !== null && fps < 15;
+      if ($('render-rate').hidden === limited) $('render-rate').hidden = !limited;
+      if (limited) $('render-rate').textContent = `RENDER-LIMITED · ${fps.toFixed(1)} fps · real-time clock kept`;
+    }
     if (state.time >= state.session.metadata.duration_s) {
       if (state.loop && state.session.metadata.duration_s > state.session.frames[0].time) seek(state.session.frames[0].time);
       else setPlaying(false);
     }
   }
-  lastTick = now;
   requestAnimationFrame(tick);
 }
 
