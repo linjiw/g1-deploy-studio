@@ -4,7 +4,7 @@ import { $, escape, num, vector, clock, finite, hasPose, hasReferencePose, reque
   updateView, updateViewSoon, EVIDENCE, chip, outcomeChip, yawOf } from './js/util.js';
 import * as scene from './js/scene.js';
 import { initTimeline, setTimelineSession, setTimelineCursor, refreshTimelineLive } from './js/timeline.js';
-import { inspector, renderInspector, selectTab, sampleHealth, perceptionAt, systemDetails } from './js/inspector.js';
+import { inspector, renderInspector, selectTab, sampleHealth, perceptionAt, systemDetails, fidelity } from './js/inspector.js';
 import { selectPipelineStage } from './pipeline.js';
 import { sn, initSensors, refreshSensors, renderSensors, resetSensors } from './js/sensors.js';
 import { arena, initArena, renderPanel as renderArenaPanel, loadFromMap, fitArena, exportDocument as arenaDocument, activePreset } from './js/arena.js';
@@ -110,7 +110,9 @@ async function loadSession(id, { keepCamera = false } = {}) {
 function updateModeBadge() {
   const m = state.session?.metadata ?? {};
   const live = m.mode === 'simulation';
-  $('mode-badge').textContent = live ? '● LIVE CPU SIMULATION' : m.recording_kind === 'sonic-mujoco-lockstep' ? 'REPLAY · CPU REHEARSAL' : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE' : 'REPLAY';
+  $('mode-badge').textContent = live ? '● LIVE CPU SIMULATION · L1' : m.recording_kind === 'sonic-mujoco-lockstep' ? 'REPLAY · CPU REHEARSAL · L1' : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : 'REPLAY · L0';
+  const fid = fidelity(m);
+  $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;
   $('run-outcome').innerHTML = live ? outcomeChip(null, 'running') : result?.outcome ? outcomeChip(result.outcome) : '';
@@ -525,7 +527,8 @@ async function initialize() {
     const sessions = await refreshSessionList();
     if (!sessions?.length) throw new Error('No recordings configured. See README for config/local.json.');
     const requested = view.get('session');
-    const firstJob = sessions.find(s => s.group === 'CPU rehearsals' && s.available && s.outcome);
+    const firstJob = [...sessions].filter(s => s.group === 'CPU rehearsals' && s.available && s.outcome)
+      .sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0))[0];
     const selected = sessions.some(s => s.id === requested) ? requested : (firstJob ?? sessions.find(s => s.available) ?? sessions[0]).id;
     $('session-picker').value = selected;
     if (!(await loadSession(selected))) return;

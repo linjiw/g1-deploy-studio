@@ -409,7 +409,7 @@ function bindPanel() {
   document.querySelectorAll('[data-preset-remove]').forEach(b => b.addEventListener('click', () => { arena.presets.splice(Number(b.dataset.presetRemove), 1); arena.active = Math.min(arena.active, arena.presets.length - 1); changed(); draw(); }));
   const q = preset();
   if (q) {
-    $('preset-label').addEventListener('input', e => { q.label = e.target.value || 'Preset'; arena.savedId = null; });
+    $('preset-label').addEventListener('input', e => { q.label = e.target.value || 'Preset'; arena.savedId = null; draw(); });
     $('preset-label').addEventListener('change', () => renderPanel());
     const bindPreset = (id, apply) => $(id).addEventListener('change', () => { const v = num_(id); if (finite(v)) { apply(v); changed(false); draw(); } });
     bindPreset('preset-sx', v => { q.start_xy[0] = v; }); bindPreset('preset-sy', v => { q.start_xy[1] = v; });

@@ -195,6 +195,10 @@ def execute(request, output):
         original_policy = sim.tracker.policy
         output_name = sim.tracker.session.get_outputs()[0].name
         sig = lambda xs: [{'name': x.name, 'shape': x.shape, 'type': x.type} for x in xs]
+        metadata['pipeline_contract'].update(
+            flow_engine='pytorch-eager (Flow callback snapshot)',
+            map_note='Privileged WX block: conditioning maps are computed from the exact configured boxes '
+                     '(simulator ground truth), not from sensed LiDAR. Unknown-cell defaults do not apply here.')
         metadata['pipeline_contract']['onnx_inputs'] = sig(sim.tracker.session.get_inputs())
         metadata['pipeline_contract']['onnx_outputs'] = sig(sim.tracker.session.get_outputs())
 

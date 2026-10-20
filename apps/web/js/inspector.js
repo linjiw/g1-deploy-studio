@@ -113,14 +113,25 @@ function updateJoints(state) {
 }
 
 // ---------------------------------------------------------------- Health
+// Fidelity ladder (review §7.1): what a run proves and what it hides.
+export function fidelity(meta = {}) {
+  if (meta.recording_kind === 'sonic-mujoco-lockstep') return { level: 'L1', label: 'L1 · CPU lockstep',
+    proves: 'Planner and tracker logic, geometry, scoring.', hides: 'Planner latency (physics waits for each replan), DDS/ZMQ transport, C++/TensorRT numerics, start-up transient, real sensors.' };
+  if (meta.recording_kind === 'recorded-wire-transport') return { level: 'L0', label: 'L0 · transport replay',
+    proves: 'Wire framing and decoding of recorded packets.', hides: 'Controller execution and robot state.' };
+  return { level: 'L0', label: 'L0 · recorded replay', proves: 'Data and adapter correctness of a recording.', hides: 'Everything dynamic; nothing re-executed.' };
+}
+
 function outcomeCard(state) {
   const meta = state.session.metadata, result = meta.test_result;
   if (!result?.outcome) return '';
+  const f = fidelity(meta);
   const last = state.session.frames.at(-1), interval = last?.post_action?.contact;
   return card('Run outcome · whole run', `<div class="outcome-line">${outcomeChip(result.outcome)}<span>${num(result.elapsed_s, 2, 's')} simulated</span></div>
     ${fact('Final / closest goal distance', `${num(result.final_goal_distance_xy_m, 3)} / ${num(result.minimum_goal_distance_xy_m, 3, 'm')}`)}${fact('Peak obstacle contact', num(result.maximum_obstacle_contact_n, 2, 'N'))}
     ${fact('Max root tilt / min height', `${num(result.maximum_root_tilt_rad, 3, 'rad')} / ${num(result.minimum_root_height_m, 3, 'm')}`)}
-    ${result.runtime_error ? notice(result.runtime_error, 'warning') : ''}${interval ? tiny(`Final contact interval ${num(interval.start_s, 3)}–${num(interval.end_s, 3, 's')}: ${num(interval.max_force_n, 2, 'N')}.`) : ''}`,
+    ${result.runtime_error ? notice(result.runtime_error, 'warning') : ''}${interval ? tiny(`Final contact interval ${num(interval.start_s, 3)}–${num(interval.end_s, 3, 's')}: ${num(interval.max_force_n, 2, 'N')}.`) : ''}
+    ${fact('Fidelity level', f.label)}${tiny(`Proves: ${f.proves} Hides: ${f.hides} Not a deployment or hardware result.`)}`,
   { evidence: 'sim-truth', id: 'recorded-outcome' });
 }
 
