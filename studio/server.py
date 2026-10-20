@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
+import gzip
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
@@ -10,12 +12,58 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import subprocess
 import threading
+import time
 from urllib.parse import parse_qs, unquote, urlparse
 
 from studio.model import RobotModel
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_SESSION_BYTES = 64 * 1024 * 1024
+CACHE_ENTRIES = 4
+# Encoded bytes plus decoded Python objects (about 4x the JSON size) per entry.
+CACHE_BUDGET_BYTES = 768 * 1024 * 1024
+SEND_CHUNK = 256 * 1024
+COMPRESSIBLE = ('application/json', 'text/', 'application/javascript', 'model/stl',
+                'image/svg+xml')
+QUIET_PREFIXES = ('/api/sensors', '/api/jobs', '/assets/', '/vendor/', '/api/version')
+
+
+class Encoded:
+    """One immutable response body with a lazily computed gzip variant."""
+
+    def __init__(self, body: bytes, kind: str):
+        self.body = body
+        self.kind = kind
+        self.etag = '"' + hashlib.sha1(body).hexdigest() + '"'
+        self._gzip = None
+        self._lock = threading.Lock()
+
+    def gzip(self) -> bytes:
+        with self._lock:
+            if self._gzip is None:
+                self._gzip = gzip.compress(self.body, compresslevel=5, mtime=0)
+            return self._gzip
+
+    @property
+    def cost(self):
+        return len(self.body) * 5 + len(self._gzip or b'')
+
+
+def build_identity(root=ROOT):
+    """Served revision of this checkout. Read once; never trusted as a lock."""
+    def git(*args):
+        try:
+            return subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True,
+                                  timeout=3, check=True).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+    status = git('status', '--porcelain', '--untracked-files=no')
+    return {'commit': git('rev-parse', 'HEAD'), 'describe': git('log', '-1', '--format=%h %s'),
+            'committed_at': git('log', '-1', '--format=%cI'),
+            'dirty': None if status is None else bool(status), 'root': str(root),
+            'started_unix_s': time.time()}
 
 
 class Catalog:
@@ -30,19 +78,22 @@ class Catalog:
             self.entries[key] = item
         self.cache = OrderedDict()
         self.models = {}
+        self.meshes = {}
         self.lock = threading.RLock()
+        self._loading = {}
         self.providers = {}
         self.workbench = None
+        self.policies = None
 
     def enable_workbench(self, data_root=None):
         from studio.workbench import Workbench, DATA_ROOT
         self.workbench = Workbench(self, data_root or DATA_ROOT)
 
-    def register(self, key, path, label, provider=None):
+    def register(self, key, path, label, provider=None, extra=None):
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', key):
             raise ValueError('Invalid session ID')
         with self.lock:
-            self.entries[key] = {'id': key, 'path': str(path), 'label': label}
+            self.entries[key] = {'id': key, 'path': str(path), 'label': label, **(extra or {})}
             if provider:
                 self.providers[key] = provider
             else:
@@ -50,55 +101,102 @@ class Catalog:
             self.cache.pop(key, None)
 
     def listing(self):
-        return {"sessions": [{"id": k, "label": v.get("label", k),
-                              "description": v.get("description", ""),
-                              "available": Path(v["path"]).exists() or k in self.providers}
-                             for k, v in self.entries.items()],
-                "mode": "replay", "hardware_enabled": False, "read_only": True}
+        with self.lock:
+            items = list(self.entries.items())
+            live = set(self.providers)
+        sessions = []
+        for k, v in items:
+            row = {"id": k, "label": v.get("label", k), "description": v.get("description", ""),
+                   "available": Path(v["path"]).exists() or k in live,
+                   "group": v.get("group") or ('CPU rehearsals' if k.startswith('job-') else 'Recordings')}
+            for field in ('outcome', 'policy_id', 'started_unix_s', 'scenario_label', 'map_id', 'status', 'suite_id'):
+                if v.get(field) is not None:
+                    row[field] = v[field]
+            sessions.append(row)
+        return {"sessions": sessions, "mode": "replay", "hardware_enabled": False, "read_only": True}
 
-    def session(self, key):
+    def _decode(self, key, item):
         from studio.replay import load_session
+        suffix = Path(item['path']).suffix.lower()
+        if suffix == '.json':
+            from studio.workbench import read_json
+            data = read_json(item['path'])
+            if data.get('schema_version') != 1 or not data.get('frames'):
+                raise ValueError('Invalid owned simulation recording')
+        elif suffix == ".jsonl":
+            from studio.capture_replay import load_capture
+            data = load_capture(item["path"])
+        elif suffix == ".mcap":
+            from studio.export import load_mcap
+            data = load_mcap(item["path"])
+        else:
+            data = load_session(item["path"], environment_path=item.get("environment_path"))
+        return data
+
+    def _finish(self, key, data):
+        data["metadata"]["catalog_id"] = key
+        # JSON encoding validates finite values before any response is served.
+        body = json.dumps(data, allow_nan=False, separators=(",", ":")).encode()
+        if len(body) > MAX_SESSION_BYTES:
+            raise ValueError("Session exceeds 64 MiB browser replay limit; split recording")
+        return data, Encoded(body, 'application/json')
+
+    def entry(self, key):
+        """Return (data, Encoded). Decodes run outside the catalog-wide lock."""
         with self.lock:
             if key not in self.entries:
                 raise KeyError("Unknown session")
-            if key not in self.cache or key in self.providers:
-                item = self.entries[key]
-                if key in self.providers:
-                    data = self.providers[key]()
-                elif Path(item['path']).suffix.lower() == '.json':
-                    from studio.workbench import read_json
-                    data = read_json(item['path'])
-                    if data.get('schema_version') != 1 or not data.get('frames'):
-                        raise ValueError('Invalid owned simulation recording')
-                elif Path(item["path"]).suffix.lower() == ".jsonl":
-                    from studio.capture_replay import load_capture
-                    data = load_capture(item["path"])
-                elif Path(item["path"]).suffix.lower() == ".mcap":
-                    from studio.export import load_mcap
-                    data = load_mcap(item["path"])
-                else:
-                    data = load_session(item["path"], environment_path=item.get("environment_path"))
-                data["metadata"]["catalog_id"] = key
-                # JSON encoding validates finite values before any response is served.
-                body = json.dumps(data, allow_nan=False, separators=(",", ":")).encode()
-                if len(body) > 64 * 1024 * 1024:
-                    raise ValueError("Session exceeds 64 MiB browser replay limit; split recording")
-                self.cache[key] = (data, body)
-                # Bound decoded recordings as the local review history grows.
-                # Live providers still refresh on every request.
-                while len(self.cache) > 4:
-                    self.cache.popitem(last=False)
-            self.cache.move_to_end(key)
-            return self.cache[key]
+            item = dict(self.entries[key])
+            provider = self.providers.get(key)
+            if provider is None and key in self.cache:
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            gate = self._loading.setdefault(key, threading.Lock())
+        if provider is not None:
+            # Live providers refresh every request and are never cached.
+            return self._finish(key, provider())
+        with gate:
+            with self.lock:
+                if key in self.cache:
+                    self.cache.move_to_end(key)
+                    return self.cache[key]
+            result = self._finish(key, self._decode(key, item))
+            with self.lock:
+                if self.entries.get(key, {}).get('path') == item['path'] and key not in self.providers:
+                    self.cache[key] = result
+                    self.cache.move_to_end(key)
+                    while len(self.cache) > CACHE_ENTRIES or (
+                            len(self.cache) > 1 and sum(e[1].cost for e in self.cache.values()) > CACHE_BUDGET_BYTES):
+                        self.cache.popitem(last=False)
+                self._loading.pop(key, None)
+            return result
+
+    def session(self, key):
+        data, encoded = self.entry(key)
+        # Stable pair per cached decode, so repeated reads share one object.
+        pair = encoded.__dict__.get('pair')
+        if pair is None or pair[0] is not data:
+            pair = encoded.pair = (data, encoded.body)
+        return pair
 
     def model(self, key):
+        data, _ = self.entry(key)
+        path = data["metadata"].get("model_path")
+        if not path:
+            raise ValueError("Robot model and pose were not captured in this diagnostics session")
+        resolved = str(Path(path).resolve())
         with self.lock:
-            if key not in self.models:
-                data, _ = self.session(key)
-                if not data["metadata"].get("model_path"):
-                    raise ValueError("Robot model and pose were not captured in this diagnostics session")
-                self.models[key] = RobotModel(data["metadata"]["model_path"], key)
-            return self.models[key]
+            model = self.models.get(resolved)
+        if model is None:
+            model = RobotModel(resolved, key)
+            with self.lock:
+                model = self.models.setdefault(resolved, model)
+                self.meshes.update(model.assets)
+        return model
+
+    def mesh(self, token):
+        with self.lock:
+            return self.meshes[token]
 
 
 class Gateway(ThreadingHTTPServer):
@@ -112,6 +210,9 @@ class Gateway(ThreadingHTTPServer):
         self.address_family = socket.AF_INET6 if address[0] == "::1" else socket.AF_INET
         self.catalog = catalog
         self.slots = threading.BoundedSemaphore(12)
+        self.static = {}
+        self.static_lock = threading.Lock()
+        self.identity = build_identity()
         super().__init__(address, Handler)
 
     def server_bind(self):
@@ -141,6 +242,21 @@ class Gateway(ThreadingHTTPServer):
         finally:
             self.slots.release()
 
+    def static_file(self, target: Path, kind: str) -> Encoded:
+        """Small in-memory cache of served files keyed by path, size and mtime."""
+        stat = target.stat()
+        key = (str(target), stat.st_size, stat.st_mtime_ns)
+        with self.static_lock:
+            hit = self.static.get(str(target))
+            if hit and hit[0] == key:
+                return hit[1]
+        encoded = Encoded(target.read_bytes(), kind)
+        with self.static_lock:
+            self.static[str(target)] = (key, encoded)
+            if len(self.static) > 256:
+                self.static.pop(next(iter(self.static)))
+        return encoded
+
 
 def loopback_gateways(port, catalog):
     """Bind both localhost families or fail without leaving a partial service."""
@@ -150,6 +266,7 @@ def loopback_gateways(port, catalog):
     except Exception:
         ipv4.server_close()
         raise
+    ipv6.identity = ipv4.identity
     return [ipv4, ipv6]
 
 
@@ -162,31 +279,72 @@ def loopback_authority(authority):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "G1Replay/0.1"
+    server_version = "G1Replay/0.2"
 
     def setup(self):
         super().setup()
+        # Per socket operation; bodies are written in bounded chunks below so a
+        # slow authenticated tunnel is not limited to a 15 s total transfer.
         self.connection.settimeout(15)
 
-    def log_message(self, fmt, *args):
-        # Keep mesh requests from overwhelming the terminal.
-        if args and not str(args[0]).startswith("GET /assets/"):
-            super().log_message(fmt, *args)
+    def log_request(self, code='-', size='-'):
+        # Keep polling and mesh requests from overwhelming the service journal.
+        try:
+            ok = int(code) < 400
+        except (TypeError, ValueError):
+            ok = False
+        if ok and self.command in ('GET', 'HEAD') and urlparse(self.path).path.startswith(QUIET_PREFIXES):
+            return
+        super().log_request(code, size)
+
+    def _headers(self, kind, length, cache, etag=None, encoding=None):
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", cache)
+        if etag:
+            self.send_header("ETag", etag)
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'")
+        self.end_headers()
+
+    def _write(self, data):
+        if self.command == "HEAD":
+            return
+        view = memoryview(data)
+        for offset in range(0, len(view), SEND_CHUNK):
+            self.wfile.write(view[offset:offset + SEND_CHUNK])
 
     def respond(self, data, kind="application/json", status=200):
         if not isinstance(data, bytes):
             data = json.dumps(data, allow_nan=False, separators=(",", ":")).encode()
+        gz = (status == 200 and len(data) > 4096 and kind.startswith(COMPRESSIBLE)
+              and 'gzip' in self.headers.get('Accept-Encoding', ''))
+        if gz:
+            data = gzip.compress(data, compresslevel=4, mtime=0)
         self.send_response(status)
-        self.send_header("Content-Type", kind)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "private, max-age=3600" if kind == "application/octet-stream" else "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(data)
+        self._headers(kind, len(data), "no-store", encoding='gzip' if gz else None)
+        self._write(data)
+
+    def respond_cached(self, encoded: Encoded, cache="private, no-cache"):
+        """Revalidated (ETag) response with a reusable gzip body."""
+        if self.headers.get('If-None-Match') == encoded.etag:
+            self.send_response(304)
+            self.send_header("ETag", encoded.etag)
+            self.send_header("Cache-Control", cache)
+            self.end_headers()
+            return
+        body, encoding = encoded.body, None
+        if (len(body) > 1024 and encoded.kind.startswith(COMPRESSIBLE)
+                and 'gzip' in self.headers.get('Accept-Encoding', '')):
+            body, encoding = encoded.gzip(), 'gzip'
+        self.send_response(200)
+        self._headers(encoded.kind, len(body), cache, encoded.etag, encoding)
+        self._write(body)
 
     def do_HEAD(self):
         self.do_GET()
@@ -218,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(route.query)
             catalog = self.server.catalog
             workbench = catalog.workbench
+            if path == '/api/version':
+                return self.respond(dict(self.server.identity, hardware_enabled=False))
             if path == '/api/workbench' and workbench:
                 return self.respond(workbench.description())
             if path == '/api/map' and workbench:
@@ -228,12 +388,31 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(workbench.scenarios[key] if key else {'scenarios': list(workbench.scenarios.values())})
             if path == '/api/jobs' and workbench:
                 key = query.get('id', [None])[0]
-                return self.respond(workbench.job(key) if key else workbench.list_jobs())
+                if not key:
+                    return self.respond(workbench.list_jobs())
+                after = query.get('perception_after', [None])[0]
+                try:
+                    after = float(after) if after not in (None, '', '-Infinity') else None
+                except ValueError:
+                    raise ValueError('perception_after must be a number') from None
+                return self.respond(workbench.job(key, light=query.get('light', ['0'])[0] == '1', perception_after=after))
+            if path == '/api/suites' and workbench:
+                key = query.get('id', [None])[0]
+                return self.respond(workbench.suite(key) if key else workbench.list_suites())
+            if path == '/api/runs' and workbench:
+                return self.respond(workbench.runs_table())
+            if path == '/api/policies' and workbench:
+                return self.respond(workbench.policy_catalog())
+            if path == '/api/robot':
+                from studio.robot_profile import load_profile
+                return self.respond(load_profile())
             if path == '/api/sensors':
                 from studio.sensors import get_sensor_snapshot
                 key = query.get('session', [next(iter(catalog.entries))])[0]
                 at = float(query.get('time', ['0'])[0])
-                return self.respond(get_sensor_snapshot(catalog.session(key)[0], at))
+                snapshot = get_sensor_snapshot(catalog.session(key)[0], at,
+                                               include_masks=query.get('masks', ['0'])[0] == '1')
+                return self.respond(snapshot)
             if path == "/api/sessions":
                 return self.respond(catalog.listing())
             if path == "/api/safety":
@@ -244,7 +423,9 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api/session", "/api/model", "/api/kinematics", "/api/export"):
                 key = query.get("id", [next(iter(catalog.entries))])[0]
                 if path == "/api/session":
-                    return self.respond(catalog.session(key)[1])
+                    data, encoded = catalog.entry(key)
+                    live = key in catalog.providers
+                    return self.respond_cached(encoded, "no-store" if live else "private, no-cache")
                 if path == "/api/export":
                     from studio.export import encode_mcap
                     return self.respond(encode_mcap(catalog.session(key)[0]), "application/octet-stream")
@@ -256,23 +437,28 @@ class Handler(BaseHTTPRequestHandler):
                 if index < 0 or index >= len(data["frames"]):
                     raise ValueError("Frame out of range")
                 return self.respond(model.body_poses(data["frames"][index]["qpos"]))
-            if path.startswith("/assets/model/"):
-                parts = path.split("/")
-                if len(parts) != 5:
+            if path.startswith("/assets/mesh/"):
+                match = re.fullmatch(r"/assets/mesh/([0-9a-f]{64})\.stl", path)
+                if not match:
                     raise KeyError("Unknown asset")
-                asset = catalog.model(parts[3]).assets[parts[4]]
-                return self.respond(asset.read_bytes(), "application/octet-stream")
+                target = catalog.mesh(match[1])
+                encoded = self.server.static_file(target, "model/stl")
+                return self.respond_cached(encoded, "private, max-age=31536000, immutable")
             if path.startswith("/vendor/three/"):
                 base = ROOT / "node_modules/three"
                 relative = path[len("/vendor/three/"):]
+                cache = "private, max-age=86400"
             else:
                 base = ROOT / "apps/web"
                 relative = "index.html" if path == "/" else path.lstrip("/")
+                cache = "private, no-cache"
             target = (base / relative).resolve()
             if not target.is_relative_to(base.resolve()) or not target.is_file():
                 raise KeyError("Not found")
             kind = mimetypes.guess_type(target)[0] or "application/octet-stream"
-            return self.respond(target.read_bytes(), kind)
+            if kind == 'text/javascript':
+                kind = 'application/javascript'
+            return self.respond_cached(self.server.static_file(target, kind), cache)
         except (BrokenPipeError, ConnectionResetError):
             return
         except KeyError:
@@ -280,12 +466,15 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, FileNotFoundError) as error:
             self.respond({"error": str(error)}, status=422)
 
+    POST_ROUTES = ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel',
+                   '/api/arenas', '/api/suites', '/api/suites/cancel')
+
     def do_POST(self):
         if not self.authorize_local():
             return
         path = urlparse(self.path).path
         workbench = self.server.catalog.workbench
-        if not workbench or path not in ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel'):
+        if not workbench or path not in self.POST_ROUTES:
             return self.respond({'error': 'No hardware/control endpoint; only local preparation and owned CPU tests are supported'}, status=405)
         if not self.headers.get('Origin') or not secrets.compare_digest(self.headers.get('X-Studio-Token', ''), workbench.token):
             return self.respond({'error': 'Same-origin preparation token required'}, status=403)
@@ -305,13 +494,19 @@ class Handler(BaseHTTPRequestHandler):
                 result = workbench.save_scenario(data)
             elif path == '/api/maps/import':
                 result = workbench.import_map(data)
+            elif path == '/api/arenas':
+                result = workbench.save_arena(data)
             elif path == '/api/jobs':
                 result = workbench.start_job(data.get('scenario_id'))
+            elif path == '/api/suites':
+                result = workbench.start_suite(data)
+            elif path == '/api/suites/cancel':
+                result = workbench.cancel_suite(data.get('id'))
             else:
                 result = workbench.cancel_job(data.get('id'))
             return self.respond(result, status=201)
         except KeyError:
-            self.respond({'error': 'Unknown map, scenario or owned job'}, status=404)
+            self.respond({'error': 'Unknown map, scenario, suite or owned job'}, status=404)
         except (ValueError, OSError) as error:
             self.respond({'error': str(error)}, status=422)
 
@@ -320,15 +515,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--config", type=Path, default=ROOT / "config/sessions.json")
+    parser.add_argument("--data-root", type=Path, default=None,
+                        help="Workbench data root (default ~/research-data/g1-deploy-studio/workbench)")
     args = parser.parse_args()
     catalog = Catalog(args.config)
-    catalog.enable_workbench()
+    catalog.enable_workbench(args.data_root)
     servers = loopback_gateways(args.port, catalog)
     ipv4, ipv6 = servers
     worker = threading.Thread(target=ipv6.serve_forever, daemon=True)
     worker.start()
     print(f"G1 Deploy Studio: http://127.0.0.1:{ipv4.server_port}  "
-          f"[REPLAY + CPU SIMULATION; HARDWARE DISABLED; IPv4 + IPv6 loopback]", flush=True)
+          f"[REPLAY + CPU SIMULATION; HARDWARE DISABLED; IPv4 + IPv6 loopback] "
+          f"build {ipv4.identity.get('commit') or 'unknown'}", flush=True)
     try:
         ipv4.serve_forever()
     except KeyboardInterrupt:

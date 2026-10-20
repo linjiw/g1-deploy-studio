@@ -203,7 +203,7 @@ def _recorded_state(session, time_s, sensors):
 
 
 def _recorded_map(session, sensors):
-    perception = session.get("perception", {})
+    perception = session.get("perception") or {}
     if not perception.get("available") or perception.get("kind") in ("time-series", "synchronized-map-snapshot"):
         return
     # The only map supported by the recording adapter is a final snapshot with
@@ -236,7 +236,7 @@ def _recorded_map(session, sensors):
 
 
 def _timed_perception(session, time_s, sensors, stale_after_s):
-    perception = session.get("perception", {})
+    perception = session.get("perception") or {}
     if perception.get("kind") not in ("time-series", "synchronized-map-snapshot") or not perception.get("available"):
         return
     frames = perception.get("frames", []) if perception.get("kind") == "time-series" else [perception]
@@ -377,8 +377,11 @@ def _captured_sensors(envelopes, time_s, sensors, stale_after_s):
                     reason="Runner orientation only; root translation is unavailable. This is not raw IMU telemetry.")
 
 
+MASK_FIELDS = ("observed_mask", "observed_indices")
+
+
 def get_sensor_snapshot(session, time_s, *, capture_envelopes=None, stale_after_s=0.5,
-                        include_payloads=True):
+                        include_payloads=True, include_masks=True):
     """Return a causal, timestamped inventory for the selected replay cursor.
 
     Optional captured messages are ``{time: session_relative_seconds,
@@ -397,6 +400,14 @@ def get_sensor_snapshot(session, time_s, *, capture_envelopes=None, stale_after_
     rows = list(sensors.values())
     if not include_payloads:
         rows = [{**row, "payload": None} for row in rows]
+    elif not include_masks:
+        # Full cell masks are large (up to ~0.7 MB per call) and only needed for
+        # explicit audits. Mark the omission rather than silently dropping it.
+        for row in rows:
+            payload = row.get("payload")
+            if isinstance(payload, dict) and any(payload.get(k) is not None for k in MASK_FIELDS):
+                row["payload"] = {k: v for k, v in payload.items() if k not in MASK_FIELDS}
+                row["payload"]["observed_mask_omitted"] = "Request masks=1 for the full observed-cell mask"
     metadata = session.get("metadata", {})
     return {"schema_version": 1, "session_id": metadata.get("id"), "cursor_s": float(time_s),
             "mode": metadata.get("mode", "replay"), "clock_domain": metadata.get("clock_domain"),

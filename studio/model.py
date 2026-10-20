@@ -58,12 +58,14 @@ class RobotModel:
             for mesh in doc.findall("asset/mesh"):
                 meshpath = (meshdir / mesh.attrib["file"]).resolve(strict=True)
                 # symlink targets are acceptable local references, never browser supplied.
-                token = f"{len(self.assets)}.stl"
                 if meshpath.suffix.lower() != ".stl":
                     raise ValueError("Only local STL meshes supported")
+                # Content-addressed URL: identical meshes are shared by every
+                # session using this model and are immutable for browser caching.
+                token = hashlib.sha256(meshpath.read_bytes()).hexdigest()
                 self.assets[token] = meshpath
                 mesh_defs[mesh.attrib["name"]] = {
-                    "url": f"/assets/model/{key}/{token}",
+                    "url": f"/assets/mesh/{token}.stl",
                     "scale": values(mesh, "scale", "1 1 1"),
                 }
             candidate = doc.find("worldbody/body[@name='pelvis']")
