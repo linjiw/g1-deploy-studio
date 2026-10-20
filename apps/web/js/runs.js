@@ -26,12 +26,18 @@ export function report(rows) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(r);
   }
-  return [...groups.entries()].map(([key, list]) => {
+  return [...groups.entries()].map(([key, all]) => {
+    // One trial per scenario: an identical re-run (same scenario id) is a repeat, not new evidence.
+    const latest = new Map();
+    for (const r of all) { const k = r.scenario_id ?? r.id; if (!latest.has(k) || (r.started_unix_s ?? 0) > (latest.get(k).started_unix_s ?? 0)) latest.set(k, r); }
+    const unique = [...latest.values()];
+    const errors = unique.filter(r => category(r) === 'error');
+    const list = unique.filter(r => category(r) !== 'error');  // tool/worker errors are not policy trials
     const n = list.length, goals = list.filter(r => r.outcome === 'goal_completion');
     const reach = list.filter(r => r.derived?.reach_post_hoc?.reached);
     const cats = {};
     for (const r of list) cats[category(r)] = (cats[category(r)] ?? 0) + 1;
-    return { key, n, goals: goals.length, ci: wilson(goals.length, n), reach: reach.length, reachCi: wilson(reach.length, n), cats,
+    return { key, n, repeats: all.length - unique.length, errors: errors.length, goals: goals.length, ci: wilson(goals.length, n), reach: reach.length, reachCi: wilson(reach.length, n), cats,
       timeToGoal: median(goals.map(r => r.metrics.elapsed_s)), reachTime: median(reach.map(r => r.derived.reach_post_hoc.time_s)),
       efficiency: median(goals.map(r => r.derived?.path_efficiency)), contactRuns: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length,
       saturatedRuns: list.filter(r => Object.keys(r.torque?.saturated_substeps ?? {}).length).length, torqueKnown: list.filter(r => r.torque).length,
@@ -46,12 +52,13 @@ function reportHtml(rows) {
   if (!groups.length) return '';
   return `<div class="panel-section"><h4>Robustness report · runs in view</h4>${groups.map(g => `<div class="report-group">
       <div class="report-key">${escape(g.key)}</div>
+      ${g.errors || g.repeats ? `<div class="report-meta">${g.errors ? `<span class="cat cat-error">${g.errors} error run${g.errors > 1 ? 's' : ''} excluded from rates</span> ` : ''}${g.repeats ? `${g.repeats} identical re-run${g.repeats > 1 ? 's' : ''} counted once` : ''}</div>` : ''}
       <div class="report-main"><strong>${g.goals}/${g.n}</strong> source-scorer goals <span>${pct(g.goals, g.n)}${ciText(g.ci)}</span></div>
       <div class="report-main"><strong>${g.reach}/${g.n}</strong> post-hoc Flow reach <span>${pct(g.reach, g.n)}${ciText(g.reachCi)}</span></div>
       <div class="report-cats">${Object.entries(g.cats).map(([c, k]) => `<span class="cat cat-${escape(c)}">${escape(CATEGORY_LABEL[c] ?? c)} ${k}</span>`).join('')}</div>
       <div class="report-meta">median time to goal ${num(g.timeToGoal, 2, 's')} · to reach ${num(g.reachTime, 2, 's')} · path efficiency ${num(g.efficiency, 2)} · final ${num(g.finalMedian, 2, 'm')} · planner p95 ${num(g.plannerP95, 0, 'ms')}</div>
       <div class="report-meta">${g.contactRuns} run${g.contactRuns === 1 ? '' : 's'} with obstacle contact · ${g.torqueKnown ? `${g.saturatedRuns}/${g.torqueKnown} with leg torque clamped at the model limit` : 'torque not recorded'}</div></div>`).join('')}
-    <p class="tiny">95% Wilson intervals. Source scorer = the run's own criterion; post-hoc reach = Flow arena protocol (0.4 m, 2 m/s, 0.1 s, contact ≤5 N) re-evaluated on the recorded trajectory. CPU lockstep simulation, single robot model; not a hardware success rate.</p>
+    <p class="tiny">Rates are over distinct scenarios that completed scoring; worker/tool errors are listed, not counted as policy failures. 95% Wilson intervals. Source scorer = the run's own criterion; post-hoc reach = Flow arena protocol (0.4 m, 2 m/s, 0.1 s, contact ≤5 N) re-evaluated on the recorded trajectory. CPU lockstep simulation, single robot model; not a hardware success rate.</p>
     <div class="field-row compact"><button id="runs-select-all">Select all in view</button><button id="runs-export">↓ CSV</button><button id="runs-export-json">↓ JSON</button></div></div>`;
 }
 
@@ -102,9 +109,8 @@ export function render() {
     return { id, n: rs.length, unscored: all.length - rs.length, goals: rs.filter(r => r.outcome === 'goal_completion').length,
       contact: rs.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length, contactUnknown: rs.filter(r => !finite(r.metrics.max_contact_n)).length };
   }).filter(s => s.n || s.unscored);
-  root.innerHTML = `<div class="panel-section"><div class="grid-fields three">
-      <label>Arena<select id="runs-map"><option value="">All</option>${maps.map(m => `<option value="${escape(m)}" ${runs.filters.map === m ? 'selected' : ''}>${escape(mapLabel(m))}</option>`).join('')}</select></label>
-      <label>Policy<select id="runs-policy"><option value="">All</option>${policies.map(p => `<option value="${escape(p)}" ${runs.filters.policy === p ? 'selected' : ''}>${escape(p)}</option>`).join('')}</select></label>
+  root.innerHTML = `<div class="panel-section"><label class="field">Arena<select id="runs-map"><option value="">All</option>${maps.map(m => `<option value="${escape(m)}" ${runs.filters.map === m ? 'selected' : ''}>${escape(mapLabel(m))}</option>`).join('')}</select></label>
+      <div class="grid-fields"><label>Policy<select id="runs-policy"><option value="">All</option>${policies.map(p => `<option value="${escape(p)}" ${runs.filters.policy === p ? 'selected' : ''}>${escape(p)}</option>`).join('')}</select></label>
       <label>Outcome<select id="runs-outcome"><option value="">All</option>${outcomes.map(o => `<option value="${escape(o)}" ${runs.filters.outcome === o ? 'selected' : ''}>${escape(String(o).replaceAll('_', ' '))}</option>`).join('')}</select></label></div>
       <div class="field-row compact"><label class="check"><input type="radio" name="runs-color" value="outcome" ${runs.colorBy === 'outcome' ? 'checked' : ''}> Color by outcome</label><label class="check"><input type="radio" name="runs-color" value="policy" ${runs.colorBy === 'policy' ? 'checked' : ''}> by policy</label><button id="runs-refresh">Refresh</button></div></div>
     ${stats.length ? `<div class="panel-section"><h4>Outcomes in view</h4>${stats.map(s => `<div class="stat-row"><i style="background:${policyColor(s.id)}"></i><span>${escape(s.id)}</span><strong>${s.goals}/${s.n} goals</strong><small>${s.contact} with contact${s.contactUnknown ? ` · ${s.contactUnknown} contact unknown` : ''}${s.unscored ? ` · ${s.unscored} not scored (killed/cancelled/running)` : ''} · criteria mixed: see report below</small></div>`).join('')}<p class="tiny">Individual CPU lockstep checks, mostly one seed each: not a success-rate estimate.</p></div>` : ''}
@@ -132,8 +138,8 @@ export function render() {
 
 function mapLabel(id) { return runs.catalogMaps?.find(m => m.id === id)?.label ?? id; }
 function shortLabel(r) {
-  const parts = (r.label ?? r.id).split(' · ');
-  return parts.length > 2 ? parts.slice(0, 2).join(' · ') : r.label ?? r.id;
+  if (r.preset_label) return `${mapLabel(r.map_id)} · ${r.preset_label}`;
+  return r.label ?? r.id;  // older runs: full label (shown with an ellipsis and a tooltip)
 }
 
 async function mapFor(id) {

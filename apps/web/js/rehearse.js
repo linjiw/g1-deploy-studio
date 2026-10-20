@@ -127,7 +127,7 @@ function scenarioRequest(q, seed) {
   const pol = policy();
   const label = `${rh.map.label} · ${q.label} · ${pol?.short_label ?? rh.policyId} · K${rh.settings.candidates}/ODE${rh.settings.ode_steps} · s${seed}${rh.settings.criterion === 'arena_reach' ? ' · reach' : ''}${rh.settings.latency_ms ? ` · lat ${rh.settings.latency_ms}${rh.settings.anchor === 'predict' ? 'p' : ''}` : ''}`.slice(0, 100);
   const latency = { ms: rh.settings.latency_ms, anchor: policy()?.loader === 'flow-callback' ? 'measured' : rh.settings.anchor };
-  return { label, map_id: rh.mapId, backend_id: 'flow-sonic-cpu', policy_id: rh.policyId, criterion: rh.settings.criterion, latency, duration_s: rh.settings.duration_s,
+  return { label, preset_label: q.label, map_id: rh.mapId, backend_id: 'flow-sonic-cpu', policy_id: rh.policyId, criterion: rh.settings.criterion, latency, duration_s: rh.settings.duration_s,
     start_xy: q.start_xy, goal_xy: q.goal_xy, start_yaw_rad: q.start_yaw_rad ?? 0, seed,
     planner: { candidates: rh.settings.candidates, ode_steps: rh.settings.ode_steps } };
 }
@@ -151,7 +151,8 @@ async function runSuite() {
   if (total > limit) throw new Error(`This suite has ${total} runs; the limit is ${limit}. Reduce presets or seeds.`);
   const ids = [];
   for (const q of presets()) for (let s = 0; s < rh.seeds; s++) ids.push((await saveScenario(q, rh.settings.seed + s)).id);
-  rh.suite = await request('/api/suites', { label: `${rh.map.label} · ${policy()?.short_label ?? rh.policyId} · ${ids.length} runs`, scenario_ids: ids });
+  const suffix = ` · ${policy()?.short_label ?? rh.policyId} · ${ids.length} runs`;
+  rh.suite = await request('/api/suites', { label: `${rh.map.label.slice(0, 100 - suffix.length)}${suffix}`, scenario_ids: ids });
   pollSuite();
 }
 
@@ -190,7 +191,11 @@ async function pollSuite() {
   try {
     rh.suite = await request(`/api/suites?id=${encodeURIComponent(rh.suite.id)}`);
     const current = rh.suite.runs.find(r => r.status === 'running' && r.job_id);
-    if (current && current.job_id !== rh.job?.id) { rh.job = { id: current.job_id, status: 'running' }; rh.attached = null; rh.lastPerception = -Infinity; poll(); }
+    if (current && current.job_id !== rh.job?.id) {
+      rh.job = { id: current.job_id, status: 'running' }; rh.attached = null; rh.lastPerception = -Infinity;
+      render();  // a new suite run: refresh the action bar (Cancel shown, Run disabled)
+      poll();
+    }
     renderSuite();
     if (!['queued', 'running', 'cancelling'].includes(rh.suite.status)) { render(); emit('rehearse:suite-finished', rh.suite); return; }
   } catch (error) { report(error); }
@@ -225,7 +230,7 @@ function renderSuite() {
   if (!s) { node.innerHTML = ''; return; }
   const done = s.runs.filter(r => r.outcome).length, goals = s.runs.filter(r => r.outcome === 'goal_completion').length;
   node.innerHTML = `<h4>Suite · ${escape(s.status)}</h4><p class="tiny">${escape(s.label)} · ${done}/${s.runs.length} finished · ${goals} goal${goals === 1 ? '' : 's'} · started ${escape(ago(s.created_unix_s))}</p>
-    <table class="suite-table"><tbody>${s.runs.map(r => `<tr><td>${outcomeChip(r.outcome, r.status)}</td><td>${escape((r.label ?? r.scenario_id).split(' · ').slice(1, 2).join('') || r.label)}</td><td>${r.job_id && r.outcome ? `<button class="link-button" data-open-session="${escape(r.job_id)}">open</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
+    <table class="suite-table"><tbody>${s.runs.map(r => `<tr><td>${outcomeChip(r.outcome, r.status)}</td><td>${escape(r.preset ?? r.label ?? r.scenario_id)}${r.seed !== undefined ? '' : ''}</td><td>${r.job_id && r.outcome ? `<button class="link-button" data-open-session="${escape(r.job_id)}">open</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
   node.querySelectorAll('[data-open-session]').forEach(b => b.addEventListener('click', () => emit('open-session', b.dataset.openSession)));
 }
 

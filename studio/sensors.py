@@ -392,6 +392,13 @@ def get_sensor_snapshot(session, time_s, *, capture_envelopes=None, stale_after_
     if not _finite(time_s) or not _finite(stale_after_s) or stale_after_s <= 0:
         raise ReplayError("Sensor cursor and stale timeout must be finite; timeout must be positive")
     sensors = {spec[0]: _empty(*spec) for spec in _SPECS}
+    if (session.get("metadata") or {}).get("privileged_map"):
+        # The policy planned from exact boxes: no simulated sensing existed, by design.
+        why = ("Unavailable by design: this privileged policy planned from the exact configured boxes "
+               "(simulator ground truth); no simulated LiDAR or map was generated.")
+        for key in ("lidar_raw", "lidar_registered", "lidar_filtered", "map_support", "map_ceiling"):
+            if key in sensors:
+                sensors[key]["reason"] = why
     _recorded_state(session, float(time_s), sensors)
     _recorded_map(session, sensors)
     _timed_perception(session, float(time_s), sensors, stale_after_s)

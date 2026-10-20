@@ -15,7 +15,7 @@ Open **Arena**. The stage becomes a top-down editor in world metres (x forward a
 - **Keyboard:** Del removes, D duplicates, R rotates 15°, arrows nudge, Esc deselects.
 - **Selected box:** exact X/Y, length, width, yaw and bottom/top heights.
 - **Presets:** up to 16 named start/heading/goal variants. *Mirror Y* adds the reflected case.
-- **Random goals (seeded):** count, distance band from the start, optional random start, heading (toward goal, random, or the start's). Same seed gives the same presets. The seed and parameters go into the labels and the arena description. Every sample passes the standing-footprint preflight.
+- **Random goals (seeded):** count, distance band from the start, optional random start, *behind an obstacle* (the straight line must cross a box), heading (toward goal, random, or the start's). Same seed gives the same presets. The seed and parameters go into the labels and the arena description. Every sample passes the standing-footprint preflight.
   - Each preset is checked live with the same conservative standing-footprint preflight the server uses: 0.25 m around every box below 1.3 m.
   - Preflight is geometry only. Route feasibility is not checked; only a rehearsal can tell.
 - **Save arena** stores a new immutable map, `arena-<id>`, with a SHA-256, presets and its base-map provenance. Editing a saved arena and saving again creates a new arena. Earlier runs on a saved arena are overlaid on the canvas.
@@ -38,13 +38,13 @@ Open **Rehearse**, or click **Rehearse →** after saving an arena.
   - Bundle: uses the source lockstep's own model, with *measured* or *predict* (latency-aware) anchoring.
   - WX: uses a Studio delayed-execution approximation around the Flow callback, labelled **L2≈**. The callback still anchors its next replan on its latest plan.
 - **Run preset** saves the scenario and starts the worker. The live run attaches to the viewport (Follow camera, Health tab) at about 3 Hz. When it finishes, its full recording opens at the same time cursor.
-- **Run suite** runs every preset × seeds, at most 12 runs, one after another through the single owned worker. The suite table fills in outcomes as they arrive. **Cancel** stops the queue and the current run.
+- **Run suite** runs every preset × seeds, at most 48 runs, one after another through the single owned worker. A running suite reserves the worker: manual runs are refused until it finishes or is cancelled. The suite table fills in outcomes as they arrive. **Cancel** stops the queue and the current run.
 
 **Limits.**
 - One worker per data root (kernel lock, also across gateway restarts).
 - Wall limit 180 s for the bundle profile and 480 s for WX-RF, plus 256 MiB output per run.
 - CPU threads are capped at 2 and GPU visibility is disabled.
-- At most 128 stored jobs and 100 scenarios. Old recordings are never deleted automatically; archive them outside the workbench directory.
+- At most 512 stored jobs and 2000 scenarios; identical scenario requests reuse one saved scenario. Old recordings are never deleted automatically; archive them outside the workbench directory.
 
 Cancel signals only this gateway's own process group. It is a simulation control, not an emergency stop. Closing the browser does not cancel a run.
 
@@ -62,7 +62,7 @@ Cancel signals only this gateway's own process group. It is a simulation control
 - the outcome chip, scenario, policy and budget;
 - simulated duration, final goal distance, peak contact and planner p95.
 
-Filter by arena, policy or outcome. "Outcomes in view" counts goals per policy. These are individual checks, mostly one seed each, not a success-rate estimate. Tick up to 12 runs to overlay their simulator-ground-truth root paths on the arena, colored by outcome or by policy. **Replay** opens any run.
+Filter by arena, policy or outcome. "Outcomes in view" counts goals per policy. These are individual checks, mostly one seed each, not a success-rate estimate. Tick up to 64 runs to overlay their simulator-ground-truth root paths on the arena, colored by outcome or by policy. **Replay** opens any run.
 
 ## Live and recorded data
 

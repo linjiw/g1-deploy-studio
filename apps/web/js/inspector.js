@@ -71,6 +71,7 @@ function buildJoints(state) {
   $('joint-select').addEventListener('change', e => { inspector.joint = Number(e.target.value); drawJointChart(state); });
   $('joints-content').querySelectorAll('tr[data-joint]').forEach(row => row.addEventListener('click', () => {
     inspector.joint = Number(row.dataset.joint); $('joint-select').value = row.dataset.joint; drawJointChart(state);
+    $('joints-content').querySelectorAll('tr[data-joint]').forEach(r => r.classList.toggle('selected', r === row));
   }));
   inspector.jointsSession = state.session;
   inspector.jointCells = [...$('joints-content').querySelectorAll('tr[data-joint]')].map(row => ({
@@ -173,7 +174,7 @@ function renderHealth(state) {
     if (!finite(h[{ 'Low-command freshness': 'lowcmd_age_ms', 'GPU utilization': 'gpu_utilization' }[name]])) missing.push([name, reason]);
   const recent = events.filter(e => e.time <= state.time).slice(-8).reverse();
   const diag = card('Replay diagnostic', `<label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame ? 'checked' : ''} ${hasPose(state.frame) ? '' : 'disabled'}> Hold state while the cursor advances</label>${tiny('Injects a stale measured state in the viewer only. Display marks it stale after 100 ms. No producer or controller is affected.')}`, { cls: state.frozenFrame ? 'card-warning' : '' });
-  $('health-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${meta.mode === 'simulation' ? 'LIVE CPU WORKER' : 'RECORDED DIAGNOSTICS'}</span><h3>Run health</h3></div>
+  $('health-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${meta.mode === 'simulation' ? 'LIVE CPU WORKER' : meta.mode === 'partial-live' ? 'PARTIAL LIVE SAMPLES · RUN ENDED WITHOUT RECORDING' : 'RECORDED DIAGNOSTICS'}</span><h3>Run health</h3></div>
     ${outcomeCard(state)}${goalCard}${timing}${pipelineHealthLink(state)}${contact}${streams}${runtime}
     ${card('Events up to cursor', recent.length ? `<ol class="event-list">${recent.map(e => `<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>` : '<p class="unavailable">No event before this cursor.</p>', { evidence: 'recorded' })}
     ${diag}${unavailableList(missing)}

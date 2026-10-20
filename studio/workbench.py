@@ -186,7 +186,7 @@ def validate_map(document):
                 raise ValueError('Each box must be an object')
             b = {'center_xy': vector(box.get('center_xy'), 'box center', low=-50, high=50),
                  'half_xy': vector(box.get('half_xy'), 'box half extents', low=.01, high=20),
-                 'yaw': finite(box.get('yaw', 0), 'box yaw', -math.pi, math.pi),
+                 'yaw': _wrap_yaw(finite(box.get('yaw', 0), 'box yaw', -4.0, 4.0)),
                  'z_bottom': finite(box.get('z_bottom'), 'box bottom', 0, 10),
                  'z_top': finite(box.get('z_top'), 'box top', 0, 10)}
             if b['z_top'] <= b['z_bottom']:
@@ -244,6 +244,11 @@ def point_status(map_data, point, clearance=.25):
 
 
 TEARDOWN_GRACE_S = 20.0
+
+
+def _wrap_yaw(value):
+    """Normalise to [-pi, pi]; a UI-rounded 3.141593 is the same 180-degree box, not invalid input."""
+    return math.atan2(math.sin(value), math.cos(value))
 
 
 def cgroup_oom_kills():
@@ -476,6 +481,8 @@ class Workbench:
         if job['status'] in TERMINAL_STATES and not self._lease_held():
             job.setdefault('finished_unix_s', time.time())
             self._persist_job(job)
+        if job.get('result_session_id') and job['status'] in ('completed', 'failed'):
+            self._register_result(job)  # make the recovered recording replayable without another restart
 
     def _reload_jobs(self):
         for output in sorted((self.root/'jobs').glob('job-*'))[-MAX_JOBS:]:
@@ -594,6 +601,7 @@ class Workbench:
                     'policy_id': profile['id'],
                     'criterion': self._criterion(request.get('criterion', 'arrive_hold')),
                     'latency': self._latency(request.get('latency'), profile),
+                    'preset_label': label(request['preset_label']) if request.get('preset_label') else None,
                     'planner': {'candidates': integer(planner.get('candidates', 2), 'candidates', 1, max_k),
                                 'ode_steps': integer(planner.get('ode_steps', 4), 'ODE steps', 1, max_ode)}}
         goal, start = point_status(map_data, scenario['goal_xy']), point_status(map_data, scenario['start_xy'])
@@ -1013,6 +1021,7 @@ class Workbench:
                      'label': label(document.get('label', 'Scenario suite')), 'status': 'queued',
                      'created_unix_s': time.time(), 'finished_unix_s': None,
                      'runs': [{'scenario_id': sid, 'label': self.scenarios[sid].get('label'),
+                               'preset': self.scenarios[sid].get('preset_label'),
                                'job_id': None, 'status': 'queued', 'outcome': None} for sid in ids],
                      'note': 'Runs execute one at a time in the owned CPU worker; each run is an independent bounded simulation.'}
             self.suites[suite['id']] = suite
@@ -1171,6 +1180,7 @@ class Workbench:
                'policy_id': snapshot.get('policy_id') or scenario.get('policy_id') or DEFAULT_POLICY_ID,
                'policy_identity_sha256': (snapshot.get('policy_identity') or {}).get('identity_sha256'),
                'scenario_id': snapshot.get('scenario_id'), 'label': scenario.get('label'),
+               'preset_label': scenario.get('preset_label'),
                'map_id': scenario.get('map_id'), 'map_sha256': scenario.get('map_sha256'),
                'start_xy': scenario.get('start_xy'), 'start_yaw_rad': scenario.get('start_yaw_rad'),
                'goal_xy': scenario.get('goal_xy'), 'duration_s': scenario.get('duration_s'),

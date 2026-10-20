@@ -48,26 +48,47 @@ function p(label, start, yaw, goal) { return { label, start_xy: start, start_yaw
 // Seeded random start/goal presets for robustness checks. Every sample must pass
 // the same standing-footprint preflight as a hand-placed preset; the seed and
 // parameters are recorded in the labels and the arena description.
-export function randomPresets({ count = 8, minDist = 1.5, maxDist = 4.5, seed = 1, randomStart = false, heading = 'toward', replace = true } = {}) {
+// Does the straight start->goal segment cross a box footprint grown by `pad` (separating axis)?
+function segmentBlocked(a, b, boxes, pad = 0.15) {
+  return boxes.some(box => {
+    if (box.z_bottom > 1.3) return false;  // overhead-only obstacles do not block a straight walk
+    const la = toLocal(box, a), lb = toLocal(box, b), h = [box.half_xy[0] + pad, box.half_xy[1] + pad];
+    let t0 = 0, t1 = 1;
+    for (let k = 0; k < 2; k++) {
+      const d = lb[k] - la[k];
+      if (Math.abs(d) < 1e-9) { if (Math.abs(la[k]) > h[k]) return false; continue; }
+      let ta = (-h[k] - la[k]) / d, tb = (h[k] - la[k]) / d;
+      if (ta > tb) [ta, tb] = [tb, ta];
+      t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
+      if (t0 > t1) return false;
+    }
+    return true;
+  });
+}
+
+export function randomPresets({ count = 8, minDist = 1.5, maxDist = 4.5, seed = 1, randomStart = false, heading = 'toward', replace = true, baseStart = null, obstructed = false } = {}) {
   const r = rng(seed * 7919 + 17), doc = { boxes: arena.boxes, bounds: arenaBounds(arena.boxes, []) };
   const lo = doc.bounds.min.map(v => v + 0.6), hi = doc.bounds.max.map(v => v - 0.6);
-  const base = arena.presets[arena.active] ?? p('Base', [0, 0], 0, [3, 0]);
+  // A fixed base start makes the same seed reproduce the same presets, whatever is active now.
+  const base = p('Base', baseStart ?? arena.presets[arena.active]?.start_xy ?? [0, 0], arena.presets[arena.active]?.start_yaw_rad ?? 0, [3, 0]);
   const out = [];
-  for (let attempt = 0; out.length < count && attempt < 4000; attempt++) {
+  for (let attempt = 0; out.length < count && attempt < (obstructed ? 20000 : 4000); attempt++) {
     const start = randomStart ? [snap(lo[0] + r() * (hi[0] - lo[0])), snap(lo[1] + r() * (hi[1] - lo[1]))] : base.start_xy.slice();
     const goal = [snap(lo[0] + r() * (hi[0] - lo[0])), snap(lo[1] + r() * (hi[1] - lo[1]))];
     const d = Math.hypot(goal[0] - start[0], goal[1] - start[1]);
     if (d < minDist || d > maxDist) continue;
     if (pointStatus(doc, start).status !== 'configured_free' || pointStatus(doc, goal).status !== 'configured_free') continue;
+    if (obstructed && !segmentBlocked(start, goal, arena.boxes)) continue;
     if (out.some(q => Math.hypot(q.goal_xy[0] - goal[0], q.goal_xy[1] - goal[1]) < 0.4 && Math.hypot(q.start_xy[0] - start[0], q.start_xy[1] - start[1]) < 0.4)) continue;
     const toward = Math.atan2(goal[1] - start[1], goal[0] - start[0]);
     const yaw = heading === 'toward' ? toward : heading === 'random' ? (r() * 2 - 1) * Math.PI : base.start_yaw_rad;
     out.push(p(`Random ${out.length + 1} · seed ${seed}`, start, wrap(Math.round(yaw / rad(5)) * rad(5)), goal));
   }
+  if (!out.length) return out;  // nothing fits: keep the existing presets untouched
   arena.presets = replace ? out : [...arena.presets, ...out].slice(0, 16);
   arena.active = 0;
-  const note = `Random presets: seed ${seed}, ${out.length} goals, ${minDist}–${maxDist} m, start ${randomStart ? 'random' : 'fixed'}, heading ${heading}.`;
-  arena.description = [arena.description?.replace(/Random presets:[^.]*\.[^.]*\.[^.]*\./, '').trim(), note].filter(Boolean).join(' ').slice(0, 500);
+  const note = `[random: seed ${seed}; ${out.length} goals; ${minDist}-${maxDist} m; start ${randomStart ? 'random' : `fixed (${base.start_xy.join(', ')})`}; heading ${heading}${obstructed ? '; straight line blocked' : ''}]`;
+  arena.description = [(arena.description ?? '').replace(/\s*\[random:[^\]]*\]/g, '').trim(), note].filter(Boolean).join(' ').slice(0, 500);
   changed(); draw();
   return out;
 }
@@ -322,7 +343,7 @@ export function applyTemplate(key, seed) {
 
 export function exportDocument() {
   return { schema_version: 1, label: arena.label, kind: 'boxes', frame_id: 'world', units: 'm', description: arena.description || undefined,
-    boxes: arena.boxes.map(b => ({ center_xy: b.center_xy.map(Number), half_xy: b.half_xy.map(Number), yaw: Number(b.yaw.toFixed(6)), z_bottom: b.z_bottom, z_top: b.z_top })),
+    boxes: arena.boxes.map(b => ({ center_xy: b.center_xy.map(Number), half_xy: b.half_xy.map(Number), yaw: Math.max(-Math.PI, Math.min(Math.PI, Number(wrap(b.yaw).toFixed(6)))), z_bottom: b.z_bottom, z_top: b.z_top })),
     bounds: arenaBounds(), presets: arena.presets, base_map_id: arena.base_map_id ?? undefined };
 }
 
@@ -410,7 +431,7 @@ export function renderPanel() {
       <details class="random-goals" ${arena.randomOpen ? 'open' : ''}><summary>Random goals (seeded)</summary>
         <div class="grid-fields"><label>Count<input id="rg-count" type="number" min="1" max="16" value="${arena.rg?.count ?? 8}"></label><label>Min m<input id="rg-min" type="number" step="0.5" min="0.5" value="${arena.rg?.minDist ?? 1.5}"></label><label>Max m<input id="rg-max" type="number" step="0.5" min="1" value="${arena.rg?.maxDist ?? 4.5}"></label>
         <label>Seed<input id="rg-seed" type="number" min="0" max="99999" value="${arena.rg?.seed ?? 1}"></label><label>Heading<select id="rg-heading"><option value="toward">toward goal</option><option value="random">random</option><option value="fixed">keep start's</option></select></label><span></span></div>
-        <div class="field-row compact"><label class="check"><input id="rg-start" type="checkbox" ${arena.rg?.randomStart ? 'checked' : ''}> Random start too</label><label class="check"><input id="rg-append" type="checkbox"> Append</label><button id="rg-generate" class="primary-action">Generate</button></div>
+        <div class="field-row compact"><label class="check"><input id="rg-start" type="checkbox" ${arena.rg?.randomStart ? 'checked' : ''}> Random start too</label><label class="check" title="Only keep goals whose straight line from the start crosses an obstacle"><input id="rg-obstructed" type="checkbox" ${arena.rg?.obstructed ? 'checked' : ''}> Behind an obstacle</label><label class="check"><input id="rg-append" type="checkbox" ${arena.rg && !arena.rg.replace ? 'checked' : ''}> Append</label><button id="rg-generate" class="primary-action">Generate</button></div>
         <p class="tiny">Samples inside the arena bounds; each start and goal must clear the standing footprint. Same seed → same presets. Save the arena, then Rehearse → Run suite.</p></details></div>
     <div class="panel-section" id="arena-status"></div>
     <div class="panel-section sticky-actions"><button id="arena-save" class="primary-action">${arena.savedId ? 'Saved ✓' : 'Save arena'}</button><button id="arena-rehearse" ${arena.savedId ? '' : 'disabled'} title="Open Rehearse with this arena">Rehearse →</button>
@@ -459,7 +480,8 @@ function bindPanel() {
   $('rg-generate').addEventListener('click', () => {
     arena.rg = { count: Math.max(1, Math.min(16, Number($('rg-count').value) || 8)), minDist: Number($('rg-min').value) || 1.5,
       maxDist: Number($('rg-max').value) || 4.5, seed: Math.max(0, Number($('rg-seed').value) || 0), randomStart: $('rg-start').checked,
-      heading: $('rg-heading').value, replace: !$('rg-append').checked };
+      heading: $('rg-heading').value, replace: !$('rg-append').checked, obstructed: $('rg-obstructed').checked,
+      baseStart: arena.rg?.baseStart ?? arena.presets[arena.active]?.start_xy?.slice() ?? [0, 0] };
     const made = randomPresets(arena.rg);
     if (made.length < arena.rg.count) emit('arena:error', `Only ${made.length} of ${arena.rg.count} goals fit the distance band and preflight; widen the band or enlarge the arena.`);
   });

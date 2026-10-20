@@ -80,6 +80,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     const hasState = session.frames.some(hasPose), hasRef = session.frames.some(hasReferencePose);
     for (const [layer, enabled] of [['robot', hasState], ['future', hasState], ['trajectory', hasState], ['environment', hasState], ['frames', hasState], ['reference', hasRef]]) $(`layer-${layer}`).disabled = !enabled;
     $('layer-perception').disabled = !session.perception?.available;
+    $('layer-navigation').disabled = !m.goal_xy && !m.start_xy;
     $('layer-perception').checked = !!session.perception?.available && new URLSearchParams(location.search).get('map') === '1';
     syncLayers();
     $('scene-unavailable').hidden = hasState;
@@ -113,6 +114,12 @@ async function loadSession(id, { keepCamera = false } = {}) {
 function updateModeBadge() {
   const m = state.session?.metadata ?? {};
   const live = m.mode === 'simulation';
+  if (m.mode === 'partial-live') {
+    $('mode-badge').textContent = `RUN ${String(state.liveStatus ?? 'ENDED').toUpperCase()} · PARTIAL LIVE SAMPLES`;
+    $('mode-badge').classList.remove('sim');
+    $('run-outcome').innerHTML = outcomeChip(null, state.liveStatus ?? 'failed');
+    return;
+  }
   const fid = fidelity(m), level = fid.level === 'L2-approx' ? 'L2≈' : fid.level;
   $('mode-badge').textContent = live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? `REPLAY · CPU REHEARSAL · ${level}` : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : 'REPLAY · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
@@ -230,7 +237,8 @@ function step(ticks) { setPlaying(false); seek(state.time + ticks * 0.02 + 1e-6)
 let lastTick = performance.now();
 function tick(now) {
   if (state.playing && state.session && !state.loading) {
-    const dt = Math.min((now - lastTick) / 1000, 0.25);
+    // Allow up to 0.5 s per frame so 1x stays real time even under slow software rendering.
+    const dt = Math.min((now - lastTick) / 1000, 0.5);
     state.time = Math.min(state.session.metadata.duration_s, state.time + dt * state.speed);
     renderFrame();
     if (state.time >= state.session.metadata.duration_s) {
@@ -331,10 +339,10 @@ on('rehearse:finished', async job => {
   } else if (viewing) {
     // Cancelled or killed without a recording: keep the partial live samples, clearly terminal.
     state.liveStatus = job.status;
-    Object.assign(state.session.metadata, { termination_reason: job.error ?? `Run ${job.status}` });
+    Object.assign(state.session.metadata, { mode: 'partial-live', termination_reason: job.error ?? `Run ${job.status}` });
+    updateModeBadge();
     $('playback-state').textContent = `RUN ${String(job.status).toUpperCase()}`;
-    $('mode-badge').textContent = `RUN ${String(job.status).toUpperCase()} · PARTIAL LIVE SAMPLES`;
-    $('mode-badge').classList.remove('sim');
+    renderInspector(state, { force: true });
     $('recording-warning').hidden = false;
     $('recording-warning').textContent = `RUN ${String(job.status).toUpperCase()} · ${job.error ?? 'No recording was saved.'} Showing only the live samples received; nothing after them is inferred.`;
   }
@@ -453,9 +461,13 @@ function buildLegend() {
     ${Object.entries(EVIDENCE).map(([k, e]) => `<div class="legend-row">${chip(k)}<span>${escape(e.tip)}</span></div>`).join('')}
     <p class="tiny">CPU lockstep pauses physics while the planner runs. Success in Studio is a simulation result, never hardware readiness.</p>`;
 }
+function closePopovers(except = null) {
+  document.querySelectorAll('.popover').forEach(p => { if (p.id !== except) p.hidden = true; });
+  document.querySelectorAll('[aria-expanded][aria-controls]').forEach(b => { if (b.getAttribute('aria-controls') !== except) b.setAttribute('aria-expanded', 'false'); });
+}
 function togglePopover(id, button) {
   const node = $(id), open = node.hidden;
-  document.querySelectorAll('.popover').forEach(p => { if (p.id !== id) p.hidden = true; });
+  closePopovers(id);
   node.hidden = !open; button?.setAttribute('aria-expanded', String(open));
 }
 function initInspectorResize() {
@@ -486,7 +498,7 @@ function onKey(e) {
   else if (k === 'm' && !$('layer-perception').disabled) { $('layer-perception').checked = !$('layer-perception').checked; syncLayers(); updateView({ map: $('layer-perception').checked ? '1' : null }); }
   else if (/^[1-7]$/.test(k)) { const tab = document.querySelectorAll('[data-tab]')[Number(k) - 1]; if (tab) { selectTab(tab.dataset.tab, state); updateView({ panel: tab.dataset.tab }); } }
   else if (k === '?') togglePopover('help-overlay', $('help-button'));
-  else if (k === 'Escape') document.querySelectorAll('.popover').forEach(p => { p.hidden = true; });
+  else if (k === 'Escape') closePopovers();
 }
 
 function bindChrome() {
@@ -526,7 +538,7 @@ function bindChrome() {
     if (seekButton) { setPlaying(false); seek(Number(seekButton.dataset.seek)); }
     const open = e.target.closest('[data-workspace-open]');
     if (open) setWorkspace(open.dataset.workspaceOpen);
-    if (!e.target.closest('.popover, #layers-button, #evidence-button, #help-button')) document.querySelectorAll('.popover').forEach(p => { p.hidden = true; });
+    if (!e.target.closest('.popover, #layers-button, #evidence-button, #help-button')) closePopovers();
   });
   window.addEventListener('keydown', onKey);
 }
@@ -570,6 +582,11 @@ async function initialize() {
     state.loop = view.get('loop') === '1'; $('loop').checked = state.loop;
     if (view.get('robot_view') === '1') setRobotView(true);
     if (view.get('workspace')) await setWorkspace(view.get('workspace'));
+    // Reloaded while a run is live (any workspace): resume following it.
+    if (state.session?.metadata?.mode === 'simulation' && !rh.catalog) {
+      await initRehearse(await ensureCatalog());
+      rh.attached = state.sessionId;
+    }
     if (view.get('play') === '1') setPlaying(true);
   } catch (error) { showError(error.message); $('loading-overlay').hidden = true; }
 }
