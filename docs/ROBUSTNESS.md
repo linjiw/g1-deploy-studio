@@ -303,7 +303,7 @@ Rows: `runs-addenda.json`.
    - WX shows the same pattern: 11/12 clamped, with oscillation near the goal and holds that never settle.
    - Post-hoc reach barely moves for either policy (WX 11/12, bundle 9/12). The robots still get to the goal; they cannot stop and hold there.
    - The common cause is a plan anchored 200 ms in the past. When SONIC switches to such a plan, the reference jumps back, and the legs saturate trying to follow it.
-2. **Predictive anchoring removes most of it for the bundle:** 9/12 with predict vs 4/12 with measured, and torque clamping back at 4/12. Flow's callback has no predictive anchoring, so this fix cannot be tested for WX without a Flow-side change. Studio does not make that change; it is a research decision.
+2. **Predictive anchoring removes most of it for the bundle:** 9/12 with predict vs 4/12 with measured, and torque clamping back at 4/12. Flow's callback has no predictive anchoring, so this fix cannot be tested for WX without a Flow-side change. Studio does not make that change; it is a research decision. (Addendum C tests the same strategy as a Studio-side adapter around the unchanged callback.)
 3. **WX tolerates 100 ms:** 11/12 arrive & hold (one loss, doorway #1, 0.38 m at timeout), 12/12 post-hoc reach, no extra torque clamping. Median time to goal rose from 3.9 s to 4.4 s. The breakdown lies between 100 and 200 ms; 140 and 160 ms were not measured.
 4. **Deployment consequence.** In lockstep, WX's CPU replan (p50 about 0.64 s at K8/ODE6) is hidden because physics waits for it. On the robot, the replan budget is about 160 ms (8 ticks), which is inside the measured breakdown band. A real-time WX deployment therefore needs one of two things:
    - planner latency comfortably below about 100 ms on the target compute, measured, not assumed; or
@@ -311,4 +311,76 @@ Rows: `runs-addenda.json`.
 
    Neither can be established in this CPU rehearsal. L3 remains blocked on the runner's hard-coded DDS domain 0.
 
-Remaining latency follow-ups: 140 and 160 ms on WX, more seeds per cell, and a predictive-anchor variant of the WX callback once the Flow side provides one.
+Remaining latency follow-ups: 140 and 160 ms on WX, more seeds per cell, and a predictive-anchor variant of the WX callback once the Flow side provides one. A Studio-side predictive adapter is evaluated in Addendum C.
+
+## Addendum C: predictive anchoring for WX (Studio adapter)
+
+Addendum B showed predictive anchoring removing most of the bundle's 200 ms collapse. Does the same strategy fix WX? Studio now has a deployment adapter, `latency.anchor = 'predict'`, for the Flow callback. It uses g1-student-deploy's own method (see [POLICIES.md](POLICIES.md#latency-and-torque-checks)), and Flow's code is unchanged. The planner is given the state predicted 200 ms ahead from the plan that has landed, and each new plan is anchored at that predicted state and time.
+
+- **Gateway.** A development gateway, not the release service: 127.0.0.1:8799, serving branch commit `1944abe` with its own data root (`predict-dev-workbench`).
+- **Arenas.** The clutter and doorway arenas were re-created through `POST /api/arenas`, and their content hashes equal the campaign's: `arena-428f5b017eb3` (`52e85540…`) and `arena-cb0b4cc10539` (`ff8a5fc3…`).
+- **Scenarios.** The same 12 presets as P3: seed 0, K8/ODE6, arrive & hold, 10 s, 200 ms, **predict**. Suite `suite-41b0e10dc8a7`.
+- **Acceptance run.** `job-4ff414a02045`: doorway #0, 8 s. Goal at 5.76 s; replayable, decoder parity 1.2e-7.
+
+| Preset | WX 0 (P1) | WX 100 measured (F2) | WX 200 measured (P3) | **WX 200 predict** | Predict job | Clamped joint-substeps | 0.3 m entries P3 → predict | Entry → hold s |
+|---|---|---|---|---|---|---:|---|---:|
+| clutter #0 | G 3.0 | G 3.3 | T 0.25 r τ | **G 3.2 τ** | `job-812632f65678` | 2 | 7 → 1 | 1.04 |
+| clutter #1 | G 5.1 | G 6.5 | T 0.48 r τ | **G 5.3 τ** | `job-a94576742a55` | 65 | 4 → 1 | 1.40 |
+| clutter #2 | G 3.1 | G 3.1 | T 0.47 r τ | **G 3.1** | `job-fd45b898542f` | 0 | 1 → 1 | 1.28 |
+| clutter #3 | G 3.5 | G 3.5 | T 1.37 r τ | **G 6.8 τ** | `job-7625ca262c8b` | 1 | 1 → 1 | 4.40 |
+| clutter #4 | G 9.8 τ | G 6.5 | T 0.52 r τ | **G 8.9 τ** | `job-0759e6d65654` | 14 | 1 → 1 | 1.38 |
+| clutter #5 | G 3.5 | G 3.9 | T 2.75 r τ | **G 3.0 τ** | `job-e04a1ba4010a` | 38 | 1 → 1 | 0.62 |
+| doorway #0 | G 4.0 | G 4.4 | F @3.5 r τ | **G 5.8 τ** | `job-35453dfbf552` | 1 | 1 → 1 | 2.46 |
+| doorway #1 | G 3.9 | T 0.38 r τ | T 0.44 r τ | **G 6.3 τ** | `job-17aadc96f1ca` | 145 | 2 → 1 | 0.80 |
+| doorway #2 | G 3.6 | G 3.9 | T 0.18 r τ | **G 9.9 τ** | `job-f5c58094e4fe` | 82 | 1 → 1 | 0.72 |
+| doorway #3 | G 3.6 | G 4.7 τ | T 0.96 r τ | **G 5.3 τ** | `job-0875a4af1bd5` | 93 | 1 → 1 | 0.58 |
+| doorway #4 | G 6.4 τ | G 6.6 | G 7.4 τ | **T 0.60 τ** | `job-796228470902` | 268 | 1 → 0 | — |
+| doorway #5 | G 5.8 | G 6.0 | C @2.9 | **G 7.8 τ** | `job-c5cc5ed1dd18` | 37 | 0 → 1 | 0.98 |
+| **Arrive & hold** | 12/12 [76–100] | 11/12 [65–99] | 1/12 [1–35] | **11/12 [65–99]** | | | | |
+| Post-hoc reach | 12/12 | 12/12 | 11/12 | 11/12 | | | | |
+| Leg torque clamped (runs) | 2/12 | 2/12 | 11/12 | 11/12 | | | | |
+| Clamped joint-substeps / substeps | 24 / 11 060 | 37 / 12 476 | 3086 / 20 756 | 746 / 15 032 | | | | |
+| Falls / collisions | 0 / 0 | 0 / 0 | 1 / 1 | 0 / 0 | | | | |
+| Median t goal · reach s | 3.76 · 2.76 | 4.40 · 3.22 | 7.38 · 3.96 | 5.76 · 3.20 | | | | |
+| Path efficiency (reached) · max tilt rad | 0.89 · 0.31 | 0.94 · 0.29 | 0.49 · 0.93 | 0.82 · 0.36 | | | | |
+
+The legend is the same as in Addendum B. Entries count crossings into the 0.3 m radius on the 50 Hz simulator-truth track. *Entry → hold* is the time from the first entry to the completed hold.
+
+**Reading** (n = 12, one seed, CPU lockstep, MuJoCo; indications, not rates).
+
+1. **Predictive anchoring removes WX's 200 ms collapse.**
+   - Arrive & hold went from 1/12 to 11/12 (11 wins, 1 loss). That equals WX at 100 ms with the measured anchor.
+   - No falls, no collisions, zero obstacle contact.
+   - Max tilt 0.36 rad (P3: 0.93); path efficiency 0.82 (P3: 0.49).
+   - The zig-zag at the goal is gone: every goal run entered the radius once, where P3 had up to 7 entries.
+   - This matches the bundle (4/12 measured → 9/12 predict). The 200 ms failure is the stale anchor, not WX itself.
+2. **It does not restore lockstep behaviour.**
+   - Time to goal is slower: median 5.76 s, against 3.76 s at 0 ms and 4.4 s at 100 ms.
+   - Leg torque is still clamped in 11/12 runs. That is 746 clamped joint-substeps (5 % of substeps), against 3086 (15 %) with the measured anchor and 24 (0.2 %) in lockstep.
+3. **The remaining gap has a measured cause: the prediction is optimistic.**
+   - At landing, the predicted anchor was closer to the goal than the measured robot in 95 % of 449 plans (p50 +0.07 m). Along the motion it was ahead by p50 +0.05 m.
+   - The prediction assumes SONIC follows the landed plan exactly, but SONIC lags it.
+   - Anchor xy error per run was p50 0.04–0.13 m and p95 0.12–0.26 m, with joint RMSE p50 0.14–0.25 rad.
+   - The slowest runs have the largest bias: doorway #1, #2 and #4, at +0.10 to +0.12 m. There the robot stops short and creeps in; doorway #2 hovered 0.45–0.8 m from the goal for about 6 s and held only at 9.9 s.
+4. **The one loss is horizon-limited, not unstable.**
+   - Doorway #4 (`job-796228470902`) is the blocked goal through the 0.8 m door.
+   - It ran 40 of 63 replans in tight mode and crept to the door from 1.5 to 4 s.
+   - It passed 0.46 m from the goal at about 9.2 s and timed out at 0.60 m, with no contact and no fall. P3 had held this goal at 7.4 s.
+5. **Deployment consequence.**
+   - With about 200 ms of planner latency, WX needs latency-aware anchoring. This adapter brings arrive & hold back to the 100 ms level, but not lockstep timing or torque.
+   - A lag-aware prediction is the next experiment: predict the *executed* rather than the planned state, for example with the WM-v2 execution model the planner already loads. It is a research decision.
+   - L3 (separate processes, real time) remains blocked as before.
+
+**Verification.**
+- **Unit tests** in `tests/test_latency_anchor.py`:
+  - prediction math;
+  - parity with `g1deploy/latency.py`, bit-identical on 60 random cases;
+  - the scheduler: *measured* equals the previous wrapper exactly; the predict schedule at 8-tick cadence and 10-tick latency.
+- **Request rules** in `test_robustness.py` and `test_flow_worker_contract.py`, plus an opt-in real-worker test (`STUDIO_INTEGRATION=1`).
+- **Measured is bit-identical:** a 3 s doorway #0 run at 200 ms measured, from the previous worker (`693d5e2`) and from this branch. The NPZ arrays, `plans.json` (except wall time), physics, torque and progress were identical.
+- **UI:** the badge reads `REPLAY · CPU REHEARSAL · L2≈ predict` and Health reads `L2≈ predict · lockstep with 200 ms planner latency`. The WX anchor select is enabled once a latency is set.
+
+**Evidence** is in `~/research-data/g1-deploy-studio/evidence/predict-anchor-20261020/`:
+- `comparison.md` / `comparison.json`, `suite.json` and `runs-final.json`;
+- `acceptance.json`, `anchor-bias.txt` and `ab-measured-bit-identity.txt`;
+- UI screenshots, and the driver and analysis scripts in `scripts/`.
