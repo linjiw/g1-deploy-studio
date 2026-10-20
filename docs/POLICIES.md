@@ -56,7 +56,7 @@ The callback's native `closed_loop.npz` is decoded independently by `studio.repl
 - **Privileged block.** The map, selection, guidance, execution check and route consume the exact configured boxes (simulator ground truth), not LiDAR. The bundle profile is the only LiDAR-driven profile here. Flow's LiDAR student (round ST) is not adopted. WX runs show perception as *unavailable by design*.
 - **WM-v2 is Isaac-trained.** Its 3 cm execution margin is calibrated on Isaac SONIC executions, and its accuracy under MuJoCo is unmeasured. Each plan's `exec_check` is shown as *estimated (Isaac-trained)*.
 - **No transfer of Isaac numbers.** WX's Isaac results (guard 121/156, V-learn 172/213, sealed 59.9 %) do not transfer to MuJoCo CPU lockstep. Studio starts standing, while Isaac arena tasks start from a recorded walk near 1 m/s. CPU randomness also differs from Isaac CUDA.
-- **Budget.** The evaluated budget is K16/ODE10. On this shared CPU host one replan at that budget took about 3–4 s. Studio's WX default is **K8/ODE6** (about 1.3–1.5 s per replan) and is labelled as a deviation. *Deployed 16/10* stays selectable, and the WX wall limit is 480 s.
+- **Budget.** The evaluated budget is K16/ODE10. On this shared CPU host one replan at that budget took about 3–4 s. Studio's WX default is **K8/ODE6** and is labelled as a deviation; Rehearse preselects it. Its CPU replan wall time depends on host load: about 0.6–1.3 s p50 in the campaign runs (each run's planner p50/p95 is in its Runs row). *Deployed 16/10* stays selectable, and the WX wall limit is 480 s.
 - **Lockstep timing.** Physics waits for each replan, so planner latency never delays a plan in simulation unless a latency model is selected (L2). On the robot a replan has about 160 ms (8 ticks).
 - **No proprioceptive noise.** Isaac evaluates SONIC with proprioceptive noise (`native_proprio_noise_scale=1.0`); Studio's MuJoCo has none, so seeds vary planner sampling only.
 - **Contact measurement.** Studio's obstacle force is the largest single MuJoCo contact normal per substep; Isaac sums force per robot-body/obstacle pair, so under the 5 N *reach* threshold multi-point contacts read lower here.
@@ -84,10 +84,10 @@ The callback's native `closed_loop.npz` is decoded independently by `studio.repl
     - **Clock.** The clock is the simulation's 20 ms ticks. The `plans.json` tick is the request tick r, the anchor and landing tick is r + L, and plan frame i is the state at r + L + i + 1.
     - **Records.** Each predict run writes `latency_anchor.json`, with every plan's request and anchor ticks, the predicted anchor qpos and the anchor error at landing. The error compares the predicted anchor with the measured pre-action state at that tick (simulator ground truth). The report adds `anchor_prediction` with p50, p95 and max.
     - **Requests.** `predict` needs at least one 20 ms tick of latency for the Flow callback; the workbench and the worker both refuse it at 0 ms. *measured* keeps its previous record and behaviour bit for bit: a 200 ms A/B run against the previous worker had identical NPZ arrays, plans and torque.
-- **Torque.** Both workers record the commanded PD torque per joint and how many physics substeps exceed MuJoCo's `actuatorfrcrange`.
-  - In the G1 model the hips are limited to 88 N·m, while training and `g1deploy.contract` use 139 N·m.
-  - A first WX check commanded up to 131 N·m at the hip roll, clamped by MuJoCo in 22 of 600 substeps. A bundle check stayed below 60 N·m.
-  - This shows the source discrepancy in `ROBOT_CONTRACT.md` is binding for WX in simulation.
+- **Torque.** Both workers record the commanded PD torque per joint, which the source `pd_torque` already clips to the training effort (139 N·m at hips and knees, 50 N·m at the ankles), before MuJoCo clamps it to `actuatorfrcrange`.
+  - A substep counts as *at the limit* when the command reaches min(training clip, model clamp), whichever of the two did the clamping.
+  - Runs recorded before this counting (review H1, 2026-10-20) are re-derived from their per-joint peaks; Runs rows carry it as `torque_at_limit`.
+  - On the `source` model (88 N·m hips) the MuJoCo clamp binds for WX. On `g1-current` the source clip binds instead, at the hips and above all at the ankles (ROBUSTNESS Addendum E).
 - **Actuator profiles (since 2026-10-20).** Research showed the hip limits depend on the G1 hardware revision (`LowState.mode_machine`; see [ROBOT_CONTRACT.md](ROBOT_CONTRACT.md)). Every scenario now selects a profile. `studio.actuators` applies it by patching the compiled model's hip `jnt_actfrcrange` before anything reads it; no model file is copied.
 
   | Profile | Hip pitch / roll / yaw (N·m) | Hardware |
@@ -97,9 +97,9 @@ The callback's native `closed_loop.npz` is decoded independently by `studio.repl
   | `source` | 88 / 88 / 88 | the unmodified deprecated mode-2 MJCF; every run before profiles |
 
   - The receipt (before/after limits, patch hash, sources) is stored in the run metadata and report.
-  - The torque summary counts substeps above the training effort and above *each* hardware profile, whichever profile ran.
+  - The torque summary counts substeps *at or above* the training effort and each hardware reference (`g1-current`, `g1-rev1`, `source`), whichever profile ran.
   - The body stays the mode-2 model.
-  - Saved scenarios without the field keep running on `source`, so earlier runs stay reproducible.
+  - New requests default to `g1-current`. Saved scenarios without the field keep running on `source`, so earlier runs stay reproducible. The scenario content key includes the profile, so a request never reuses a scenario with another profile.
 
 ## Adding another policy
 
@@ -108,4 +108,4 @@ The callback's native `closed_loop.npz` is decoded independently by `studio.repl
 3. Add or reuse a worker that accepts the common request (`studio.policy_worker.validate_request`) and writes the standard outputs: `latest.json` (live), `progress.jsonl`, `session.json`, `result.json` and `physics_observations.npz`. It must verify the parity of its own observations against an independent decoder.
 4. Map the loader to the worker script in `Workbench.start_job`.
 
-A real-time profile (separate processes over an isolated, non-zero DDS domain) needs the runner's hard-coded domain 0 removed upstream first; see `ROBOT_CONTRACT.md` → *domain_zero_everywhere*.
+The real-time chain (L3) is not a policy profile. It runs the unchanged deploy stack through `tools/l3_rehearsal.sh` inside a loopback-only namespace (owner decision, [REALTIME_REHEARSAL.md](REALTIME_REHEARSAL.md)), and Studio imports its recordings. An upstream `--dds-domain` would only add defence in depth.

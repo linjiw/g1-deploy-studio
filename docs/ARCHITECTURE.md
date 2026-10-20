@@ -2,10 +2,13 @@
 
 ## Implemented local slice
 
-**v0.2 (2026-10-20).**
+**v0.4 (2026-10-20).** Current state and open issues: [STATUS.md](STATUS.md).
 
 | Area | Implementation |
 |---|---|
+| Actuator profiles | `studio.actuators` patches the compiled model's hip `jnt_actfrcrange` in memory per G1 hardware revision (`g1-current`, `g1-rev1`, `source`). It records a receipt per run and counts torque at the effective limit, min(source clip, model clamp). |
+| Latency anchoring | `studio.latency_anchor` provides the pipelined delayed-execution scheduler (L2/L2≈) and the predictive anchor for the Flow callback. It is parity-tested against g1-student-deploy's `predicted_history`. Frames are attributed to the plan that is executing. |
+| L3 real-time chain | `tools/l3_rehearsal.sh` runs the unchanged simulator, C++ SONIC runner and node inside a loopback-only namespace. `studio.server` discovers finished runs read-only and labels them L3 with their isolation receipt. |
 | Policy profiles | `studio.policies` registers pinned policy profiles and parses the Flow adoption heading. |
 | WX worker | `studio.policy_bundle` and `tools/build_policy_bundle.py` pin the adopted Flow WX-RF block. `studio.flow_policy_worker` runs Flow's own closed-loop callback on MuJoCo + SONIC ONNX through a minimal fake Isaac environment. |
 | Workbench | Adds immutable arenas with presets, bounded sequential suites, the runs table and light live polling. |

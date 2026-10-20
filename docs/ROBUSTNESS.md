@@ -138,7 +138,7 @@ The values are *commanded* per physics substep (source `pd_torque`, simulator-co
 | P5 WX K16/ODE10 | 0/4 | — | 0 / 4 956 |
 | P6 bundle lat 200p | 4/12 | L hip roll 3 · 121.9; L hip pitch 1 · 122.6; R hip pitch 1 · 89.3 | 24 / 11 888 |
 
-Only hip pitch and hip roll ever exceeded the limit; knees (limit 139) and ankles never did. At latency 0 the excursions are short spikes. Under WX + 200 ms they are sustained, which agrees with the visible jitter (§4). The robot contract still has the open 139 vs 88 N·m hip-limit question ([ROBOT_CONTRACT.md](ROBOT_CONTRACT.md)). This campaign shows that question matters for WX: its training-effort commands were clamped in MuJoCo even in successful runs.
+Only hip pitch and hip roll ever exceeded the limit; knees (limit 139) and ankles never did. At latency 0 the excursions are short spikes. Under WX + 200 ms they are sustained, which agrees with the visible jitter (§4). The robot contract still has the open 139 vs 88 N·m hip-limit question ([ROBOT_CONTRACT.md](ROBOT_CONTRACT.md)). This campaign shows that question matters for WX: its training-effort commands were clamped in MuJoCo even in successful runs. *(Correction, Addendum E: this counted only the MuJoCo clamp. The source PD clip at the training effort, 139 N·m at knees and 50 N·m at ankles, was not counted. Re-derived from peaks, knees and ankles also reached their limits; P1 had 4/24 runs at a limit and P3 12/12.)*
 
 ## 4. Behaviours worth knowing (job ids, screenshots in `screens/`)
 
@@ -221,7 +221,7 @@ No gateway outage, suite failure or worker failure other than item 1 occurred, a
 - Re-run the 6 open-floor WX scenarios after the JSON fix is released; the lead plans to do this. Scenario ids are in `campaign_state.json` under the tags `P1:open:*`.
 - Check WX latency on the Flow side with a latency-aware callback. Then measure dose-response at 60, 100 and 160 ms on the P3 presets.
 - Score WX with `arena_reach` and with arrive-and-hold side by side on more seeds, to separate "cannot stop" from "cannot reach".
-- Decide the hip effort limit (139 vs 88 N·m) before reading torque-clamped runs as hardware-plausible.
+- Decide the hip effort limit (139 vs 88 N·m) before reading torque-clamped runs as hardware-plausible. *(Done: resolved per hardware revision, Addendum D and ROBOT_CONTRACT.md.)*
 
 ## Evidence
 
@@ -313,13 +313,13 @@ Rows: `runs-addenda.json`.
    - WX shows the same pattern: 11/12 clamped, with oscillation near the goal and holds that never settle.
    - Post-hoc reach barely moves for either policy (WX 11/12, bundle 9/12). The robots still get to the goal; they cannot stop and hold there.
    - The common cause is a plan anchored 200 ms in the past. When SONIC switches to such a plan, the reference jumps back, and the legs saturate trying to follow it.
-2. **Predictive anchoring removes most of it for the bundle:** 9/12 with predict vs 4/12 with measured, and torque clamping back at 4/12. Flow's callback has no predictive anchoring, so this fix cannot be tested for WX without a Flow-side change. Studio does not make that change; it is a research decision. (Addendum C tests the same strategy as a Studio-side adapter around the unchanged callback.)
+2. **Predictive anchoring removes most of it for the bundle:** 9/12 with predict vs 4/12 with measured, and torque clamping back at 4/12. Flow's callback has no predictive anchoring, so this fix cannot be tested for WX without a Flow-side change. Studio does not make that change; it is a research decision. (Addendum C tests the same strategy as a Studio-side adapter around the unchanged callback.) *(Superseded: Addendum C tests a Studio-side predictive anchor for WX without changing Flow.)*
 3. **WX tolerates 100 ms:** 11/12 arrive & hold (one loss, doorway #1, 0.38 m at timeout), 12/12 post-hoc reach, no extra torque clamping. Median time to goal rose from 3.9 s to 4.4 s. The breakdown lies between 100 and 200 ms; 140 and 160 ms were not measured.
 4. **Deployment consequence.** In lockstep, WX's CPU replan (p50 about 0.64 s at K8/ODE6) is hidden because physics waits for it. On the robot, the replan budget is about 160 ms (8 ticks), which is inside the measured breakdown band. A real-time WX deployment therefore needs one of two things:
    - planner latency comfortably below about 100 ms on the target compute, measured, not assumed; or
    - latency-aware anchoring in the Flow callback.
 
-   Neither can be established in this CPU rehearsal. L3 remains blocked on the runner's hard-coded DDS domain 0.
+   Neither can be established in this CPU rehearsal. L3 remains blocked on the runner's hard-coded DDS domain 0. *(Superseded: the L3 launcher is ready in an isolated namespace; see REALTIME_REHEARSAL.md.)*
 
 Remaining latency follow-ups: 140 and 160 ms on WX, more seeds per cell, and a predictive-anchor variant of the WX callback once the Flow side provides one. A Studio-side predictive adapter is evaluated in Addendum C.
 
@@ -379,7 +379,7 @@ The legend is the same as in Addendum B. Entries count crossings into the 0.3 m 
 5. **Deployment consequence.**
    - With about 200 ms of planner latency, WX needs latency-aware anchoring. This adapter brings arrive & hold back to the 100 ms level, but not lockstep timing or torque.
    - A lag-aware prediction is the next experiment: predict the *executed* rather than the planned state, for example with the WM-v2 execution model the planner already loads. It is a research decision.
-   - L3 (separate processes, real time) remains blocked as before.
+   - L3 (separate processes, real time) remains blocked as before. *(Superseded: ready in an isolated namespace, awaiting an operator run.)*
 
 **Verification.**
 - **Unit tests** in `tests/test_latency_anchor.py`:

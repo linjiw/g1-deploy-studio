@@ -14,7 +14,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 | Replay of recorded sessions: SONIC lockstep, C++/DDS tutorial, ZMQ capture, owned runs | L0 | Verified | [ACCEPTANCE](ACCEPTANCE.md), [REVALIDATION](REVALIDATION.md) |
 | Owned CPU rehearsal: Flow WX-RF (adopted block, pinned `23326aa`) and the frozen bundle, real SONIC ONNX on MuJoCo | L1 | Verified | [POLICIES](POLICIES.md), [ROBUSTNESS](ROBUSTNESS.md) |
 | Planner latency with *measured* or *predict* anchoring | L2 / L2≈ | Verified | ROBUSTNESS Addenda B–C |
-| G1 actuator-limit profiles per hardware revision (`g1-current` default, `g1-rev1`, `source`) | — | Verified (unit tests + real workers) | [ROBOT_CONTRACT](ROBOT_CONTRACT.md), ROBUSTNESS Addendum D |
+| G1 actuator-limit profiles per hardware revision (`g1-current` default, `g1-rev1`, `source`) | — | Verified (unit tests + real workers) | [ROBOT_CONTRACT](ROBOT_CONTRACT.md), ROBUSTNESS Addenda D–E |
 | Arena editor, seeded random goals, suites, Runs report with Wilson intervals | — | Verified | [WORKBENCH](WORKBENCH.md), REVALIDATION |
 | Sensors (causal), System map, source-verified Unitree contract | — | Verified | REVALIDATION |
 | Durable service, release guard, loopback + Host/Origin + CSRF, SSH tunnel | — | Verified | [SERVICE](SERVICE.md) |
@@ -29,18 +29,18 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 |---|---|
 | Does WX-RF reach and hold random goals? | Yes in lockstep: 24/24 at seed 0 across 4 arenas, 35/36 with seeds; it beats the bundle behind obstacles (6/6 vs 2/6) |
 | Does it stop well? | It is the weak point. It overshoots and loops back, and holds often complete 1–4 s after arrival |
-| Is it robust to planner latency? | No with stale anchoring: 1/12 at 200 ms. With predictive anchoring: 11/12 on the old 88 N·m hip model, but 7/12 on the current-G1 limits it was trained for |
-| Does the hardware revision matter? | Yes. WX routinely commands more than 88 N·m at the hip pitch, so a rev_1_0 robot (mode_machine 4–6, 13, 14) would clamp it |
+| Is it robust to planner latency? | Not with stale anchoring: 1/12 at 200 ms. With predictive anchoring on the current-G1 limits: **12/12 at the robot's 160 ms budget**, but 21/36 at 200 ms over three seeds (4–10/12 per seed). The cliff is between 160 and 200 ms |
+| Does the hardware revision matter? | Yes. WX routinely commands more than 88 N·m at the hip pitch, so a rev_1_0 robot (mode_machine 4–6, 13, 14) would clamp it. Under latency every run reaches a torque limit, most often the 50 N·m ankle clip |
 
 ## Open issues
 
 | # | Issue | Owner | Next action |
 |---|---|---|---|
 | 1 | First L3 run | Operator | `tools/l3_rehearsal.sh <studio task.json> <run-id>`. This session's permission policy blocks launching the chain, so it is run explicitly ([REALTIME_REHEARSAL](REALTIME_REHEARSAL.md)) |
-| 2 | WX latency sensitivity on current-G1 limits (7/12 at 200 ms predict) | Flow research | Predict the *executed* state, for example with the WM-v2 execution model; see ROBUSTNESS Addendum E for the seeds and the 160 ms runs |
+| 2 | WX latency margin: 12/12 at 160 ms, 21/36 at 200 ms (predict, current-G1 limits) | Flow research + deployment | Measure the deployed planner's real latency (L3 / robot). Predict the *executed* state, for example with WM-v2. Locate the cliff with 180 ms runs (ROBUSTNESS Addendum E) |
 | 3 | WX does not settle at the goal (arrive and hold) | Flow research | Stopping behaviour; WX was trained on *reach* |
 | 4 | Unknown hardware revision of our G1 | Operator | Read `LowState.mode_machine` passively (first M5 step), then rehearse with the matching profile |
-| 5 | Ankle and waist roll/pitch limits: 35 N·m (newest URDFs) vs 50 (MJCF, training) | Research | Unresolved by the sources; profiles patch only the hips |
+| 5 | Ankle and waist roll/pitch limits: 35 N·m (newest URDFs) vs 50 (MJCF, training). The 50 N·m ankle clip is already reached in most latency runs | Research | Unresolved by the sources; profiles patch only the hips |
 | 6 | One-sided runner velocity abort, disabled in simulation | Runner owner | ROBOT_CONTRACT discrepancy list |
 | 7 | Upstream `--dds-domain` for the runner (defence in depth beyond the namespace) | Runner owner | Optional; namespace isolation already prevents leaks |
 | 8 | WX-RF is privileged (plans from the exact boxes) | Flow research | Pin a LiDAR-conditioned block when Flow adopts one |
@@ -56,6 +56,7 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 2026-10-20 | Predictive anchoring for the Flow callback is a Studio-side deployment adapter (`studio/latency_anchor.py`); Flow code is unchanged |
 | 2026-10-20 | L3 isolation: owner-approved network namespace (domain 0 cannot leave a loopback-only namespace) instead of an upstream domain change first |
 | 2026-10-20 | The 7 `.pyc` files a probe agent wrote into the g1-student-deploy venv were removed |
+| 2026-10-20 | Independent review session (3 high, 8 medium, 14 low): all fixed except the items listed above. Torque is counted at the effective limit (source clip or model clamp), scenario identity includes the actuator profile, and saved scenarios keep `source`. Evidence: `~/research-data/g1-deploy-studio/evidence/review-20261020/REVIEW.md` |
 
 ## Verify
 

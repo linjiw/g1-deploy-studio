@@ -11,7 +11,7 @@ Studio observes this chain read-only.
 
 The unchanged chain runs inside an unprivileged **user + network + PID + mount namespace whose only interface is a private loopback**. DDS keeps domain 0 because the runner hard-codes it (`ChannelFactory::Instance()->Init(0, iface)`). In that namespace domain 0 has no route to any robot.
 
-This deviates from the letter of `AGENTS.md` ("simulator-specific DDS domain") while meeting its intent. The deviation is recorded in every run's `l3_provenance.json`.
+This deviates from the letter of `AGENTS.md` ("simulator-specific DDS domain") while meeting its intent. The deviation is recorded in every run's `l3_provenance.json` (`agents_md_deviation`), together with the Studio commit and the L3 simulator's actuator limits.
 
 An upstream `--dds-domain` option for the runner remains a defence-in-depth follow-up. `node.py` already has `--domain`, and the simulator yaml has `DOMAIN_ID`.
 
@@ -50,7 +50,11 @@ Outputs go to `~/research-data/g1-deploy-studio/l3/<run-id>/`. The gateway disco
 - `L3 real-time · <run-id>` is the separate-process recording, decoded by `studio.replay`, with the scene from `rehearse/boxes.json`. It is badged **REPLAY · REAL-TIME CHAIN · L3** and carries the namespace receipt from `l3_provenance.json`.
 - `L3 wire capture · <run-id>` is the subscribe-only ZMQ capture.
 
-Use Studio-authored tasks: every L1/L2 job writes a compatible `run/task.json` and `initial_state.npz`. The node runs the frozen bundle at its deployed budget (K16/ODE10, LiDAR route), so an L1 comparison should use *Deployed 16/10*.
+Use Studio-authored tasks: every L1/L2 job writes a compatible `run/task.json` and `initial_state.npz` (family `studio-user-configured`). The launcher refuses anything else.
+
+For an L1/L2 comparison, match the L3 chain:
+- the node runs the frozen bundle at its deployed budget (K16/ODE10, LiDAR route), so use *Deployed 16/10*;
+- the L3 simulator clips the hips at 88/88/88 (lucid `g1_29dof_sonic_model12.yaml`), so use the **`source`** actuator profile, not the `g1-current` default. Imported L3 sessions show that clip as their actuator limits.
 
 **Status: ready, not yet run.** The first real launch was blocked by this session's automatic permission policy, which classes it as a deployment action. An operator runs it explicitly:
 
@@ -64,7 +68,6 @@ tools/l3_rehearsal.sh ~/research-data/g1-deploy-studio/workbench/jobs/job-1a99ab
 - Dex3 hands and the C++ gains differ from L1/L2's rubber hands and Python gains.
 - Host TensorRT is 10.13.3 vs 10.7 on the Orin.
 - The runner gets no damping command on SIGINT (simulation only).
-- `studio.recorder` writes `capture_end` on SIGINT but prints a traceback instead of its summary (small Studio fix pending).
 - This is not hardware verification.
 
 ## After L3: read-only physical G1 (M5)

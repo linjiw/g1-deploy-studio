@@ -1,8 +1,10 @@
 # Delivery roadmap
 
-## Status (2026-10-20, v0.2)
+## Status (2026-10-20, v0.4)
 
-**Done in v0.2.**
+Current state, results and open issues are in [STATUS.md](STATUS.md). This page is the delivery plan.
+
+**Done by v0.4.**
 
 | Area | Status |
 |---|---|
@@ -10,7 +12,8 @@
 | Rehearsal | A general policy-profile layer. The adopted Flow WX-RF block runs in the CPU rehearsal alongside the frozen bundle, with pinned identity in every run. |
 | Navigation | Custom navigation arenas with start/goal presets, success criteria, bounded suites, and a runs table with trajectory comparison. |
 | UI | Workspaces, a lane timeline, evidence chips, a robot-view inset and a system map. |
-| Robot contract | A source-verified Unitree G1 contract with 15 recorded source discrepancies. |
+| Robot contract | A source-verified Unitree G1 contract with 15 recorded source discrepancies: the hip limit is resolved and domain 0 mitigated, the rest stay open. |
+| Fidelity | Planner latency with measured or predictive anchoring (L2/L2≈), G1 actuator profiles, and a ready L3 launcher with automatic import. |
 | Delivery | Gzip, ETag, content-addressed meshes, bounded caches. |
 
 **Next steps toward read-only physical G1 integration.** Status on 2026-10-20 after the research round:
@@ -23,7 +26,7 @@
    - Next: run it on Studio-authored tasks, import `rehearse/` and `capture.jsonl` into replay, and compare with L1/L2 at the deployed budget (K16/ODE10).
    - An upstream `--dds-domain` remains a defence-in-depth follow-up.
 3. **Latency (L2)**: done. A delayed-execution wrapper with *measured* or *predict* anchoring for both profiles.
-   - WX at 200 ms goes from 1/12 with the measured anchor to 11/12 with predict.
+   - WX at 200 ms goes from 1/12 with the measured anchor to 11/12 with predict on the deprecated 88 N·m model. On the current-G1 limits it holds 12/12 at the robot's 160 ms budget but only 21/36 at 200 ms over three seeds (ROBUSTNESS Addenda C–E).
    - Remaining: the prediction is optimistic, because SONIC lags the plan. Predicting the executed state, for example with the WM-v2 execution model, is a Flow research decision.
 4. **WX in perception.** WX-RF is privileged: it plans from the exact boxes. A deployable WX needs the Flow side's LiDAR-conditioned block (round ST, not adopted). When Flow adopts one, pin it as a new profile; the arena, suite and runs workflow does not change.
 5. **Read-only robot observation (M5)** after a safety review:

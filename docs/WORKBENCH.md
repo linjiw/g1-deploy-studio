@@ -34,13 +34,14 @@ Open **Rehearse**, or click **Rehearse →** after saving an arena.
   - candidates K and ODE steps, with presets *Quick* 2/4, *Balanced* 4/6, *Wide* 8/6 and *Deployed* (the profile's evaluated budget);
   - **Seeds in suite**, 1–4.
 - **Success criterion:** *Arrive & hold* (Studio deployment check) or *Reach* (Flow Isaac arena protocol); thresholds are in POLICIES.md. The source scorer applies it; completion of the worker process is never treated as policy success.
-- **Planner latency (L2):** 0–500 ms, applied in whole 20 ms ticks. A plan requested at tick t drives SONIC only from t + latency, and physics keeps running meanwhile.
+- **Planner latency (L2):** none, 100, 160 (the robot's 8-tick replan budget), 200, 300 or 500 ms; the API accepts 0–1000 ms in whole 20 ms ticks. A plan requested at tick t drives SONIC only from t + latency, and physics keeps running meanwhile.
   - Bundle: uses the source lockstep's own model, with *measured* or *predict* (latency-aware) anchoring.
   - WX: uses a Studio delayed-execution approximation around the Flow callback, labelled **L2≈**. Two anchors are available:
     - *measured*: the planner plans from the state at request time.
     - *predict*, labelled **L2≈ predict**: Studio gives the planner the state predicted at request + latency from the landed plan, using g1-student-deploy's method. Route and tight-mode decisions stay measured. See [POLICIES.md](POLICIES.md#latency-and-torque-checks).
-  - The anchor applies only with latency; at 0 ms every plan is anchored on the measured state.
-- **Actuator limits:** the G1 hip torque profile, *Current G1 · 139/139/88* (default), *rev_1_0 · 88/139/88* or *Source model · 88/88/88*. See [POLICIES.md](POLICIES.md#latency-and-torque-checks). Health shows the profile and the substeps above the training limit and above each hardware profile.
+  - The anchor applies only with latency; at 0 ms every plan is anchored on the measured state (a request for *predict* at 0 ms is stored as *measured*).
+  - Under latency, the plan shown in the scene and the Intent card is the one *executing* (it landed at request + latency), with its request and start times.
+- **Actuator limits:** the G1 hip torque profile, *Current G1 · 139/139/88* (default), *rev_1_0 · 88/139/88* or *Source model · 88/88/88*. See [POLICIES.md](POLICIES.md#latency-and-torque-checks). Health shows the profile, the joints whose command reached the effective limit (source clip or model clamp), and the substeps at or above the training limit and each hardware reference. The anchor prediction error appears for predict runs.
 - **Run preset** saves the scenario and starts the worker. The live run attaches to the viewport (Follow camera, Health tab) at about 3 Hz. When it finishes, its full recording opens at the same time cursor.
 - **Run suite** runs every preset × seeds, at most 48 runs, one after another through the single owned worker. A running suite reserves the worker: manual runs are refused until it finishes or is cancelled. The suite table fills in outcomes as they arrive. **Cancel** stops the queue and the current run.
 
@@ -61,19 +62,20 @@ Cancel signals only this gateway's own process group. It is a simulation control
 
 ## 3. Runs
 
-**Robustness report.** For the runs in view, grouped by policy · criterion · latency · budget · actuator profile:
-- source-scorer goals with **Wilson 95% intervals**;
-- **post-hoc Flow reach**: the arena protocol (0.4 m, ≤ 2 m/s for 0.1 s, contact ≤ 5 N, no fall) re-evaluated on each run's recorded 50 Hz trajectory, so arrive-and-hold runs are also judged by Flow's criterion;
-- failure categories (timeout ≤ 0.5 m vs > 0.5 m, collision, fall, error), median time to goal or reach, path efficiency, contact count, and runs whose leg torque was clamped at the MuJoCo model limit.
-
-*Select all in view* overlays up to 64 runs. **↓ CSV / ↓ JSON** export the rows.
-
-
 **Runs** lists every owned rehearsal, newest first. Each row shows:
-- the outcome chip, scenario, policy and budget;
+- the outcome chip, scenario, policy, budget, seed, criterion, latency and actuator profile;
 - simulated duration, final goal distance, peak contact and planner p95.
 
-Filter by arena, policy or outcome. "Outcomes in view" counts goals per policy. These are individual checks, mostly one seed each, not a success-rate estimate. Tick up to 64 runs to overlay their simulator-ground-truth root paths on the arena, colored by outcome or by policy. **Replay** opens any run.
+Filter by arena (identical names get an id suffix), policy or outcome. Tick up to 64 runs, or *Select all in view*, to overlay their simulator-ground-truth root paths on the arena, colored by outcome or by policy. **Replay** opens any run. **↓ CSV / ↓ JSON** export the rows.
+
+"Outcomes in view" pools every condition in view per policy, so it is a count, not a rate.
+
+**Robustness report.** For the runs in view, grouped by policy · criterion · latency · budget · actuator profile:
+- source-scorer goals with **Wilson 95% intervals**, over distinct scenarios (an identical re-run counts once; worker errors are listed, not counted);
+- **post-hoc Flow reach**: the arena protocol (0.4 m, ≤ 2 m/s for 0.1 s, contact ≤ 5 N, no fall) re-evaluated on each run's recorded 50 Hz trajectory, so arrive-and-hold runs are also judged by Flow's criterion;
+- failure categories (timeout ≤ 0.5 m vs > 0.5 m, collision, fall, error);
+- medians over the source-scorer goals: time to goal, path efficiency (progress per metre walked, in [0, 1]);
+- median time to post-hoc reach, contact count, and runs whose leg torque reached the limit (source clip or model clamp).
 
 ## Live and recorded data
 

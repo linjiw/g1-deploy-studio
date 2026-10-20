@@ -93,6 +93,8 @@ The new tests found 8 product bugs, now fixed with regression tests:
 
 ## Still not done or blocked
 
+> **Superseded (2026-10-20).** Since this was written, latency-faithful lockstep (L2) with measured and predictive anchoring has been implemented, the hip limit is resolved by per-revision actuator profiles, WX K16/ODE10 has been run (ROBUSTNESS P5), and the L3 chain is ready in an isolated namespace. Current state: [STATUS.md](STATUS.md).
+
 - **C++/DDS real-time rehearsal.** The SONIC runner hard-codes DDS domain 0, and so does the rest of the chain; NVML has a driver/library mismatch. No upstream change was made.
 - **Latency-faithful lockstep (L2).** Not implemented. Every result above pauses physics during planning.
 - **WX at the evaluated K16/ODE10 budget.** Not run in a full episode here. It takes about 3–4 s per CPU replan on this host, and the profile exposes it with a 480 s wall limit.
