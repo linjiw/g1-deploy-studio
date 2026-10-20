@@ -1,4 +1,105 @@
-# Executed acceptance and handoff — 2026-10-15
+# Executed acceptance — v0.2 (2026-10-20)
+
+All runs below are **owned CPU simulation (fidelity L1, lockstep)** or read-only replays. There were no robot connections, DDS participants, GPU use or changes to the reference repositories. Evidence is under `~/research-data/g1-deploy-studio/evidence/studio-v2-20261020/` (outside Git).
+
+## Service
+
+- **Diagnosis.** Nothing listened on 8790. The last server log ended mid-request at 2026-10-16 11:43 with no shutdown and no OOM record: the gateway had died with the agent shell that started it.
+- **Now.** The gateway runs as `systemd --user` unit `g1-deploy-studio`, serving a committed release worktree on 127.0.0.1 and [::1] port 8790 ([SERVICE.md](SERVICE.md)). `/api/version` and the status bar report the served commit.
+
+## Delivery (measured on the same host)
+
+| Request | v0.1 | v0.2 |
+|---|---:|---:|
+| `/api/session` sonic-lockstep | 5.45 MB | 1.53 MB (gzip); unchanged reload → 304 |
+| `/api/session` sonic-dds-tutorial | 5.87 MB | 0.62 MB |
+| `/api/sensors` DDS session | 838 KB | 21 KB (masks opt-in with `masks=1`) |
+| Mesh requests when switching to another session with the same model | ≈36 (18.5 MB) | 0 (content-addressed, immutable) |
+| Frames rendered while paused, 1.2 s | continuous loop | 0 |
+
+## Browser acceptance (read-only, release build)
+
+`tools/browser/ui_acceptance.mjs` passed **15/15** checks against 8790. `tools/browser/forwarded.mjs` passed the same 15 through a Host-preserving loopback tunnel. Neither run had page errors or failed requests. The checks cover:
+
+- browser forward kinematics vs MuJoCo: max error 2.2e-16 m position and 1e-15 rotation, on both the 29-DoF model and the 43-DoF Dex3 model;
+- the transport is in view without scrolling, and the scene renders on demand;
+- play, speed, single-tick and 1 s stepping;
+- layers, cameras and the robot-view inset;
+- the named-joint table matches the source frame;
+- a held state is labelled stale;
+- the DDS final map is labelled unsynchronized and its graph configured;
+- the captured ZMQ edge goes fresh → stale → disconnected while pose stays unavailable;
+- the rehearsal outcome card;
+- a view link round-trips time, panel and camera;
+- the system map and Unitree contract render;
+- there is no horizontal scroll at 390 px;
+- the gateway survives a browser disconnect, with no command path.
+
+Evidence: `ui/`, `ui-forwarded/`.
+
+## Adopted Flow WX-RF in the CPU rehearsal
+
+- **Pinned bundle.** `flow-wx-rf-23326aa-s0`: 177 source files, config sha256 `1ffc4069…441c4861`, teacher `sk1_s0` (`3d3a2d55…`), WM-v2 ×3. It verifies clean with `tools/build_policy_bundle.py --verify-only`.
+- **CLI smoke run.** One box, 2.4 m goal, K4/ODE4, 4 s. Exit 0, outcome **timeout** at 0.35 m. The robot took a wide detour and needed more time; this is a policy result, not an adapter failure. WM-v2 execution check passed 25/25 replans, and planner p50/p95 was 511/822 ms. Parity against the independent decoder: 1.2e-7 qpos and 3e-8 reference (float32 storage).
+- **End-to-end UI flow.** `tools/browser/rehearsal_flow.mjs` on the release build, evidence in `rehearsal-release/`:
+  1. Arena editor → doorway template; start (0, −1) at a 25° heading; lateral goal (3.6, 0.6); saved as `arena-cfecc4d4517d`.
+  2. Rehearse → WX-RF, K8/ODE6, 8 s, *arrive & hold* criterion.
+  3. Live attach, then the recorded result.
+  4. Runs comparison.
+
+| Policy | Job | Outcome | Sim time | Final / closest goal distance | Contact | Max tilt | Planner p50 / p95 | Worker wall |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| WX-RF (K8/ODE6) | `job-47d39564736b` | **goal_completion** | 5.92 s | 0.080 / 0.025 m | 0 N | 0.29 rad | 1246 / 1618 ms | 57 s |
+| Frozen bundle (K4/ODE6) | `job-7ddad4ea358c` | timeout | 8.00 s | 3.74 / 3.29 m | 0 N | 0.45 rad | 1085 / 4064 ms | 124 s |
+
+**Reproducibility.** An earlier development-gateway run (`job-0a727dc413cd`) used the same arena geometry, preset, seed and budget, saved as a separate arena. Its states and references are **bitwise identical** to `job-47d39564736b` (max difference 0.0). Only the wall-clock timing differs.
+
+**Reading the comparison.** WX passed straight through the 0.8 m door. The bundle turned away from the door and was detouring around the lower end of the wall when the 8 s horizon ended. This is not a like-for-like ranking:
+- WX-RF is a *privileged* block that plans from the exact boxes.
+- The bundle plans from simulated LiDAR with a sensor route that treats unseen cells as free.
+- Both runs are a single seed in CPU lockstep with standing starts. On the Isaac panels, WX was evaluated from walking starts at K16/ODE10.
+
+## Scenario suite: WX-RF on a slalom arena
+
+`tools/browser/suite_flow.mjs` ran on the release build: slalom template, the *Slalom left* preset mirrored, saved; Rehearse → WX-RF, K8/ODE6, 8 s, *arrive & hold* → **Run suite** (3 runs, sequential) → Runs comparison. Evidence is in `suite-wx-slalom/`.
+
+| Preset | Goal | Outcome | Final distance | Contact | Planner p95 |
+|---|---|---|---:|---:|---:|
+| Slalom end | (4.8, 0.0) | timeout | 0.29 m | 0 N | 1712 ms |
+| Slalom left | (4.8, 0.8) | timeout | 0.71 m | 0 N | 1873 ms |
+| Slalom left · mirrored | (4.8, −0.8) | **goal_completion** at 7.82 s | 0.28 m | 0 N | 1784 ms |
+
+**Observed behavior.**
+- WX-RF does not weave between the three walls. Its privileged task-sized cost route takes it around the whole wall field: two runs went below it and one went over the top and overshot the left goal.
+- *Slalom end* finished inside the 0.3 m radius but never satisfied the 0.25 m/s, 0.4 s hold before the 8 s horizon.
+
+These are single-seed CPU checks with a reduced K8/ODE6 budget and a standing start. They are a prompt for the Flow side to look at stopping and arena-scale routing under Studio's arrival criterion, not a success rate.
+
+## Automated tests
+
+`.venv/bin/python -m unittest discover -s tests` passed **210 tests in about 31 s**. These include 89 new tests for:
+- arenas and suites, policies and bundle verification;
+- gzip/ETag delivery, sensor masks and the new routes;
+- the WX worker's request contract before any runtime import, plus the source-verified robot contract (16 tests).
+
+The new tests found 8 product bugs, now fixed with regression tests:
+- a cancelled queued suite was lost;
+- list or object JSON identifiers crashed requests without a response;
+- an empty catalog caused a StopIteration;
+- a missing bundle config raised instead of being reported;
+- one bad bundle hid every WX profile;
+- corrupt arena files silently dropped valid arenas on reload;
+- plus suite-thread robustness and the ETag/Vary fixes.
+
+## Still not done or blocked
+
+- **C++/DDS real-time rehearsal.** The SONIC runner hard-codes DDS domain 0, and so does the rest of the chain; NVML has a driver/library mismatch. No upstream change was made.
+- **Latency-faithful lockstep (L2).** Not implemented. Every result above pauses physics during planning.
+- **WX at the evaluated K16/ODE10 budget.** Not run in a full episode here. It takes about 3–4 s per CPU replan on this host, and the profile exposes it with a 480 s wall limit.
+- **No live ROS/DDS discovery, physical sensors or robot observation.**
+- **Source discrepancies in [ROBOT_CONTRACT.md](ROBOT_CONTRACT.md) still need owner decisions**, especially the hip effort limit (139 vs 88 N·m) and the one-sided velocity abort.
+
+# Earlier acceptance and handoff — 2026-10-15
 
 This delivery includes a working local replay cockpit, preparation and CPU policy-test workbench, and read-only telemetry capture/diagnostics. M1 is exercised; substantial M2/M3 observability pieces are implemented. **Fresh Flow/SONIC/MuJoCo CPU tests were performed. A new full SONIC/DDS controller rehearsal and physical robot observation were not performed.** The blockers and missing validations below remain open.
 
