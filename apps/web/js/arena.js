@@ -66,12 +66,11 @@ function segmentBlocked(a, b, boxes, pad = 0.15) {
   });
 }
 
-export function randomPresets({ count = 8, minDist = 1.5, maxDist = 4.5, seed = 1, randomStart = false, heading = 'toward', replace = true, baseStart = null, obstructed = false } = {}) {
+export function randomPresets({ count = 8, minDist = 1.5, maxDist = 4.5, seed = 1, randomStart = false, heading = 'toward', replace = true, baseStart = null, baseYaw = null, obstructed = false } = {}) {
   const r = rng(seed * 7919 + 17), doc = { boxes: arena.boxes, bounds: arenaBounds(arena.boxes, []) };
   const lo = doc.bounds.min.map(v => v + 0.6), hi = doc.bounds.max.map(v => v - 0.6);
-  // The base is the active preset's start (shared by every generated preset in fixed-start
-  // mode), so the same seed and start reproduce the same presets; the note records the start.
-  const base = p('Base', baseStart ?? arena.presets[arena.active]?.start_xy ?? [0, 0], arena.presets[arena.active]?.start_yaw_rad ?? 0, [3, 0]);
+  // The base start/heading come from the caller (see the Generate handler); the note records them.
+  const base = p('Base', baseStart ?? arena.presets[arena.active]?.start_xy ?? [0, 0], baseYaw ?? arena.presets[arena.active]?.start_yaw_rad ?? 0, [3, 0]);
   const out = [];
   for (let attempt = 0; out.length < count && attempt < (obstructed ? 20000 : 4000); attempt++) {
     const start = randomStart ? [snap(lo[0] + r() * (hi[0] - lo[0])), snap(lo[1] + r() * (hi[1] - lo[1]))] : base.start_xy.slice();
@@ -88,6 +87,7 @@ export function randomPresets({ count = 8, minDist = 1.5, maxDist = 4.5, seed = 
   if (!out.length) return out;  // nothing fits: keep the existing presets untouched
   arena.presets = replace ? out : [...arena.presets, ...out].slice(0, 16);
   arena.active = 0;
+  arena.rgBase = { start_xy: base.start_xy.slice(), start_yaw_rad: base.start_yaw_rad, presets: JSON.stringify(arena.presets) };
   const note = `[random: seed ${seed}; ${out.length} goals; ${minDist}-${maxDist} m; start ${randomStart ? 'random' : `fixed (${base.start_xy.join(', ')})`}; heading ${heading}${obstructed ? '; straight line blocked' : ''}]`;
   arena.description = [(arena.description ?? '').replace(/\s*\[random:[^\]]*\]/g, '').trim(), note].filter(Boolean).join(' ').slice(0, 500);
   changed(); draw();
@@ -486,10 +486,15 @@ function bindPanel() {
   $('rg-heading').value = arena.rg?.heading ?? 'toward';
   document.querySelector('.random-goals').addEventListener('toggle', e => { arena.randomOpen = e.target.open; });
   $('rg-generate').addEventListener('click', () => {
+    // Reuse the previous base only while the presets are exactly what the last generation made
+    // (so a random-start pass does not move it); any load, selection edit or new arena resets it
+    // to the active preset's start.
+    const q0 = arena.presets[arena.active], same = arena.rgBase && arena.rgBase.presets === JSON.stringify(arena.presets);
     arena.rg = { count: Math.max(1, Math.min(16, Number($('rg-count').value) || 8)), minDist: Number($('rg-min').value) || 1.5,
       maxDist: Number($('rg-max').value) || 4.5, seed: Math.max(0, Number($('rg-seed').value) || 0), randomStart: $('rg-start').checked,
       heading: $('rg-heading').value, replace: !$('rg-append').checked, obstructed: $('rg-obstructed').checked,
-      baseStart: arena.presets[arena.active]?.start_xy?.slice() ?? [0, 0] };
+      baseStart: same ? arena.rgBase.start_xy.slice() : q0?.start_xy?.slice() ?? [0, 0],
+      baseYaw: same ? arena.rgBase.start_yaw_rad : q0?.start_yaw_rad ?? 0 };
     const made = randomPresets(arena.rg);
     if (made.length < arena.rg.count) emit('arena:error', `Only ${made.length} of ${arena.rg.count} goals fit the distance band and preflight; widen the band or enlarge the arena.`);
   });

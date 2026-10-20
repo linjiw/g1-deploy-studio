@@ -27,17 +27,18 @@ export function report(rows) {
     groups.get(key).push(r);
   }
   return [...groups.entries()].map(([key, all]) => {
+    // Tool/worker errors are not policy trials: set them aside first, so an errored re-run
+    // never hides an earlier scored run of the same scenario.
+    const errors = all.filter(r => category(r) === 'error'), scored = all.filter(r => category(r) !== 'error');
     // One trial per scenario: an identical re-run (same scenario id) is a repeat, not new evidence.
     const latest = new Map();
-    for (const r of all) { const k = r.scenario_id ?? r.id; if (!latest.has(k) || (r.started_unix_s ?? 0) > (latest.get(k).started_unix_s ?? 0)) latest.set(k, r); }
-    const unique = [...latest.values()];
-    const errors = unique.filter(r => category(r) === 'error');
-    const list = unique.filter(r => category(r) !== 'error');  // tool/worker errors are not policy trials
+    for (const r of scored) { const k = r.scenario_id ?? r.id; if (!latest.has(k) || (r.started_unix_s ?? 0) > (latest.get(k).started_unix_s ?? 0)) latest.set(k, r); }
+    const list = [...latest.values()];
     const n = list.length, goals = list.filter(r => r.outcome === 'goal_completion');
     const reach = list.filter(r => r.derived?.reach_post_hoc?.reached);
     const cats = {};
     for (const r of list) cats[category(r)] = (cats[category(r)] ?? 0) + 1;
-    return { key, n, repeats: all.length - unique.length, errors: errors.length, goals: goals.length, ci: wilson(goals.length, n), reach: reach.length, reachCi: wilson(reach.length, n), cats,
+    return { key, n, repeats: scored.length - list.length, errors: errors.length, goals: goals.length, ci: wilson(goals.length, n), reach: reach.length, reachCi: wilson(reach.length, n), cats,
       timeToGoal: median(goals.map(r => r.metrics.elapsed_s)), reachTime: median(reach.map(r => r.derived.reach_post_hoc.time_s)),
       efficiency: median(goals.map(r => r.derived?.path_efficiency)), contactRuns: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length,
       saturatedRuns: list.filter(r => Object.keys(r.torque?.saturated_substeps ?? {}).length).length, torqueKnown: list.filter(r => r.torque).length,

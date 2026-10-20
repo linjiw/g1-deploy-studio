@@ -106,6 +106,15 @@ class SensorSemanticsTests(unittest.TestCase):
         self.assertTrue(sample["lidar_raw"]["overlay_compatible"])
         self.assertEqual(by_id(get_sensor_snapshot(self.session, 2.))["map_support"]["status"], "stale")
 
+    def test_privileged_run_reports_every_mid360_and_map_sensor_unavailable_by_design(self):
+        privileged = dict(self.session, metadata=dict(self.session["metadata"], privileged_map=True))
+        sensors = by_id(get_sensor_snapshot(privileged, .2))
+        for key in ("lidar_raw", "lidar_registered", "lidar_filtered", "lidar_imu", "map_support", "map_ceiling"):
+            self.assertFalse(sensors[key]["available"], key)
+            self.assertTrue(sensors[key]["reason"].startswith("Unavailable by design"), key)
+        # The pelvis IMU is a different sensor: still just not recorded, never "by design".
+        self.assertNotIn("by design", sensors["imu"]["reason"])
+
     def test_debug_does_not_invent_position_or_imu(self):
         wire = b"g1_debug" + msgpack.packb({"index": 1, "body_q": [.2] * 29,
                                            "base_quat": [1., 0., 0., 0.],

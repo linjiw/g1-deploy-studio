@@ -396,7 +396,7 @@ def get_sensor_snapshot(session, time_s, *, capture_envelopes=None, stale_after_
         # The policy planned from exact boxes: no simulated sensing existed, by design.
         why = ("Unavailable by design: this privileged policy planned from the exact configured boxes "
                "(simulator ground truth); no simulated LiDAR or map was generated.")
-        for key in ("lidar_raw", "lidar_registered", "lidar_filtered", "map_support", "map_ceiling"):
+        for key in ("lidar_raw", "lidar_registered", "lidar_filtered", "lidar_imu", "map_support", "map_ceiling"):
             if key in sensors:
                 sensors[key]["reason"] = why
     _recorded_state(session, float(time_s), sensors)
