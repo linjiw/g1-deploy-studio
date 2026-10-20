@@ -54,15 +54,21 @@ d=json.load(sys.stdin); print(" ".join(j["id"] for j in d.get("jobs",[]) if j.ge
 d=json.load(sys.stdin); print(" ".join(s["id"] for s in d.get("suites",[]) if s.get("status") in ("queued","running","cancelling")))' 2>/dev/null
 }
 
-release() {
-  local rev="${1:-HEAD}" commit busy
-  commit="$(git -C "$REPO" rev-parse --verify "$rev^{commit}")"
+guard_idle() {
+  # Stopping the unit kills its cgroup, including an owned worker mid-run.
+  local busy
   busy="$(active_runs | xargs)"
   if [[ -n "$busy" && "${FORCE:-0}" != 1 ]]; then
-    echo "Refusing to release: active runs/suites would be killed: $busy" >&2
+    echo "Refusing to $1: active runs/suites would be killed: $busy" >&2
     echo "Wait for them to finish, cancel them in Rehearse, or rerun with FORCE=1." >&2
     return 3
   fi
+}
+
+release() {
+  local rev="${1:-HEAD}" commit
+  commit="$(git -C "$REPO" rev-parse --verify "$rev^{commit}")"
+  guard_idle release || return 3
   # Stop before switching files so the old gateway never imports code from the new tree.
   if [[ -f "$UNIT_FILE" ]]; then systemctl --user stop "$UNIT"; fi
   if [[ -d "$RELEASE/.git" || -f "$RELEASE/.git" ]]; then
@@ -97,7 +103,8 @@ case "${1:-status}" in
     write_unit
     systemctl --user enable --now "$UNIT"
     wait_ready ;;
-  start|stop|restart) systemctl --user "$1" "$UNIT"; [[ "$1" == stop ]] || wait_ready ;;
+  start) systemctl --user start "$UNIT"; wait_ready ;;
+  stop|restart) guard_idle "$1" || exit 3; systemctl --user "$1" "$UNIT"; [[ "$1" == stop ]] || wait_ready ;;
   status) systemctl --user status "$UNIT" --no-pager | head -12; echo "Served commit: $(cat "$DATA/release.commit" 2>/dev/null || echo unknown)" ;;
   logs) journalctl --user -u "$UNIT" --no-pager -n "${2:-80}" ;;
   url) echo "http://127.0.0.1:$PORT/" ;;

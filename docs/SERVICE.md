@@ -19,7 +19,7 @@ tools/studio_service.sh release [REV]   # serve a new commit (default HEAD); ref
 FORCE=1 tools/studio_service.sh release # override: kills in-flight runs (they are recorded as interrupted)
 tools/studio_service.sh status          # unit state and served commit
 tools/studio_service.sh logs 100
-tools/studio_service.sh restart | stop | start
+tools/studio_service.sh restart | stop | start   # restart/stop refuse while runs/suites are active (FORCE=1 overrides)
 tools/studio_service.sh uninstall       # disable and remove the unit (data is kept)
 ```
 
