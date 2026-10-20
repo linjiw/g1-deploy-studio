@@ -5,7 +5,7 @@
     {
       "id": "flow_deploy",
       "path": "/home/linjiw/code/g1-student-deploy",
-      "observed_head": "df53fd02d153759746779cc6674a8644a0faf757",
+      "observed_head": "6a86c860d56d91cda4adff001c4b30dff24ef048",
       "required_paths": [
         "README.md",
         "g1deploy/node.py",
@@ -61,11 +61,14 @@
     {
       "id": "flow",
       "path": "/home/linjiw/flow",
-      "observed_head": "9bd50c205b26ab03160a930002f7a11965c98fe8",
+      "observed_head": "23326aa1df7aac98c4da6308ee0fa87dd8e80528",
       "required_paths": [
         "research/CLOSED_LOOP_TEACHER_RESULT.md",
         "research/ROUND_AV_PLAN.md",
         "src/motion2scene_flow"
+      ],
+      "paths": [
+        "research/BEST_MODEL.md"
       ]
     },
     {
@@ -85,5 +88,6 @@
         "research/TWO_STAGE_DESIGN.md"
       ]
     }
-  ]
+  ],
+  "observed_at": "2026-10-20"
 }

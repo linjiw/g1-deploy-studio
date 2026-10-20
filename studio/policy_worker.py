@@ -21,6 +21,19 @@ BACKEND_ID = 'flow-sonic-mujoco-cpu'
 MAX_DURATION_S = 10.0
 MAX_BOXES = 128
 MAX_SENSOR_POINTS = 1500
+# Success criteria. "arrive_hold" is Studio's deployment-style arrival (stop and
+# hold); "arena_reach" mirrors the Flow Isaac arena scoring the research uses.
+CRITERIA = {
+    'arrive_hold': {'label': 'Arrive and hold · Studio deployment check', 'goal_radius_m': .3, 'goal_speed_m_s': .25,
+                    'goal_hold_s': .4, 'fall_height_m': .35, 'fall_tilt_rad': 1.0, 'obstacle_contact_threshold_n': 100.0},
+    'arena_reach': {'label': 'Reach · Flow Isaac arena protocol', 'goal_radius_m': .4, 'goal_speed_m_s': 2.0,
+                    'goal_hold_s': .1, 'fall_height_m': .38, 'fall_tilt_rad': .8, 'obstacle_contact_threshold_n': 5.0},
+}
+LOADERS = ('deploy-bundle', 'flow-callback')
+
+
+def task_thresholds(criterion):
+    return {k: v for k, v in CRITERIA[criterion].items() if k != 'label'}
 
 
 def capabilities():
@@ -87,6 +100,21 @@ def validate_request(request):
     seed = request.get('seed', 0)
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**31 - 1:
         raise ValueError('seed must be an integer in 0..2147483647')
+    criterion = request.get('criterion', 'arrive_hold')
+    if criterion not in CRITERIA:
+        raise ValueError(f'criterion must be one of {sorted(CRITERIA)}')
+    policy = request.get('policy') or {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle'}
+    if not isinstance(policy, dict) or policy.get('loader') not in LOADERS:
+        raise ValueError(f'policy.loader must be one of {LOADERS}')
+    policy_id = policy.get('id')
+    if not isinstance(policy_id, str) or not 1 <= len(policy_id) <= 64 or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in policy_id):
+        raise ValueError('policy.id must be a lowercase identifier')
+    clean_policy = {'id': policy_id, 'loader': policy['loader'],
+                    'identity_sha256': str(policy.get('identity_sha256') or '')[:64] or None}
+    if policy['loader'] == 'flow-callback':
+        from studio.policy_bundle import bundle_path
+        bundle_path(policy.get('bundle_id'))  # validates the identifier; never a free path
+        clean_policy['bundle_id'] = policy['bundle_id']
     job_id = request.get('id', 'policy-test')
     if not isinstance(job_id, str) or not 1 <= len(job_id) <= 80 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in job_id):
         raise ValueError('id must contain only letters, digits, dash and underscore')
@@ -94,7 +122,7 @@ def validate_request(request):
              'start_xy': _xy(request.get('start_xy', [0, 0]), 'start_xy'),
              'start_yaw_rad': _number(request.get('start_yaw_rad', 0), 'start_yaw_rad', -math.pi, math.pi),
              'duration_s': _number(request.get('duration_s', 2), 'duration_s', .02, MAX_DURATION_S),
-             'seed': seed, 'planner': settings,
+             'seed': seed, 'planner': settings, 'criterion': criterion, 'policy': clean_policy,
              'map': {'id': str(m.get('id', 'map'))[:100], 'label': str(m.get('label', 'Collision map'))[:200],
                      'kind': 'boxes', 'frame_id': 'world', 'boxes': clean_boxes,
                      'source': str(m.get('source', 'operator-configured'))[:1000]}}
@@ -171,6 +199,8 @@ def executed_native_recording(output, frame_count):
 def execute(request, output):
     """Run one owned task. The caller must impose an independent wall-time limit."""
     req = validate_request(request)
+    if req['policy']['loader'] != 'deploy-bundle':
+        raise ValueError('This worker runs only the frozen deploy bundle; use studio.flow_policy_worker')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     _atomic(output / 'request.json', req)
@@ -211,9 +241,7 @@ def execute(request, output):
         task = {'task_id': req['id'], 'family': 'studio-user-configured',
                 'initial_state_record': str(output / 'initial_state.npz'), 'initial_frame': 0,
                 'initial_root_xy': req['start_xy'], 'scene_boxes_world': req['map']['boxes'],
-                'goal_world_xy': req['goal_xy'], 'deadline_s': req['duration_s'],
-                'goal_radius_m': .3, 'goal_speed_m_s': .25, 'goal_hold_s': .4,
-                'fall_height_m': .35, 'fall_tilt_rad': 1.0, 'obstacle_contact_threshold_n': 100.0}
+                'goal_world_xy': req['goal_xy'], 'deadline_s': req['duration_s'], **task_thresholds(req['criterion'])}
         _atomic(output / 'task.json', task)
         _atomic(output / 'boxes.json', req['map']['boxes'])
         source_files = [_hash(REFERENCE_ROOT / f) for f in ('sim/lockstep.py', 'sim/episode.py', 'g1deploy/contract.py',
@@ -242,9 +270,13 @@ def execute(request, output):
                     'frame_id': 'world', 'quaternion_convention': 'wxyz',
                     'goal_xy': list(req['goal_xy']), 'start_xy': list(req['start_xy']),
                     'start_yaw_rad': req['start_yaw_rad'],
-                    'navigation_criteria': {key: task[key] for key in
+                    'navigation_criteria': dict({key: task[key] for key in
                                             ('goal_radius_m', 'goal_speed_m_s', 'goal_hold_s',
                                              'fall_height_m', 'fall_tilt_rad', 'obstacle_contact_threshold_n')},
+                                            criterion=req['criterion'], label=CRITERIA[req['criterion']]['label']),
+                    'policy_profile': {'id': req['policy']['id'], 'label': 'Flow student s2-kcsc · frozen deploy bundle',
+                                       'research_block': None, 'identity_sha256': req['policy'].get('identity_sha256'),
+                                       'revision': 'bundle 2026-10-08', 'loader': 'deploy-bundle'},
                     'units': {'position': 'm', 'joint': 'rad', 'time': 's'},
                     'hardware_validated': False, 'command_path_enabled': False, 'fixture': False,
                     'worker_exit_strategy': 'Explicit process exit after closed recording writes; native interpreter teardown skipped',

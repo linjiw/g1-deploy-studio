@@ -8,7 +8,7 @@ Root: `/home/linjiw/code/g1-student-deploy`
 
 Primary integration: Flow planner, perception and SONIC real-time rehearsal.
 
-Observed HEAD: `df53fd02d153759746779cc6674a8644a0faf757`
+Observed HEAD: `6a86c860d56d91cda4adff001c4b30dff24ef048` (2026-10-20; branch codex/near-goal-route)
 
 - `README.md`
 - `g1deploy/node.py`
@@ -72,8 +72,9 @@ Root: `/home/linjiw/flow`
 
 Ongoing planning/map/safety research. Read latest notes before selecting a checkpoint; do not equate latest HEAD with deployment qualification.
 
-Observed HEAD: `9bd50c205b26ab03160a930002f7a11965c98fe8`
+Observed HEAD: `23326aa1df7aac98c4da6308ee0fa87dd8e80528` (2026-10-20). WX-RF is pinned from this commit; see POLICIES.md
 
+- `research/BEST_MODEL.md` (adopted block heading only)
 - `research/CLOSED_LOOP_TEACHER_RESULT.md`
 - `research/ROUND_AV_PLAN.md`
 - `src/motion2scene_flow`
