@@ -40,13 +40,22 @@ const TRANSPORT = {
 export function sessionKind(session) {
   const m = session?.metadata ?? {};
   if (m.recording_kind === 'recorded-wire-transport') return 'wire';
-  if (m.recording_kind === 'sonic-mujoco-lockstep') return m.provenance?.adapter?.startsWith('studio.policy_worker') ? 'worker' : 'lockstep';
+  if (m.recording_kind === 'sonic-mujoco-lockstep') {
+    if (m.privileged_map || m.policy_profile?.loader === 'flow-callback') return 'privileged';
+    return /^studio\.(policy_worker|flow_policy_worker)/.test(m.provenance?.adapter ?? '') ? 'worker' : 'lockstep';
+  }
   if (session) return 'process-chain';
   return 'reference';
 }
 
 // Evidence per edge for the open session (never upgrades configured to observed).
+const PRIVILEGED_UNUSED = new Set(['lidar-perception', 'state-perception', 'perception-route']);
 function edgeEvidence(edge, kind, session) {
+  if (kind === 'privileged') {
+    if (PRIVILEGED_UNUSED.has(edge.id)) return { evidence: 'unavailable', transport: 'inproc', topic: 'not used: privileged block', basis: 'This block plans from the exact configured boxes; no LiDAR, perception map or sensed route exists in the run' };
+    if (edge.id === 'route-flow') return { evidence: 'configured', transport: 'inproc', topic: 'privileged cost route on exact boxes (SIM-TRUTH)', basis: 'Route computed from the simulator\'s exact collision boxes, not from sensing' };
+    return { evidence: 'observed', transport: edge.lockstep[0], topic: edge.lockstep[1], basis: 'Observed by Studio wrappers inside the owned CPU worker (Flow callback)' };
+  }
   if (kind === 'worker') return { evidence: 'observed', transport: edge.lockstep[0], topic: edge.lockstep[1], basis: 'Observed by Studio wrappers inside the owned CPU worker' };
   if (kind === 'lockstep') return { evidence: 'recorded', transport: edge.lockstep[0], topic: edge.lockstep[1], basis: 'In-process lockstep recording (no DDS/ZMQ)' };
   if (kind === 'wire') {
@@ -62,6 +71,7 @@ function nodeBadge(id, session) {
   if (id === 'flow' && r.plan_latency_s) return `p50 ${num(r.plan_latency_s.p50 * 1000, 0)} · p95 ${num(r.plan_latency_s.p95 * 1000, 0)} ms`;
   if (id === 'sonic' && r.sonic_inference_ms) return `p50 ${num(r.sonic_inference_ms.p50, 1)} · p95 ${num(r.sonic_inference_ms.p95, 1)} ms`;
   if (id === 'perception' && session?.perception?.frames?.length) return `${session.perception.frames.length} map snapshots`;
+  if ((id === 'perception' || id === 'lidar') && sessionKind(session) === 'privileged') return 'not used (privileged)';
   return '';
 }
 
@@ -111,6 +121,7 @@ export function renderSystemMap(container, session, { selected = null, onSelect 
 }
 
 export const KIND_LABEL = {
+  privileged: 'Fresh Studio CPU worker · PRIVILEGED block: plans from the exact configured boxes; no LiDAR or perception map; DDS/ZMQ not exercised',
   worker: 'Fresh Studio CPU worker · in-process calls observed by wrappers; DDS/ZMQ not exercised',
   lockstep: 'Recorded in-process lockstep · no DDS/ZMQ in this run',
   wire: 'Recorded ZMQ transport capture · one observed receiver edge',
@@ -136,13 +147,15 @@ export function systemDetails(id, session, robot) {
   if (!d) return '<p class="tiny">Select a component.</p>';
   const node = NODES.find(n => n.id === id);
   const kind = sessionKind(session);
+  const privilegedNote = kind === 'privileged' && ['lidar', 'perception', 'route', 'flow'].includes(id)
+    ? '<div class="callout warning">Privileged block: this run planned from the exact configured boxes (simulator ground truth). No LiDAR, perception map or sensed route was used.</div>' : '';
   const related = EDGES.filter(e => e.from === id || e.to === id).map(e => ({ ...e, ...edgeEvidence(e, kind, session) }));
   const thresholds = (robot?.safety_thresholds ?? []).filter(t => {
     const owner = `${t.owner ?? ''} ${t.id ?? ''} ${t.name ?? ''}`.toLowerCase();
     return (id === 'state' && /lowstate|state|odom/.test(owner)) || (id === 'sonic' && /runner|reference|velocity/.test(owner))
       || (id === 'flow' && /plan|node|stall|tilt/.test(owner)) || (id === 'perception' && /cloud/.test(owner));
   });
-  return `<h3>${escape(node.label)}</h3><p>${escape(d.what)}</p>${tiny(d.studio)}
+  return `<h3>${escape(node.label)}</h3>${privilegedNote}<p>${escape(d.what)}</p>${tiny(d.studio)}
     <h4>Connections in this source</h4>${related.map(e => `<div class="sys-detail-edge">${chip(e.evidence)} <strong>${escape(TRANSPORT[e.transport]?.label ?? e.transport)}</strong> ${escape(e.from)} → ${escape(e.to)}<small>${escape(e.topic)} · ${escape(e.basis)}</small></div>`).join('')}
     ${thresholds.length ? `<h4>Safety thresholds in source</h4><div class="threshold-list">${thresholds.map(t => `<div class="threshold"><strong>${escape((t.id ?? t.name).replaceAll('_', ' '))}</strong><span class="value">${escape(t.value)} ${escape(t.unit ?? '')}</span> · ${escape(t.owner ?? '')}<p>${escape(t.effect ?? '')}</p></div>`).join('')}</div>${tiny('Source-inspected configuration; not verified on hardware.')}` : ''}`;
 }

@@ -21,8 +21,12 @@ export async function initRehearse(catalog) {
 }
 
 export async function selectMap(id, rerender = true) {
+  if (!id) throw new Error('Select a saved arena first.');
   rh.mapId = id;
-  rh.map = await request(`/api/map?id=${encodeURIComponent(id)}`);
+  const token = rh.mapToken = (rh.mapToken ?? 0) + 1;
+  const map = await request(`/api/map?id=${encodeURIComponent(id)}`);
+  if (token !== rh.mapToken) return;  // a newer selection won; never pair its presets with old geometry
+  rh.map = map;
   rh.presetIndex = 0;
   const suggested = rh.map.suggested_scenario;
   if (suggested && !rh.map.presets?.length) rh.settings.duration_s = suggested.duration_s ?? rh.settings.duration_s;
@@ -61,7 +65,9 @@ export function render() {
   const pol = policy(), deployed = pol?.planner?.deployed_budget;
   const runnable = rh.catalog.maps.filter(m => m.runnable);
   const list = presets(), q = list[rh.presetIndex];
-  const active = rh.job && ACTIVE.includes(rh.job.status);
+  const suiteActive = rh.suite && ['queued', 'running', 'cancelling'].includes(rh.suite.status);
+  const active = (rh.job && ACTIVE.includes(rh.job.status)) || suiteActive;
+  const suiteRuns = list.length * rh.seeds, suiteLimit = rh.catalog.limits?.suite_runs ?? 48;
   root.innerHTML = `
     <div class="panel-section"><h4>Flow research sync</h4>${research.available
       ? `<div class="research-sync">${chip('configured', research.basis)} Adopted block <strong>${escape(research.adopted_block)}</strong> · ${escape(research.adopted_at)} · commit <code>${escape(research.adopted_commit)}</code></div><p class="tiny">${escape(research.last_update ?? '')}</p>`
@@ -82,7 +88,7 @@ export function render() {
       <p class="tiny">${rh.settings.latency_ms ? `L2: each plan starts ${rh.settings.latency_ms} ms after it is requested while physics keeps running${pol?.loader === 'flow-callback' ? ' (Studio delayed-execution approximation for the Flow callback)' : ' (source lockstep latency model)'}.` : 'L1: physics waits for every replan, hiding planner latency.'}</p>
       <label class="field">Success criterion<select id="rh-criterion">${(rh.catalog.criteria ?? [{ id: 'arrive_hold', label: 'Arrive and hold' }]).map(c => `<option value="${escape(c.id)}" ${c.id === rh.settings.criterion ? 'selected' : ''} title="${escape(`radius ${c.goal_radius_m} m · speed ≤ ${c.goal_speed_m_s} m/s for ${c.goal_hold_s} s · collision > ${c.obstacle_contact_threshold_n} N`)}">${escape(c.label)}</option>`).join('')}</select></label>
       <p class="tiny">CPU lockstep pauses physics while planning, so larger budgets cost wall time, not simulated time. Wall limit for this profile: ${pol?.limits?.wall_s ?? 180} s.</p></div>
-    <div class="panel-section sticky-actions"><button id="rh-run" class="primary-action" ${active || !pol?.available ? 'disabled' : ''}>▶ Run preset</button><button id="rh-suite" ${active || !pol?.available ? 'disabled' : ''} title="Run every preset of this arena (× seeds) one after another">Run suite · ${list.length * rh.seeds} run${list.length * rh.seeds === 1 ? '' : 's'}</button>${active ? '<button id="rh-cancel" class="danger">Cancel</button>' : ''}</div>
+    <div class="panel-section sticky-actions"><button id="rh-run" class="primary-action" ${active || !pol?.available ? 'disabled' : ''}>▶ Run preset</button><button id="rh-suite" ${active || !pol?.available || suiteRuns > suiteLimit ? 'disabled' : ''} title="${suiteRuns > suiteLimit ? `A suite holds at most ${suiteLimit} runs` : 'Run every preset of this arena (× seeds) one after another'}">Run suite · ${suiteRuns} run${suiteRuns === 1 ? '' : 's'}${suiteRuns > suiteLimit ? ` (max ${suiteLimit})` : ''}</button>${active ? '<button id="rh-cancel" class="danger">Cancel</button>' : ''}</div>
     <div id="rh-job" class="panel-section"></div><div id="rh-suite-status" class="panel-section"></div>`;
   bind();
   renderJob(); renderSuite();
@@ -141,6 +147,8 @@ async function runPreset() {
 }
 
 async function runSuite() {
+  const total = presets().length * rh.seeds, limit = rh.catalog.limits?.suite_runs ?? 48;
+  if (total > limit) throw new Error(`This suite has ${total} runs; the limit is ${limit}. Reduce presets or seeds.`);
   const ids = [];
   for (const q of presets()) for (let s = 0; s < rh.seeds; s++) ids.push((await saveScenario(q, rh.settings.seed + s)).id);
   rh.suite = await request('/api/suites', { label: `${rh.map.label} · ${policy()?.short_label ?? rh.policyId} · ${ids.length} runs`, scenario_ids: ids });

@@ -55,7 +55,7 @@ def build_identity(root=ROOT):
     """Served revision of this checkout. Read once; never trusted as a lock."""
     def git(*args):
         try:
-            return subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True,
+            return subprocess.run(['git', '--no-optional-locks', '-C', str(root), *args], capture_output=True, text=True,
                                   timeout=3, check=True).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             return None
@@ -388,8 +388,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(workbench.map(query.get('id', ['flat-ground'])[0]))
             if path == '/api/scenarios' and workbench:
                 key = query.get('id', [None])[0]
-                with workbench.lock:
-                    return self.respond(workbench.scenarios[key] if key else {'scenarios': list(workbench.scenarios.values())})
+                with workbench.lock:  # copy under the lock; never write a response while holding it
+                    body = json.dumps(workbench.scenarios[key] if key else {'scenarios': list(workbench.scenarios.values())},
+                                      allow_nan=False, separators=(',', ':')).encode()
+                return self.respond(body)
             if path == '/api/jobs' and workbench:
                 key = query.get('id', [None])[0]
                 if not key:

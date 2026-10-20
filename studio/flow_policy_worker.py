@@ -21,7 +21,7 @@ import sys
 import time
 
 from studio.policy_worker import (CRITERIA, MAX_DURATION_S, TorqueTracker, _atomic, _hash, contact_interval,
-                                  task_thresholds, validate_request)
+                                  executed_native_recording, task_thresholds, validate_request)
 from studio.policy_bundle import bundle_path, load_manifest, verify
 
 DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
@@ -33,6 +33,37 @@ DT = 0.02
 class Stub:
     def __init__(self, **kw):
         self.__dict__.update(kw)
+
+
+def prepare_callback_config(cfg, arm, seed, output, task_path, task_id, overrides):
+    """Mirror Flow closed_loop/runner.py prepare() for one episode (pinned snapshot semantics).
+
+    Arm-level keys override config-level keys exactly as the runner does; Studio only
+    adds its CPU/budget overrides on top of the merged planner block.
+    """
+    planner = dict(cfg.get('planner_defaults', {}), **arm['planner'])
+    planner['seed'] = seed
+    if xfit := planner.pop('exec_model_xfit', None):
+        import zlib
+        planner['exec_model'] = xfit[zlib.crc32(str(task_id).encode()) % 2]
+        planner['exec_model_xfit_note'] = 'Studio fold parity: crc32(task id); Flow uses task_fold()'
+    planner.update(overrides)
+    get = lambda key, default=None: arm.get(key, cfg.get(key, default))
+    cb = {'output': str(output), 'task_path': str(task_path), 'seed': seed, 'planner': planner,
+          'replan_ticks': get('replan_ticks', 8), 'goal_lookahead_m': get('goal_lookahead_m', 0.8),
+          'route': get('route', {}), 'route_source': get('route_source', 'privileged'),
+          'goal_heading': get('goal_heading', 'path'), 'steer_lookahead_m': get('steer_lookahead_m', 0.8),
+          'turn_min_frac': get('turn_min_frac'), 'save_training_windows': cfg.get('save_training_windows', False),
+          'sensor_prescan_s': get('sensor_prescan_s', 0.0),
+          'initial_root_velocity_policy': cfg.get('initial_root_velocity_policy', 'recorded_world'),
+          'initial_joint_velocity_policy': cfg.get('initial_joint_velocity_policy', 'source'),
+          'perturb': get('perturb'), 'branch': get('branch'), 'tight': get('tight')}
+    if get('deterministic'):
+        cb['deterministic'] = True
+    for key in ('route_extent', 'goal_on_route', 'gate_side', 'sensor_boxes'):
+        if get(key) is not None:
+            cb[key] = get(key)
+    return cb
 
 
 def _quantiles(values):
@@ -79,7 +110,7 @@ def execute(request, output):
         from sim.episode import Physics, stand_start_state
         import sim.episode as episode_module
         from studio.replay import decode_reference, load_session, _plan, _git_provenance
-        from studio.pipeline import PipelineRecorder, contract as pipeline_contract, SONIC_SAMPLE_EVERY
+        from studio.pipeline import PipelineRecorder, contract as pipeline_contract, SONIC_SAMPLE_EVERY, jsonable
         if not Path(motion2scene_flow.__file__).resolve().is_relative_to((root / 'src').resolve()):
             raise RuntimeError(f'motion2scene_flow resolved outside the pinned snapshot: {motion2scene_flow.__file__}')
         for forbidden in ('g1deploy.bundle', 'g1deploy.perception.cloud_memory', 'sim.fastplan', 'isaaclab', 'omni'):
@@ -111,16 +142,10 @@ def execute(request, output):
         _atomic(output / 'task.json', task)
         config = json.loads((root / 'config.json').read_text())
         arm = next(a for a in config['arms'] if a['name'] == manifest['flow']['arm'])
-        planner_cfg = dict(config['planner_defaults'], **arm['planner'], **manifest.get('planner_overrides', {}),
-                           seed=req['seed'], candidates=req['planner']['candidates'], ode_steps=req['planner']['ode_steps'])
-        callback_cfg = {'output': str(output / 'native'), 'task_path': str(output / 'task.json'), 'seed': req['seed'],
-                        'planner': planner_cfg, 'replan_ticks': config['replan_ticks'], 'goal_lookahead_m': config['goal_lookahead_m'],
-                        'route': arm['route'], 'route_source': arm['route_source'], 'goal_heading': config['goal_heading'],
-                        'steer_lookahead_m': config['steer_lookahead_m'], 'turn_min_frac': None, 'save_training_windows': False,
-                        'sensor_prescan_s': 0.0, 'initial_root_velocity_policy': 'recorded_world',
-                        'initial_joint_velocity_policy': 'source', 'perturb': None, 'branch': None, 'tight': arm['tight'],
-                        'deterministic': bool(config.get('deterministic', True)), 'route_extent': arm['route_extent'],
-                        'gate_side': arm['gate_side']}
+        callback_cfg = prepare_callback_config(
+            config, arm, req['seed'], output / 'native', output / 'task.json', req['id'],
+            dict(manifest.get('planner_overrides', {}), candidates=req['planner']['candidates'], ode_steps=req['planner']['ode_steps']))
+        planner_cfg = callback_cfg['planner']
         _atomic(output / 'callback_config.json', callback_cfg)
 
         pipeline = PipelineRecorder()
@@ -167,9 +192,10 @@ def execute(request, output):
                     'policy_hash_at_recording': next(f['sha256'] for f in manifest['deploy']['files'] if f['path'].endswith('.onnx')),
                     'recorded_model_hash': model_identity['sha256'],
                     'planner_configuration': dict(planner_cfg, implementation='flow-callback (privileged boxes)',
-                                                  route_source=arm['route_source'], route=arm['route'], tight=arm['tight'],
-                                                  gate_side=arm['gate_side'], replan_ticks=config['replan_ticks'],
-                                                  goal_lookahead_m=config['goal_lookahead_m'], start='stand'),
+                                                  route_source=callback_cfg['route_source'], route=callback_cfg['route'],
+                                                  tight=callback_cfg['tight'], gate_side=callback_cfg.get('gate_side'),
+                                                  replan_ticks=callback_cfg['replan_ticks'],
+                                                  goal_lookahead_m=callback_cfg['goal_lookahead_m'], start='stand'),
                     'control_contract': {'joint_names': list(C.MJ_JOINTS), 'kp_nm_per_rad': C.KP_MJ.tolist(),
                                          'kd_nm_per_rad_s': C.KD_MJ.tolist(), 'effort_limit_nm': C.EFFORT_MJ.tolist(),
                                          'control_dt_s': C.DT, 'physics_dt_s': C.SIM_DT,
@@ -357,6 +383,17 @@ def execute(request, output):
             def observed_plan(*args, **kwargs):
                 tick = len(frames)
                 capture_ok = hasattr(planner, 'model')
+                if capture_ok and not getattr(pipeline, '_guarded', False):
+                    unguarded = pipeline._forward
+
+                    def guarded_forward(model, inputs, output):
+                        try:
+                            unguarded(model, inputs, output)
+                        except Exception as error:  # never let telemetry alter or abort planning
+                            events.append({'time': len(frames) * DT, 'type': 'telemetry',
+                                           'message': f'Flow tensor capture skipped: {type(error).__name__}', 'source': 'studio'})
+                    pipeline._forward = guarded_forward
+                    pipeline._guarded = True
                 if capture_ok:
                     try:
                         pipeline.begin_plan(planner, tick, DT)
@@ -368,9 +405,9 @@ def execute(request, output):
                 latency = time.perf_counter() - tic
                 qpos = np.asarray(result['qpos'])
                 row = {'tick': tick, 'latency_s': latency, 'rule': result.get('rule'),
-                       'chosen_clearance_m': float(result['chosen_clearance_m']) if result.get('chosen_clearance_m') is not None else None,
+                       'chosen_clearance_m': jsonable(float(result['chosen_clearance_m'])) if result.get('chosen_clearance_m') is not None else None,
                        'plan_xy': qpos[:, :2].tolist(), 'plan_root_z': qpos[:, 2].tolist(), 'waypoint_xy': None,
-                       'route_remaining_m': None, 'exec_check': result.get('exec_check')}
+                       'route_remaining_m': None, 'exec_check': jsonable(result.get('exec_check'))}
                 current['plan'] = row
                 plans.append(row)
                 if capture_ok:
@@ -394,9 +431,16 @@ def execute(request, output):
         finally:
             progress_log.close()
             pipeline.close()
+        for forbidden in ('g1deploy.bundle', 'g1deploy.perception.cloud_memory', 'sim.fastplan', 'isaaclab', 'omni'):
+            if forbidden in sys.modules:  # Flow imports lazily inside run(); re-check afterwards
+                raise RuntimeError(f'{forbidden} was imported during the Flow callback run')
         native = output / 'native'
+        episode_message = f'{type(episode_error).__name__}: {episode_error}' if episode_error else None
+        if episode_error is not None:
+            # Keep the real Flow error even if no replay can be decoded below.
+            _atomic(output / 'episode_error.json', {'error': episode_message, 'executed_steps': len(frames)})
         if not (native / 'closed_loop.npz').is_file():
-            raise RuntimeError(f'Flow callback produced no recording: {type(episode_error).__name__ if episode_error else "unknown"}: {episode_error}')
+            raise RuntimeError(f'Flow callback produced no recording ({episode_message or "no error raised"})')
         score = json.loads((native / 'score.json').read_text()) if (native / 'score.json').is_file() else {}
         native_plans = json.loads((native / 'plans.json').read_text()) if (native / 'plans.json').is_file() else []
         np.savez_compressed(output / 'physics_observations.npz',
@@ -405,10 +449,16 @@ def execute(request, output):
                             root_positions_m=physics_positions, root_quaternions_wxyz=physics_quaternions,
                             peak_commanded_torque_nm=torque.rows, joint_names=list(C.MJ_JOINTS))
         _atomic(output / 'pipeline_observations.json', pipeline.data())
-        session = load_session(native, environment_path=output / 'boxes.json')
+        # Flow appends the pre-action state before planning; an exception mid-tick leaves one
+        # unmatched pre-state. Decode only actually executed rows (original NPZ preserved).
+        try:
+            native_path, extraction = executed_native_recording(output, len(frames)) if episode_error else (native, None)
+            session = load_session(native_path, environment_path=output / 'boxes.json')
+        except Exception as decode_error:
+            raise RuntimeError(f'{episode_message or "Episode finished"}; replay decode failed: {type(decode_error).__name__}: {decode_error}') from decode_error
         # Independent decoder parity. The callback stores float32; compare at that precision.
         n = min(len(session['frames']), len(frames))
-        if n == 0 or abs(len(session['frames']) - len(frames)) > 1:
+        if n == 0 or len(session['frames']) != len(frames):
             raise ValueError(f"Native recording frames {len(session['frames'])} disagree with observed physics steps {len(frames)}")
         qpos_error = float(np.max(np.abs(np.asarray([f['qpos'] for f in frames[:n]]) - np.asarray([f['qpos'] for f in session['frames'][:n]]))))
         reference_error = float(np.max(np.abs(np.asarray([f['reference']['raw'] for f in frames[:n]], dtype=np.float64)
@@ -422,9 +472,9 @@ def execute(request, output):
                 active = by_tick[i]
             frame['plan'] = decoded['plan']
             if frame['plan'] is not None and active is not None:
-                frame['plan'].update(exec_check=active.get('exec_check'), tight=active.get('tight'),
-                                     corridor_m=active.get('corridor_m'), gate_side_gap_m=active.get('gate_side_gap_m'),
-                                     candidate_clearance_m=active.get('clearance_m'), choice=active.get('choice'))
+                frame['plan'].update(jsonable({'exec_check': active.get('exec_check'), 'tight': active.get('tight'),
+                                               'corridor_m': active.get('corridor_m'), 'gate_side_gap_m': active.get('gate_side_gap_m'),
+                                               'candidate_clearance_m': active.get('clearance_m'), 'choice': active.get('choice')}))
             frame['health']['planner_latency_ms'] = decoded['health']['planner_latency_ms']
         frames = frames[:n]
         latencies = [row['latency_s'] for row in plans]
@@ -436,7 +486,7 @@ def execute(request, output):
                   'maximum_obstacle_contact_n': score.get('maximum_obstacle_contact_n'),
                   'final_goal_distance_xy_m': score.get('final_goal_distance_xy_m'), 'minimum_goal_distance_xy_m': score.get('minimum_goal_distance_xy_m'),
                   'first_goal_radius_entry_s': score.get('first_goal_radius_entry_s'),
-                  'runtime_error': f'{type(episode_error).__name__}: {episode_error}' if episode_error else score.get('runtime_error'),
+                  'runtime_error': episode_message or score.get('runtime_error'),
                   'task_id': req['id'], 'family': 'studio-user-configured', 'seed': req['seed'], 'replans': len(native_plans),
                   'route_found': score.get('route_found'), 'plan_latency_s': _quantiles(latencies),
                   'selection_rules': score.get('selection_rules') or {r.get('rule'): sum(1 for x in native_plans if x.get('rule') == r.get('rule')) for r in native_plans},
@@ -448,14 +498,18 @@ def execute(request, output):
                   'criterion': req['criterion'], 'scoring': score.get('scoring'),
                   'torque': torque.summary(C.EFFORT_MJ), 'latency_model': metadata['latency_model'],
                   'parity': {'max_qpos_abs_error': qpos_error, 'max_reference_abs_error': reference_error,
-                             'basis': 'Observed physics vs independent native NPZ decoder (float32 storage)'},
+                             'kind': 'native-record round-trip / tick alignment',
+                             'basis': ('Studio-observed states and references vs the callback NPZ decoded independently '
+                                       '(float32 storage). Detects tick misalignment and decoder errors; it is not a '
+                                       'fidelity comparison against an Isaac episode.')},
                   'worker_wall_to_summary_s': time.monotonic() - started, 'latency_s': req['latency']['ms'] / 1000,
                   'anchor_mode': 'measured (Studio delayed execution)' if req['latency']['ms'] else 'synchronous lockstep'}
         report['worker_real_time_factor'] = report['elapsed_s'] / max(1e-9, report['worker_wall_to_summary_s'])
         metadata.update(mode='replay', duration_s=frames[-1]['time'], executed_sim_duration_s=report['elapsed_s'],
                         source_samples=len(frames), recording_complete=episode_error is None, test_result=report)
         if episode_error:
-            metadata.update(incomplete=True, termination_reason=report['runtime_error'])
+            metadata.update(incomplete=True, termination_reason=report['runtime_error'], native_extraction=extraction)
+            metadata['limitations'].append('Flow callback raised mid-episode. Only actually executed rows are shown; no motion is synthesised after the error.')
         metadata['provenance']['artifacts'] += [_hash(output / p) for p in ('task.json', 'boxes.json', 'callback_config.json', 'native/closed_loop.npz', 'native/plans.json', 'physics_observations.npz')]
         session['frames'] = frames
         session['metadata'] = metadata
@@ -469,10 +523,11 @@ def execute(request, output):
         _atomic(output / 'session.json', session)
         status = 'failed' if episode_error else 'completed'
         _atomic(output / 'result.json', {'schema_version': 1, 'status': status, 'report': report, 'recording_complete': episode_error is None,
-                                        'error': report['runtime_error'] if episode_error else None,
+                                        'error': episode_message,
                                         'wall_time_s': time.monotonic() - started, 'session_path': str(output / 'session.json'),
                                         'hardware_enabled': False, 'dds_participants': 0, 'policy_bundle': manifest['id'],
-                                        'state_parity': report['parity']['basis']})
+                                        'record_round_trip': report['parity']['kind'],
+                                        'native_extraction': extraction})
         publish(frames[-1], status=status, force=True)
         if episode_error:
             raise episode_error

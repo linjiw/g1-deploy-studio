@@ -56,6 +56,9 @@ def build(commit, config_path, arm_name, teacher, force=False):
     if root.exists() and not force:
         raise SystemExit(f'{root} exists; use --verify-only or --force')
     root.mkdir(parents=True, exist_ok=force)
+    if force and (root / 'src').exists():
+        import shutil
+        shutil.rmtree(root / 'src')  # never pin stale files left by an earlier extraction
     archive = git(FLOW, 'archive', '--format=tar', commit, 'src/', binary=True)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         members = [m for m in tar.getmembers() if m.isfile() or m.isdir()]

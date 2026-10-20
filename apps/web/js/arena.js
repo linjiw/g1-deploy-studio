@@ -281,6 +281,7 @@ function addBox(box) {
 function ensurePreset() { if (!arena.presets.length) { arena.presets.push(p('Preset 1', [0, 0], 0, [3, 0])); arena.active = 0; } }
 
 function changed(panel = true) {
+  if (arena.savedId) arena.runs = [];  // edited geometry no longer matches recorded runs
   arena.dirty = true; arena.savedId = null;
   if (panel) renderPanel(); else updateStatus();
   emit('arena:changed', arena);
@@ -294,6 +295,8 @@ export function setTool(tool) {
 
 // ---------------------------------------------------------------- loading / saving
 export function loadArena({ label, boxes = [], presets = [], base_map_id = null, description = '', savedId = null, keepView = false }) {
+  // Runs recorded on other geometry must never be drawn on this arena.
+  if (!savedId || savedId !== arena.savedId) arena.runs = [];
   Object.assign(arena, { label, description, base_map_id, boxes: clone(boxes).map(b => ({ yaw: 0, ...b })), presets: clone(presets), active: 0, selection: null, savedId, dirty: !savedId });
   if (!arena.presets.length) ensurePreset();
   renderPanel(); if (!keepView) fitArena(); else draw();
@@ -392,7 +395,7 @@ export function renderPanel() {
     <div class="panel-section"><div class="tool-row" role="toolbar" aria-label="Arena tools">
       ${[['select', '↖', 'Select / move (drag empty space to pan)'], ['wall', '▬', 'Draw wall: drag a line'], ['beam', '⊓', 'Draw overhead beam (1.05–1.25 m): drag'], ['pillar', '■', 'Place 0.3 m pillar: click'], ['start', '◉', 'Place start: click'], ['goal', '◎', 'Place goal: click']]
         .map(([k, icon, tip]) => `<button data-arena-tool="${k}" title="${escape(tip)}" aria-pressed="${arena.tool === k}" class="${arena.tool === k ? 'active' : ''}"><span>${icon}</span>${k}</button>`).join('')}</div>
-      <div class="field-row compact"><label class="check"><input id="arena-snap" type="checkbox" ${arena.snap ? 'checked' : ''}> Snap 5 cm / 5°</label><button id="arena-fit">Fit view</button><button id="arena-preview3d" aria-pressed="false">3D preview</button></div>
+      <div class="field-row compact"><label class="check"><input id="arena-snap" type="checkbox" ${arena.snap ? 'checked' : ''}> Snap 5 cm / 5°</label><button id="arena-fit">Fit view</button><button id="arena-preview3d" aria-pressed="${arena.preview3d ? 'true' : 'false'}" class="${arena.preview3d ? 'active' : ''}">3D preview</button></div>
       <p class="tiny">Drag boxes to move; blue handles resize, amber rotates. Del removes · D duplicates · R rotates 15° · arrows nudge. Drag the blue tip to set start heading.</p></div>
     ${sel ? `<div class="panel-section"><h4>Selected ${escape(kindOf(sel))} #${arena.selection.index + 1}</h4><div class="grid-fields">
       <label>X m<input id="box-x" type="number" step="0.05"></label><label>Y m<input id="box-y" type="number" step="0.05"></label><label>Yaw °<input id="box-yaw" type="number" step="5"></label>
@@ -419,6 +422,7 @@ export function renderPanel() {
 function bindPanel() {
   const num_ = id => Number($(id).value);
   $('arena-label').addEventListener('input', e => { arena.label = e.target.value; arena.savedId = null; });
+  $('arena-label').addEventListener('change', () => renderPanel());
   $('arena-base').addEventListener('change', e => {
     const v = e.target.value; if (!v) return;
     if (v.startsWith('tpl:')) applyTemplate(v.slice(4), Number($('arena-seed').value) || 7);
@@ -469,6 +473,10 @@ function bindPanel() {
       if (file.size > 4 * 1024 * 1024) throw new Error('Arena JSON exceeds 4 MiB');
       const doc = JSON.parse(await file.text());
       if (doc.kind !== 'boxes' || doc.frame_id !== 'world') throw new Error('Arena JSON must be {kind: "boxes", frame_id: "world", boxes: [...]} in metres');
+      const okBox = b => b && [b.center_xy, b.half_xy].every(v => Array.isArray(v) && v.length === 2 && v.every(finite)) && finite(b.z_bottom) && finite(b.z_top) && b.z_top > b.z_bottom;
+      const okPreset = q => q && [q.start_xy, q.goal_xy].every(v => Array.isArray(v) && v.length === 2 && v.every(finite));
+      if (!Array.isArray(doc.boxes) || doc.boxes.length > 128 || !doc.boxes.every(okBox)) throw new Error('Arena JSON boxes must be ≤128 entries with numeric center_xy, half_xy, z_bottom < z_top.');
+      if (doc.presets !== undefined && (!Array.isArray(doc.presets) || doc.presets.length > 16 || !doc.presets.every(okPreset))) throw new Error('Arena JSON presets must be ≤16 entries with numeric start_xy and goal_xy.');
       loadArena({ label: doc.label ?? file.name.replace(/\.json$/i, ''), boxes: doc.boxes ?? [], presets: doc.presets ?? [], description: doc.description ?? '' });
     } catch (err) { emit('arena:error', err.message); }
   });

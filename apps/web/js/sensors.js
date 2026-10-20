@@ -4,7 +4,8 @@ import { setSensorOverlay, removeSensorOverlay } from './scene.js';
 
 export const sn = { data: null, pinned: new Set(), inflight: false, pending: false, time: null, session: null, lastFetch: 0, visible: false };
 
-const CLASS_EVIDENCE = { 'simulator-ground-truth': 'sim-truth', estimated: 'estimated', commanded: 'commanded', measured: 'measured', observed_scan: 'measured' };
+const CLASS_EVIDENCE = { 'simulator-ground-truth': 'sim-truth', 'simulator-commanded': 'commanded', estimated: 'estimated', commanded: 'commanded',
+  measured: 'measured', observed_scan: 'measured', recorded: 'recorded', configured: 'configured' };
 
 function payloadView(sensor) {
   const payload = sensor.payload ?? {};
@@ -26,7 +27,7 @@ function card(sensor, pinned = false) {
   const tone = !available ? 'missing' : sensor.status === 'fresh' ? 'available' : 'unknown';
   return `<article class="sensor-card ${pinned ? 'pinned' : ''}" data-sensor-card="${escape(sensor.id)}">
     <div class="sensor-card-heading"><strong>${escape(sensor.label)}</strong><span class="sensor-state ${tone}">${escape(sensor.status)}</span></div>
-    <div class="sensor-classification">${chip(CLASS_EVIDENCE[sensor.classification] ?? (available ? 'recorded' : 'unavailable'))}<span>${escape(sensor.synchronized ? 'session clock' : 'unsynchronized')}</span></div>
+    <div class="sensor-classification">${available ? (CLASS_EVIDENCE[sensor.classification] ? chip(CLASS_EVIDENCE[sensor.classification]) : `<span class="chip chip-unavailable" title="Unrecognized classification">${escape(sensor.classification ?? 'UNCLASSIFIED')}</span>`) : chip('unavailable')}<span>${escape(sensor.synchronized ? 'session clock' : 'unsynchronized')}</span></div>
     ${available ? payloadView(sensor) : `<p class="sensor-reason">${escape(sensor.reason ?? 'This source was not captured.')}</p>`}
     ${available ? fact('Age / rate', `${num(sensor.age_ms, 0, 'ms')} / ${num(sensor.rate_hz, 1, 'Hz')}`) : ''}
     ${pinned ? '' : `<details><summary>Frame & provenance</summary>${fact('Frame', sensor.frame_id)}${fact('Clock', sensor.source_clock ?? sensor.source_clock_domain)}${fact('Source time', num(sensor.source_time, 3, 's'))}<pre>${escape(JSON.stringify({ extrinsics: sensor.extrinsics, provenance: sensor.provenance }, null, 1))}</pre></details>`}
@@ -72,7 +73,8 @@ export function renderSensors(state) {
   document.body.classList.toggle('has-sensor-dock', pinned.length > 0);
   for (const s of pinned) setSensorOverlay(s);
   document.querySelectorAll('[data-sensor-preview]').forEach(c => preview(c, sensors.find(s => s.id === c.dataset.sensorPreview), state));
-  document.querySelectorAll('[data-pin-sensor]').forEach(b => b.addEventListener('click', () => {
+  // Bind only the freshly rendered buttons of this panel and the dock (no duplicate handlers).
+  [panel, dock].filter(Boolean).flatMap(root => [...root.querySelectorAll('[data-pin-sensor]')]).forEach(b => b.addEventListener('click', () => {
     const id = b.dataset.pinSensor;
     if (sn.pinned.has(id)) { sn.pinned.delete(id); removeSensorOverlay(id); }
     else if (sn.pinned.size >= 3) { window.dispatchEvent(new CustomEvent('studio:error', { detail: 'Unpin a view first: the viewport holds three sensor cards.' })); return; }

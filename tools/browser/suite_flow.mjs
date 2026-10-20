@@ -1,13 +1,13 @@
 // UI-driven suite rehearsal: arena template + presets -> Run suite -> compare runs.
 // Launches real bounded CPU runs (one per preset x seed), one at a time.
-//   STUDIO_URL=http://127.0.0.1:8790 STUDIO_POLICY=flow-wx-rf-23326aa-s0 STUDIO_TEMPLATE=slalom node tools/browser/suite_flow.mjs
+//   STUDIO_URL=http://127.0.0.1:8791 STUDIO_POLICY=flow-wx-rf-23326aa-s0 STUDIO_TEMPLATE=slalom node tools/browser/suite_flow.mjs
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const base = process.env.STUDIO_URL || 'http://127.0.0.1:8790';
+const base = process.env.STUDIO_URL || 'http://127.0.0.1:8791';  // launches real runs: use the dev gateway by default
 const policy = process.env.STUDIO_POLICY || 'flow-wx-rf-23326aa-s0';
 const template = process.env.STUDIO_TEMPLATE || 'slalom';
 const criterion = process.env.STUDIO_CRITERION || 'arrive_hold';

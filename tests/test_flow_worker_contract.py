@@ -175,13 +175,18 @@ class FlowWorkerRejectionTests(unittest.TestCase):
         (root / 'src').mkdir(parents=True)
         (root / 'src/planner.py').write_text('PLAN = 1\n')
         (root / 'config.json').write_text('{"arms": []}')
-        for rel in pb.ARTIFACT_LINKS:
+        artifacts = []
+        for rel in pb.ARTIFACT_LINKS:  # bundle links point at pinned external targets, as the builder makes them
+            target = self.base / 'external' / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{}')
+            artifacts.append({'path': str(target), 'bytes': 2, 'sha256': hashlib.sha256(b'{}').hexdigest()})
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
-            (root / rel).write_text('{}')
+            (root / rel).symlink_to(target)
         (root / 'manifest.json').write_text(json.dumps({
             'schema_version': 1, 'id': BUNDLE_ID, 'src_files': pb.tree_hashes(root / 'src'),
             'flow': {'config_sha256': hashlib.sha256(b'{"arms": []}').hexdigest()},
-            'artifacts': [], 'humanoid_lfh': {'files': []}, 'deploy': {'files': []}}))
+            'artifacts': artifacts, 'humanoid_lfh': {'files': []}, 'deploy': {'files': []}}))
         self.assertEqual(pb.verify(root), [])
         (root / 'src/planner.py').write_text('PLAN = 2  # edited after pinning\n')
         output = self.base / 'run'

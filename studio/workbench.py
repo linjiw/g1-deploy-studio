@@ -32,12 +32,12 @@ MAX_SUITE_RUNS = 48
 MAX_LATENCY_MS = 1000
 MAX_SUITES = 64
 SUITE_ACTIVE = ('queued', 'running', 'cancelling')
-SUITE_TERMINAL = ('completed', 'cancelled', 'interrupted', 'failed')
+SUITE_TERMINAL = ('completed', 'completed_with_errors', 'cancelled', 'interrupted', 'failed')
 ACTIVE_STATES = ('starting', 'running', 'cancelling')
 TERMINAL_STATES = ('completed', 'failed', 'cancelled')
 HISTORY_FIELDS = ('id', 'status', 'scenario_id', 'scenario', 'started_unix_s', 'finished_unix_s',
                   'exit_code', 'error', 'result_session_id', 'recovered', 'ownership', 'suite_id',
-                  'policy_id', 'policy_identity')
+                  'policy_id', 'policy_identity', 'teardown_warning', 'original_status')
 DEVELOPMENT_SCENES = (
     ('flow-detour', 'detour', 20261015, 'Flow arena · wall detour',
      'A standing wall blocks the direct route. Select a goal on either side to inspect avoidance.'),
@@ -241,6 +241,21 @@ def point_status(map_data, point, clearance=.25):
         if box['z_bottom'] < 1.3 and box['z_top'] > 0 and all(abs(v) <= h+clearance for v, h in zip(local, box['half_xy'])):
             return {'status': 'blocked', 'reason': 'Configured obstacle intersects conservative standing footprint/height'}
     return {'status': 'configured_free', 'reason': 'No configured box intersects the standing footprint; path and dynamic feasibility untested'}
+
+
+TEARDOWN_GRACE_S = 20.0
+
+
+def cgroup_oom_kills():
+    """oom_kill counter of this process's cgroup v2 (None when unavailable)."""
+    try:
+        rel = next(line.split('::', 1)[1].strip() for line in Path('/proc/self/cgroup').read_text().splitlines() if line.startswith('0::'))
+        for line in (Path('/sys/fs/cgroup') / rel.lstrip('/') / 'memory.events').read_text().splitlines():
+            if line.startswith('oom_kill '):
+                return int(line.split()[1])
+    except (OSError, StopIteration, ValueError):
+        return None
+    return None
 
 
 def ident(value, name):
@@ -447,6 +462,8 @@ class Workbench:
         result = self._optional_json(output/'run/result.json', 1024*1024)
         if result and result.get('status') == 'completed' and (output/'run/session.json').is_file():
             job.update(status='completed', result_session_id=job['id'], error=None)
+            if not self._lease_held():
+                job['teardown_warning'] = job.get('teardown_warning') or 'Recovered after gateway restart from a complete receipt.'
         elif result and result.get('status') == 'failed':
             job.update(status='failed', error=str(result.get('error', 'Recorded worker failure'))[:2000])
             if (output/'run/session.json').is_file():
@@ -472,6 +489,14 @@ class Workbench:
             job.setdefault('result_session_id', None)
             if job.get('status') not in TERMINAL_STATES:
                 self._reconcile_recovered(job)
+            elif job['status'] == 'failed' and (output/'run/session.json').is_file():
+                receipt = self._optional_json(output/'run/result.json', 1024*1024) or {}
+                if receipt.get('status') == 'completed':
+                    # The worker committed a complete receipt and recording, then was killed while
+                    # exiting (the pre-v0.3 wall guard). Classify by the evidence; keep the record.
+                    job.update(original_status='failed', status='completed', result_session_id=output.name,
+                               teardown_warning=f"Reclassified from failed: complete receipt and recording; original error: {job.get('error')}",
+                               error=None)
             elif job['status'] == 'completed' and not (output/'run/session.json').is_file():
                 job.update(status='failed', result_session_id=None, error='Saved completion recording is unavailable')
             self.jobs[output.name] = job
@@ -657,6 +682,9 @@ class Workbench:
                 raise ValueError('Policy profile artifacts unavailable: ' + '; '.join(policy_identity['missing'])[:500])
             if any(j['status'] in ACTIVE_STATES for j in self.jobs.values()):
                 raise ValueError('A simulation job is already active')
+            active_suite = next((s for s in self.suites.values() if s['status'] in SUITE_ACTIVE), None)
+            if active_suite and active_suite['id'] != suite_id:
+                raise ValueError(f"Suite {active_suite['id']} is running; cancel it or wait before starting another run")
             lease_fd = self._acquire_lease()
             key = 'job-' + uuid.uuid4().hex[:12]
             output = self.root/'jobs'/key
@@ -713,8 +741,19 @@ class Workbench:
         job = self.jobs[key]
         process, output = job['process'], job['output']/'run'
         started = time.monotonic()
+        completed_at = None
+        oom_before = cgroup_oom_kills()
         try:
             while process.poll() is None:
+                receipt = self._optional_json(output/'result.json', 1024*1024)
+                if receipt and receipt.get('status') == 'completed' and (output/'session.json').is_file():
+                    completed_at = completed_at or time.monotonic()
+                    if time.monotonic() - completed_at > TEARDOWN_GRACE_S:
+                        # Every recording write committed; only interpreter teardown is hanging.
+                        job['teardown_warning'] = (f'Worker wrote a complete receipt and recording but did not exit within '
+                                                   f'{TEARDOWN_GRACE_S:.0f} s; terminated after completion.')
+                        self._terminate(process)
+                        break
                 latest = self._optional_json(output/'latest.json', 16*1024*1024)
                 if latest is not None:
                     with self.lock:
@@ -736,15 +775,21 @@ class Workbench:
                 job['exit_code'] = process.returncode
                 job['finished_unix_s'] = time.time()
                 receipt = self._optional_json(output/'result.json', 1024*1024)
-                if job['status'] == 'cancelling':
+                complete = (output/'session.json').is_file() and receipt and receipt.get('status') == 'completed'
+                if job['status'] == 'cancelling' and not complete:
                     job['status'] = 'cancelled'
-                elif process.returncode == 0 and (output/'session.json').is_file() and receipt and receipt.get('status') == 'completed':
+                elif complete and (process.returncode == 0 or job.get('teardown_warning')):
                     job['status'] = 'completed'
                     job['result_session_id'] = key
+                    job['error'] = None
                 else:
                     job['status'] = 'failed'
-                    job['error'] = job['error'] or (receipt or {}).get('error') or f'Worker exited with code {process.returncode}; inspect log for details'
-                    if (output/'session.json').is_file() and receipt and receipt.get('status') == 'failed':
+                    killed = process.returncode in (-signal.SIGKILL, 137)
+                    oom = cgroup_oom_kills()
+                    reason = ('Worker was killed by the out-of-memory killer (service memory limit)' if killed and oom is not None and oom_before is not None and oom > oom_before
+                              else 'Worker was killed with SIGKILL' if killed else None)
+                    job['error'] = job['error'] or reason or (receipt or {}).get('error') or f'Worker exited with code {process.returncode}; inspect log for details'
+                    if (output/'session.json').is_file() and receipt and receipt.get('status') in ('failed', 'completed'):
                         job['result_session_id'] = key
                 job['latest'] = self._optional_json(output/'latest.json', 16*1024*1024) or job['latest']
                 self._persist_job(job)
@@ -796,12 +841,14 @@ class Workbench:
             if key not in self.jobs:
                 raise KeyError('Unknown owned job')
             job = self.jobs[key]
-            if job['status'] not in ('starting','running') or job.get('process') is None or job.get('recovered'):
+            process = job.get('process')
+            if job['status'] not in ('starting','running') or process is None or job.get('recovered') or process.poll() is not None:
                 raise ValueError('Job is no longer an active process owned by this gateway')
             job['status'] = 'cancelling'
             self._persist_job(job)
-            self._terminate(job['process'])
-            return self.job(key)
+        # Signal and wait outside the workbench lock (up to 3 s), so other requests keep flowing.
+        self._terminate(process)
+        return self.job(key)
 
     @staticmethod
     def _light_latest(latest, perception_after):
@@ -866,8 +913,15 @@ class Workbench:
                 pass
             return copy.deepcopy(result)
 
+    def _chronological(self):
+        """Newest first by start time; ties keep the most recently added job first."""
+        with self.lock:
+            keys = list(self.jobs)
+            order = sorted(range(len(keys)), key=lambda i: (self.jobs[keys[i]].get('started_unix_s') or 0, i), reverse=True)
+            return [keys[i] for i in order]
+
     def list_jobs(self):
-        return {'jobs': [self.job(key, compact=True) for key in reversed(list(self.jobs))]}
+        return {'jobs': [self.job(key, compact=True) for key in self._chronological()]}
 
     def session_data(self, key):
         job = self.jobs[key]
@@ -1002,6 +1056,10 @@ class Workbench:
                     run.update(status='launch_failed', error='Another simulation stayed active; suite run not started')
                     self._persist_suite(suite)
                 continue
+            with self.lock:
+                if suite['status'] == 'cancelling':  # cancelled while waiting for the worker
+                    run['status'] = 'skipped'
+                    continue
             try:
                 job = self.start_job(run['scenario_id'], suite_id=key)
             except (ValueError, KeyError, OSError) as error:
@@ -1016,10 +1074,13 @@ class Workbench:
                 with self.lock:
                     record = self.jobs[job['id']]
                     done = record['status'] in TERMINAL_STATES and '_lease_fd' not in record
+                    stop = None
                     if suite['status'] == 'cancelling' and record['status'] in ('starting', 'running') and record.get('process'):
                         record['status'] = 'cancelling'
                         self._persist_job(record)
-                        self._terminate(record['process'])
+                        stop = record['process']
+                if stop is not None:
+                    self._terminate(stop)
                 if done:
                     break
                 time.sleep(.3)
@@ -1031,7 +1092,10 @@ class Workbench:
                            error=record.get('error'))
                 self._persist_suite(suite)
         with self.lock:
-            suite['status'] = 'cancelled' if suite['status'] == 'cancelling' else 'completed'
+            failures = sum(r.get('status') == 'launch_failed' for r in suite['runs'])
+            suite['status'] = ('cancelled' if suite['status'] == 'cancelling'
+                               else 'completed_with_errors' if failures else 'completed')
+            suite['launch_failures'] = failures
             suite['finished_unix_s'] = time.time()
             self._persist_suite(suite)
 
@@ -1138,8 +1202,7 @@ class Workbench:
         return row
 
     def runs_table(self):
-        with self.lock:
-            keys = list(reversed(list(self.jobs)))
+        keys = self._chronological()
         rows = []
         for key in keys:
             try:

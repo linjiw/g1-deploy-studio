@@ -50,9 +50,6 @@ def write_bundle(policy_root, bundle_id='flow-wx-rf-abcdef0-s0', *, block='WX'):
     (root / 'src/motion2scene_flow/closed_loop/planner.py').write_text('def plan():\n    return 0\n')
     config = json.dumps({'arms': [{'name': 'wx-rf'}], 'planner_defaults': {}}).encode()
     (root / 'config.json').write_bytes(config)
-    for rel in pb.ARTIFACT_LINKS:
-        (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text('{"synthetic": true}')
     external = Path(policy_root).parent / 'external' / bundle_id
 
     def entry(name, data, role):
@@ -68,11 +65,16 @@ def write_bundle(policy_root, bundle_id='flow-wx-rf-abcdef0-s0', *, block='WX'):
                  'config_sha256': sha(config), 'arm': 'wx-rf'},
         'src_files': pb.tree_hashes(root / 'src'),
         'artifacts': [entry('teacher-run/model.pt', b'teacher-weights', 'flow teacher checkpoint'),
-                      entry('wm/ensemble.pt', b'world-model', 'execution check')],
+                      entry('wm/ensemble.pt', b'world-model', 'execution check')]
+                     + [entry(f'flow/{rel}', b'{"synthetic": true}', 'planner geometry/reference artifact')
+                        for rel in pb.ARTIFACT_LINKS],
         'humanoid_lfh': {'path': '/nonexistent/humanoid_lfh', 'files': [entry('lfh/bridge.py', b'bridge = 1', 'bridge')]},
         'deploy': {'newton': 'synthetic', 'files': [entry('deploy/sonic.onnx', b'onnx-bytes', 'tracker')]},
         'deployed_budget': {'candidates': 16, 'ode_steps': 10},
         'caveats': ['Synthetic test bundle; not a policy.']}
+    for rel in pb.ARTIFACT_LINKS:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).symlink_to(external / f'flow/{rel}')
     (root / 'manifest.json').write_text(json.dumps(manifest))
     return root, manifest
 
@@ -160,7 +162,7 @@ class IdentityTests(CacheIsolation):
     def test_git_identity_reads_head_branch_dirty_and_caches(self):
         root = self.base / 'checkout'
         answers = {'rev-parse': 'a' * 40, 'branch': 'main', 'status': ' M g1deploy/bundle.py'}
-        run = Mock(side_effect=lambda args, **kw: Mock(stdout=answers[args[3]] + '\n'))
+        run = Mock(side_effect=lambda args, **kw: Mock(stdout=answers[args[4]] + '\n'))
         with patch('studio.policies.subprocess.run', run):
             self.assertEqual(policies.git_identity(root),
                              {'path': str(root), 'head': 'a' * 40, 'branch': 'main', 'dirty': True})
@@ -171,7 +173,8 @@ class IdentityTests(CacheIsolation):
             self.assertFalse(policies.git_identity(root, max_age_s=0)['dirty'])
             self.assertGreater(run.call_count, calls)
         for args, kwargs in (c.args + (c.kwargs,) for c in run.call_args_list):
-            self.assertEqual(args[:3], ['git', '-C', str(root)])
+            # --no-optional-locks: a read-only reference checkout's index is never rewritten.
+            self.assertEqual(args[:4], ['git', '--no-optional-locks', '-C', str(root)])
             self.assertEqual(kwargs['timeout'], 3)
 
 
@@ -330,10 +333,24 @@ class BundleVerifyTests(CacheIsolation):
         (self.root / 'src/motion2scene_flow/injected.py').write_text('import os\n')
         self.assertIn('(1 entries)', pb.verify(self.root)[0])
 
-    def test_src_symlinks_are_not_hashed(self):
+    def test_src_symlinks_are_rejected(self):
+        # A symlink is not hashed, so it could smuggle unverified importable code: refuse it.
         (self.root / 'src/link.py').symlink_to(self.root / 'src/motion2scene_flow/__init__.py')
         self.assertNotIn('link.py', pb.tree_hashes(self.root / 'src'))
-        self.assertEqual(pb.verify(self.root), [])
+        problems = pb.verify(self.root)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('symlinks are not allowed', problems[0])
+
+    def test_unpinned_checkpoint_and_foreign_link_target(self):
+        teacher = Path(self.manifest['artifacts'][0]['path'])
+        (teacher.parent / 'model_extra.pt').write_bytes(b'unpinned')
+        self.assertTrue(any('unpinned checkpoint files' in p for p in pb.verify(self.root)))
+        (teacher.parent / 'model_extra.pt').unlink()
+        link = self.root / pb.ARTIFACT_LINKS[0]
+        foreign = self.root.parent / 'foreign.json'
+        foreign.write_text('{}')
+        link.unlink(); link.symlink_to(foreign)
+        self.assertTrue(any('points outside the pinned artifacts' in p for p in pb.verify(self.root)))
 
     def test_config_hash_mismatch(self):
         (self.root / 'config.json').write_text('{"arms": []}')
@@ -341,7 +358,7 @@ class BundleVerifyTests(CacheIsolation):
         self.assertEqual(pb.verify(self.root, deep=False), ['config.json hash mismatch'])
 
     def test_missing_and_mismatched_artifacts(self):
-        teacher, world_model = (Path(a['path']) for a in self.manifest['artifacts'])
+        teacher, world_model = (Path(a['path']) for a in self.manifest['artifacts'][:2])
         bridge = Path(self.manifest['humanoid_lfh']['files'][0]['path'])
         onnx = Path(self.manifest['deploy']['files'][0]['path'])
         teacher.unlink()

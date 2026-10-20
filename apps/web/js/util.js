@@ -70,10 +70,11 @@ export function outcomeChip(outcome, status) {
 export const outcomeColor = outcome =>
   ({ good: '#5fd39b', warn: '#efbb70', bad: '#f08c85', live: '#56d9d0' })[(OUTCOMES[outcome] ?? {}).tone] ?? '#8e9aa9';
 
-let token = '';
+let token = '', refreshToken = null;
 export const setToken = value => { token = value ?? ''; };
+export const setTokenRefresher = fn => { refreshToken = fn; };
 
-export async function request(path, body, { cache = 'no-store' } = {}) {
+export async function request(path, body, { cache = 'no-store', retried = false } = {}) {
   const options = { cache };
   if (body !== undefined) {
     Object.assign(options, {
@@ -85,6 +86,10 @@ export async function request(path, body, { cache = 'no-store' } = {}) {
   const response = await fetch(path, options);
   let data;
   try { data = await response.json(); } catch { data = {}; }
+  if (response.status === 403 && body !== undefined && !retried && refreshToken && /token/i.test(data.error ?? '')) {
+    await refreshToken();
+    return request(path, body, { cache, retried: true });
+  }
   if (!response.ok) throw new Error(data.error ?? `${path}: request failed (${response.status})`);
   return data;
 }

@@ -50,6 +50,9 @@ def verify(root, *, deep=True):
     except (OSError, ValueError) as error:
         return [f'manifest unavailable: {error}']
     problems = []
+    links = [str(q.relative_to(root)) for q in (root / 'src').rglob('*') if q.is_symlink()]
+    if links:
+        problems.append(f'symlinks are not allowed in the pinned source tree: {links[:3]}')
     if deep:
         current = tree_hashes(root / 'src')
         if current != manifest['src_files']:
@@ -65,7 +68,17 @@ def verify(root, *, deep=True):
             problems.append(f'missing {path}')
         elif path.stat().st_size != entry['bytes'] or (deep and sha256(path) != entry['sha256']):
             problems.append(f'hash mismatch {path}')
+    pinned = {Path(a['path']).resolve() for a in manifest['artifacts']}
     for rel in ARTIFACT_LINKS:
-        if not (root / rel).is_file():
+        link = root / rel
+        if not link.is_file():
             problems.append(f'missing planner artifact link {rel}')
+        elif link.resolve() not in pinned:
+            problems.append(f'planner artifact link {rel} points outside the pinned artifacts: {link.resolve()}')
+    # Checkpoint folders are globbed by Flow (e.g. member*.pt; a model.pt takes precedence):
+    # any unpinned checkpoint file there would be loaded without verification.
+    for folder in {Path(a['path']).parent for a in manifest['artifacts'] if a['path'].endswith('.pt')}:
+        extra = sorted(str(f) for f in folder.glob('*.pt') if f.resolve() not in pinned)
+        if extra:
+            problems.append(f'unpinned checkpoint files in {folder}: {extra[:3]}')
     return problems

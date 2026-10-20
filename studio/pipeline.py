@@ -15,6 +15,25 @@ MAX_FLOW_SAMPLES = 500
 PREVIEW_ELEMENTS = 16
 
 
+def jsonable(value, note=None):
+    """Strict-JSON copy: non-finite floats become None (e.g. infinite clearance on an empty map)."""
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            if note is not None:
+                note.append('inf' if value > 0 else '-inf' if value < 0 else 'nan')
+            return None
+        return value
+    if isinstance(value, (np.floating, np.integer)):
+        return jsonable(value.item(), note)
+    if isinstance(value, dict):
+        return {k: jsonable(v, note) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v, note) for v in value]
+    if isinstance(value, np.ndarray):
+        return jsonable(value.tolist(), note)
+    return value
+
+
 def array(value):
     if hasattr(value, 'detach'):
         value = value.detach().cpu().numpy()
@@ -125,7 +144,7 @@ class PipelineRecorder:
         row, self._plan = self._plan, None
         row['latency_ms'] = float(latency_ms)
         q = array(result['qpos'])
-        row['selected'] = {'rule': result['rule'], 'choice': result.get('choice'),
+        selected = {'rule': result['rule'], 'choice': result.get('choice'),
                            'clearance_m': result.get('clearance_m'), 'remaining_m': result.get('remaining_m'),
                            'chosen_clearance_m': result.get('chosen_clearance_m'),
                            'goal_world_xy': result.get('goal_world_xy'), 'qpos_shape': list(q.shape),
@@ -134,6 +153,11 @@ class PipelineRecorder:
                            'selection_revision': result.get('selection_revision'),
                            'goal_diagnostics': result.get('goal_diagnostics'),
                            'fallback_tie_changed': result.get('fallback_tie_changed')}
+        dropped = []
+        row['selected'] = jsonable(selected, dropped)
+        if dropped:
+            row['selected']['non_finite_note'] = (f'{len(dropped)} non-finite value(s) stored as null '
+                                                  '(e.g. infinite clearance: no obstacle in range)')
         self.flow_samples.append(row)
         self.telemetry_wall_s += time.perf_counter()-tic
 

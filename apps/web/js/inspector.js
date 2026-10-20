@@ -212,7 +212,7 @@ function renderPerception(state) {
     return;
   }
   $('perception-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">PERCEPTION / MAPPING</span><h3>Observed space</h3></div>
-    ${p?.available ? card('Final accumulated map', `<div class="map-stats"><div><strong>${(p.observed_cells?.support ?? p.support_points?.length ?? 0).toLocaleString()}</strong><span>support</span></div><div><strong>${(p.observed_cells?.ceiling ?? p.ceiling_points?.length ?? 0).toLocaleString()}</strong><span>ceiling</span></div></div>${fact('Resolution', num(p.resolution_m, 3, 'm'))}${fact('Unknown cells', p.unknown_cells?.toLocaleString() ?? 'Unavailable')}${notice('Final snapshot without capture time: it does not show perception at the cursor.', 'warning')}`, { evidence: 'estimated' })
+    ${p?.available ? card('Final accumulated map', `<div class="map-stats"><div><strong>${(p.observed_cells?.support ?? p.support_points?.length)?.toLocaleString() ?? '—'}</strong><span>support</span></div><div><strong>${(p.observed_cells?.ceiling ?? p.ceiling_points?.length)?.toLocaleString() ?? '—'}</strong><span>ceiling</span></div></div>${fact('Resolution', num(p.resolution_m, 3, 'm'))}${fact('Unknown cells', p.unknown_cells?.toLocaleString() ?? 'Unavailable')}${notice('Final snapshot without capture time: it does not show perception at the cursor.', 'warning')}`, { evidence: 'estimated' })
       : notice(p?.reason ?? 'No perception was recorded in this session.', 'neutral')}${unseen}`;
 }
 

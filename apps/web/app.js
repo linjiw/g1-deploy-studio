@@ -1,6 +1,6 @@
 // G1 Deploy Studio browser entry: causal replay, owned CPU rehearsals and
 // navigation arenas. The browser never talks to a robot, DDS or ZMQ.
-import { $, escape, num, vector, clock, finite, hasPose, hasReferencePose, request, setToken, on, emit,
+import { $, escape, num, vector, clock, finite, hasPose, hasReferencePose, request, setToken, setTokenRefresher, on, emit,
   updateView, updateViewSoon, EVIDENCE, chip, outcomeChip, yawOf } from './js/util.js';
 import * as scene from './js/scene.js';
 import { initTimeline, setTimelineSession, setTimelineCursor, refreshTimelineLive } from './js/timeline.js';
@@ -84,6 +84,8 @@ async function loadSession(id, { keepCamera = false } = {}) {
     syncLayers();
     $('scene-unavailable').hidden = hasState;
     updateModeBadge(); updatePolicyChip(); updateRecordingWarning();
+    $('privileged-badge').hidden = !m.privileged_map;
+    $('robot-view-label').textContent = robotViewLabel();
     $('playback-state').textContent = m.mode === 'simulation' ? 'LIVE' : 'PAUSED';
     setTimelineSession(session);
     renderFrame(true);
@@ -98,6 +100,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     $('session-picker').value = id;
     emit('session', { session, id });
     refreshSensors(state, true);
+    if (state.workspace === 'system') renderSystem().catch(() => {});
     return true;
   } catch (error) {
     if (generation === state.loadGeneration) { $('loading-overlay').hidden = true; showError(`Cannot open this recording: ${error.message}`); console.error(error); }
@@ -124,7 +127,8 @@ function updatePolicyChip() {
   const chipEl = $('policy-chip');
   if (!p) { chipEl.hidden = true; return; }
   chipEl.hidden = false;
-  chipEl.innerHTML = p.research_block ? `Policy <strong>${escape(p.research_block)}-RF</strong> @ ${escape(String(p.revision).slice(0, 7))}` : `Policy <strong>${escape(p.label ?? p.id)}</strong>`;
+  const block = p.research_block ? `${p.research_block}${/retrieval-free/i.test(p.variant ?? '') ? '-RF' : ''}` : null;
+  chipEl.innerHTML = block ? `Policy <strong>${escape(block)}</strong> @ ${escape(String(p.revision).slice(0, 7))}` : `Policy <strong>${escape(p.label ?? p.id)}</strong>`;
   chipEl.title = `${p.label ?? p.id}${p.config_sha256 ? ` · config ${p.config_sha256.slice(0, 12)}` : ''}${p.identity_sha256 ? ` · identity ${p.identity_sha256.slice(0, 12)}` : ''}`;
 }
 function updateRecordingWarning() {
@@ -152,7 +156,7 @@ function renderFrame(force = false) {
   scene.renderFrameScene(state);
   $('timeline').value = String(state.time);
   $('current-time').textContent = clock(state.time);
-  $('frame-counter').textContent = `tick ${index + 1} / ${state.session.frames.length}`;
+  $('frame-counter').textContent = `sample ${index + 1} / ${state.session.frames.length}`;
   setTimelineCursor(state.time);
   const now = performance.now();
   if (force || !state.playing || now - lastHud > 66) { lastHud = now; updateHud(sample); }
@@ -177,17 +181,19 @@ function updateHud(sample) {
   }
   const goal = meta.goal_xy, dist = goal ? Math.hypot(m.position[0] - goal[0], m.position[1] - goal[1]) : null;
   const v = f.post_action?.root_linear_velocity_w;
-  let speed = Array.isArray(v) ? Math.hypot(v[0], v[1]) : null;
+  let speed = Array.isArray(v) ? Math.hypot(v[0], v[1]) : null, speedLabel = 'Speed';
   if (speed === null && !state.frozenFrame) {
+    speedLabel = 'Speed (fd)';
     // Older recordings lack root velocity: finite difference of recorded poses (labelled in the tooltip).
     const frames = state.session.frames, i = state.frameIndex, a = frames[Math.max(0, i - 2)], b = frames[Math.min(frames.length - 1, i + 2)];
     if (hasPose(a) && hasPose(b) && b.time > a.time) speed = Math.hypot(b.position[0] - a.position[0], b.position[1] - a.position[1]) / (b.time - a.time);
   }
-  const q = m.quaternion_wxyz, tilt = Array.isArray(q) ? Math.acos(Math.min(1, Math.abs(1 - 2 * (q[1] ** 2 + q[2] ** 2)))) : null;
+  // Angle between body z and world z; 1 - 2(x² + y²) = cos(tilt), no folding beyond 90°.
+  const q = m.quaternion_wxyz, tilt = Array.isArray(q) ? Math.acos(Math.max(-1, Math.min(1, 1 - 2 * (q[1] ** 2 + q[2] ** 2)))) : null;
   const contact = h.contact_force_n, threshold = crit.obstacle_contact_threshold_n ?? 100;
   const exec = f.plan?.exec_check;
   $('hud').innerHTML = (goal ? hudItem('Goal distance', dist, 'm', dist <= (crit.goal_radius_m ?? 0.3) ? 'good' : '') : '')
-    + hudItem('Speed', speed, 'm/s') + hudItem('Tilt', tilt, 'rad', tilt > 0.5 ? 'warn' : '')
+    + hudItem(speedLabel, speed, 'm/s') + hudItem('Tilt', tilt, 'rad', tilt > 0.5 ? 'warn' : '')
     + hudItem('Contact', contact, 'N', contact > threshold ? 'bad' : contact > 0 ? 'warn' : '')
     + hudItem('Plan rule', f.plan?.rule ? f.plan.rule.replaceAll('_', ' ') : null, '')
     + (exec ? hudItem('Exec check · est.', `${exec.ok ? 'ok' : 'fail'} · ${num(exec.clearance_m * 100, 1)} cm`, '', exec.ok ? 'good' : 'warn') : '')
@@ -247,8 +253,14 @@ function syncLayers() {
   scene.applyLayers(state);
   if (state.session && state.frame) updateHud(perceptionAt(state.session, state.time));
 }
+function robotViewLabel() {
+  const mount = state.session?.perception?.frames?.[0]?.extrinsics?.[0];
+  return mount ? 'ROBOT VIEW · recorded MID-360 mount pose, facing pelvis heading · renders the simulated scene and map, not a camera sensor'
+    : 'ROBOT VIEW · approximate viewpoint 0.45 m above the pelvis (no mount extrinsics in this recording) · renders the simulated scene, not a camera sensor';
+}
 function setRobotView(enabled) {
   scene.setRobotView(enabled);
+  $('robot-view-label').textContent = robotViewLabel();
   if (enabled && state.session) scene.setMapSample(perceptionAt(state.session, state.time));
   $('robot-view').setAttribute('aria-pressed', String(enabled)); $('robot-view').classList.toggle('active', enabled);
   $('robot-view-label').hidden = !enabled;
@@ -265,7 +277,8 @@ async function attachLive(job) {
     cameraView('follow', true);
     if (inspector.tab !== 'health') selectTab('health', state);
   }
-  if (state.sessionId === job.id) appendLiveFrame({ ...job.latest, runtime: job.runtime });
+  // The job status from the gateway is authoritative: a killed worker cannot update its own latest.json.
+  if (state.sessionId === job.id) appendLiveFrame({ ...job.latest, status: ['completed', 'failed', 'cancelled'].includes(job.status) ? job.status : job.latest.status, runtime: job.runtime });
 }
 function appendLiveFrame(latest) {
   const frame = latest.frame;
@@ -310,11 +323,22 @@ on('rehearse:job', job => { if (state.workspace === 'rehearse' || rh.attached ==
 on('rehearse:started', () => { rh.attached = null; });
 on('rehearse:finished', async job => {
   await refreshSessionList(state.sessionId);
-  if (job.result_session_id && rh.attached === job.id) {
+  const viewing = rh.attached === job.id && state.sessionId === job.id;
+  if (viewing && job.result_session_id) {
     const keepTime = state.time;
     await loadSession(job.result_session_id, { keepCamera: true });
     seek(keepTime);
+  } else if (viewing) {
+    // Cancelled or killed without a recording: keep the partial live samples, clearly terminal.
+    state.liveStatus = job.status;
+    Object.assign(state.session.metadata, { termination_reason: job.error ?? `Run ${job.status}` });
+    $('playback-state').textContent = `RUN ${String(job.status).toUpperCase()}`;
+    $('mode-badge').textContent = `RUN ${String(job.status).toUpperCase()} · PARTIAL LIVE SAMPLES`;
+    $('mode-badge').classList.remove('sim');
+    $('recording-warning').hidden = false;
+    $('recording-warning').textContent = `RUN ${String(job.status).toUpperCase()} · ${job.error ?? 'No recording was saved.'} Showing only the live samples received; nothing after them is inferred.`;
   }
+  if (rh.attached === job.id) rh.attached = null;
   if (runs.table.length) refreshRuns().catch(() => {});
 });
 on('rehearse:suite-finished', () => { refreshRuns().catch(() => {}); refreshSessionList(); });
@@ -362,6 +386,8 @@ async function ensureCatalog() {
   if (!state.catalog) { state.catalog = await request('/api/workbench'); setToken(state.catalog.csrf_token); }
   return state.catalog;
 }
+// After a gateway restart the per-process POST token changes: refresh it once and retry.
+setTokenRefresher(async () => { const fresh = await request('/api/workbench'); setToken(fresh.csrf_token); state.catalog = fresh; });
 
 async function setWorkspace(name) {
   if (!WORKSPACES[name]) name = 'replay';
@@ -375,6 +401,7 @@ async function setWorkspace(name) {
   sn.visible = name === 'sensors';
   document.body.classList.toggle('no-inspector', ['arena', 'runs', 'system'].includes(name));
   if (previous === 'runs' && name !== 'runs') scene.setComparison([]);
+  if (previous === 'arena' && name !== 'arena' && arena.preview3d) { arena.preview3d = false; scene.setArenaPreview(null); }
   if (name !== 'rehearse' && name !== 'arena' && !rh.attached && scene.view.arenaGroup.visible) {
     scene.setArenaPreview(null);
     if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
@@ -448,7 +475,7 @@ function initInspectorResize() {
 
 function onKey(e) {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (state.workspace === 'arena' && !arena.preview3d && !['?', ' '].includes(e.key)) return;
+  if (state.workspace === 'arena' && e.key !== '?') return;  // the arena editor owns the keyboard
   const k = e.key;
   if (k === ' ') { e.preventDefault(); $('play').click(); }
   else if (k === 'ArrowRight' || k === 'ArrowLeft') { e.preventDefault(); const dir = k === 'ArrowRight' ? 1 : -1; if (e.shiftKey) { setPlaying(false); seek(state.time + dir); } else step(dir); }
@@ -463,7 +490,7 @@ function onKey(e) {
 }
 
 function bindChrome() {
-  $('session-picker').addEventListener('change', e => loadSession(e.target.value));
+  $('session-picker').addEventListener('change', e => { if (rh.attached && rh.attached !== e.target.value) rh.attached = null; loadSession(e.target.value); });
   $('play').addEventListener('click', () => { if (!state.session) return; if (state.time >= state.session.metadata.duration_s) seek(state.session.frames[0].time); setPlaying(!state.playing); });
   $('restart').addEventListener('click', () => { if (state.session) { setPlaying(false); seek(state.session.frames[0].time); } });
   $('step-back').addEventListener('click', () => step(-1));

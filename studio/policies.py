@@ -23,6 +23,10 @@ DEPLOY_ROOT = Path('/home/linjiw/code/g1-student-deploy')
 FLOW_ROOT = Path('/home/linjiw/flow')
 BEST_MODEL = FLOW_ROOT / 'research/BEST_MODEL.md'
 DEFAULT_POLICY = 'flow-bundle-20261008'
+STUDIO = Path(__file__).resolve().parent
+# Studio code that executes the policy is part of its identity (a changed adapter = a different run).
+WORKER_SOURCES = {'deploy-bundle': ['policy_worker.py', 'pipeline.py', 'replay.py'],
+                  'flow-callback': ['flow_policy_worker.py', 'policy_worker.py', 'pipeline.py', 'replay.py', 'policy_bundle.py']}
 
 _hash_cache: dict = {}
 _hash_lock = threading.Lock()
@@ -62,7 +66,8 @@ def git_identity(root, max_age_s=5.0):
 
     def git(*args):
         try:
-            return subprocess.run(['git', '-C', str(root), *args], capture_output=True, text=True,
+            # --no-optional-locks: never take or rewrite the index lock of a read-only reference repo.
+            return subprocess.run(['git', '--no-optional-locks', '-C', str(root), *args], capture_output=True, text=True,
                                   timeout=3, check=True).stdout.strip()
         except Exception:  # missing git, timeout, or a test double: record unknown, never guess
             return None
@@ -128,7 +133,10 @@ def _bundle_profile():
         'artifacts': [DEPLOY_ROOT / p for p in (
             'bundle/MANIFEST.json', 'bundle/config/student.json',
             'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt', 'bundle/sonic/sonic_release_g1.onnx',
-            'sim/lockstep.py', 'g1deploy/bundle.py')],
+            'sim/lockstep.py', 'sim/episode.py', 'g1deploy/bundle.py', 'g1deploy/route_compat.py',
+            'g1deploy/planner_compat.py', 'g1deploy/goal_guard.py', 'g1deploy/scoring.py', 'g1deploy/sonic.py',
+            'g1deploy/contract.py', 'sim/assets/g1_29dof.xml') if (DEPLOY_ROOT / p).exists()]
+            + [STUDIO / f for f in WORKER_SOURCES['deploy-bundle']],
         'repositories': [DEPLOY_ROOT],
         'limits': {'candidates': [1, 16], 'ode_steps': [1, 10], 'duration_s': [1, 10], 'wall_s': 180},
         'default_planner': {'candidates': 4, 'ode_steps': 6},
@@ -170,13 +178,17 @@ def _wx_profile(root, load_manifest, verify):
         'runtime': {'kind': 'cpu-flow-callback', 'source': 'motion2scene_flow.closed_loop.callback (pinned snapshot)',
                     'physics': 'MuJoCo · g1_29dof rubber hands', 'device': 'cpu'},
         'privileged_map': True,
-        'artifacts': [Path(root / 'manifest.json'), Path(root / 'config.json')] + [Path(a['path']) for a in manifest['artifacts']],
+        'artifacts': [Path(root / 'manifest.json'), Path(root / 'config.json')] + [Path(a['path']) for a in manifest['artifacts']]
+                     + [Path(f['path']) for f in manifest['deploy']['files'] + manifest['humanoid_lfh']['files']]
+                     + [STUDIO / f for f in WORKER_SOURCES['flow-callback']],
         'repositories': [DEPLOY_ROOT],
         'available': not quick, 'missing': quick,
         'limits': {'candidates': [1, 16], 'ode_steps': [1, 10], 'duration_s': [1, 10], 'wall_s': 480},
         'default_planner': {'candidates': 8, 'ode_steps': 6},
         'limitations': list(manifest['caveats']) + [
-            'Default Studio budget K8/ODE6 differs from the evaluated 16/10 (≈3–4 s per CPU replan at 16/10 on this host).'],
+            'Default Studio budget K8/ODE6 differs from the evaluated 16/10 (≈3–4 s per CPU replan at 16/10 on this host).',
+            'Isaac evaluation adds SONIC proprioceptive noise (native_proprio_noise_scale=1.0); Studio MuJoCo has none, so seeds vary planner sampling only.',
+            'Obstacle contact is the largest single MuJoCo contact normal per substep; Isaac sums force per robot-body/obstacle pair, so multi-point contacts read lower here.'],
     }
 
 
@@ -224,7 +236,7 @@ def identity(profile):
     repos = [git_identity(r) for r in profile.get('repositories', [])]
     pinned = hashlib.sha256(json.dumps({'id': profile['id'],
                                         'artifacts': [(a['path'], a['sha256']) for a in artifacts],
-                                        'repositories': [(r['path'], r['head']) for r in repos],
+                                        'repositories': [(r['path'], r['head'], r['dirty']) for r in repos],
                                         'config_sha256': profile.get('config_sha256')},
                                        sort_keys=True).encode()).hexdigest()
     return {'policy_id': profile['id'], 'artifacts': artifacts, 'repositories': repos,

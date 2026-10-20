@@ -33,8 +33,11 @@ Restart=on-failure
 RestartSec=3
 TimeoutStopSec=30
 # The owned CPU policy worker is a child in this cgroup; bound both together.
+# OOMPolicy=continue: if the kernel OOM-kills the worker, the gateway keeps
+# serving and records the run as killed instead of the whole unit stopping.
 MemoryHigh=4G
 MemoryMax=5G
+OOMPolicy=continue
 Nice=5
 
 [Install]
@@ -43,9 +46,25 @@ EOF
   systemctl --user daemon-reload
 }
 
+active_runs() {
+  # Owned runs/suites in progress on the served gateway (empty when idle or down).
+  curl -fsS "http://127.0.0.1:$PORT/api/jobs" 2>/dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin); print(" ".join(j["id"] for j in d.get("jobs",[]) if j.get("status") in ("starting","running","cancelling")))' 2>/dev/null
+  curl -fsS "http://127.0.0.1:$PORT/api/suites" 2>/dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin); print(" ".join(s["id"] for s in d.get("suites",[]) if s.get("status") in ("queued","running","cancelling")))' 2>/dev/null
+}
+
 release() {
-  local rev="${1:-HEAD}" commit
+  local rev="${1:-HEAD}" commit busy
   commit="$(git -C "$REPO" rev-parse --verify "$rev^{commit}")"
+  busy="$(active_runs | xargs)"
+  if [[ -n "$busy" && "${FORCE:-0}" != 1 ]]; then
+    echo "Refusing to release: active runs/suites would be killed: $busy" >&2
+    echo "Wait for them to finish, cancel them in Rehearse, or rerun with FORCE=1." >&2
+    return 3
+  fi
+  # Stop before switching files so the old gateway never imports code from the new tree.
+  if [[ -f "$UNIT_FILE" ]]; then systemctl --user stop "$UNIT"; fi
   if [[ -d "$RELEASE/.git" || -f "$RELEASE/.git" ]]; then
     git -C "$RELEASE" checkout --quiet --detach "$commit"
   else
@@ -56,7 +75,7 @@ release() {
   ln -sfn "$REPO/node_modules" "$RELEASE/node_modules"
   printf '%s\n' "$commit" >"$DATA/release.commit"
   echo "Release worktree $RELEASE at $commit"
-  if [[ -f "$UNIT_FILE" ]]; then systemctl --user restart "$UNIT"; fi
+  if [[ -f "$UNIT_FILE" ]]; then systemctl --user daemon-reload; systemctl --user start "$UNIT"; fi
 }
 
 wait_ready() {
@@ -72,7 +91,7 @@ wait_ready() {
 }
 
 case "${1:-status}" in
-  release) release "${2:-HEAD}"; [[ -f "$UNIT_FILE" ]] && wait_ready ;;
+  release) release "${2:-HEAD}" && { [[ -f "$UNIT_FILE" ]] && wait_ready || true; } ;;
   install)
     [[ -e "$RELEASE/.git" ]] || release HEAD
     write_unit
