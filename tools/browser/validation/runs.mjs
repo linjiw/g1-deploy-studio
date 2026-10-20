@@ -17,20 +17,21 @@ const rowIds = () => page.locator('[data-run-select]').evaluateAll(x => x.map(i 
 
 // Independent re-implementation of the robustness grouping (runs.js report) for cross-checking.
 const wilson = (k, n, z = 1.96) => { if (!n) return [null, null]; const p = k / n, d = 1 + z * z / n, c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d; return [Math.max(0, c - h), Math.min(1, c + h)]; };
-// v0.3 semantics (runs.js report): one trial per scenario id (latest start wins); error runs
-// (runtime_error outcome or failed status without a scorer outcome) are listed, not counted.
+// Report semantics (runs.js report, after N5): error runs (runtime_error outcome or failed status without a
+// scorer outcome) are set aside and listed; then one trial per scenario id among scored runs (latest start
+// wins). Groups also split by actuator profile (runs before profiles = 'source').
 const isError = r => !['goal_completion', 'timeout', 'obstacle_collision', 'fall'].includes(r.outcome) && (r.outcome === 'runtime_error' || r.status === 'failed');
 function groups(rows) {
   const g = new Map();
   for (const r of rows.filter(x => x.outcome || x.status === 'failed')) {
-    const key = `${r.policy_id} · ${r.criterion ?? 'arrive_hold'} · lat ${r.latency?.ms ?? 0}${r.latency?.anchor === 'predict' ? 'p' : ''} · K${r.planner?.candidates}/ODE${r.planner?.ode_steps}`;
+    const key = `${r.policy_id} · ${r.criterion ?? 'arrive_hold'} · lat ${r.latency?.ms ?? 0}${r.latency?.anchor === 'predict' ? 'p' : ''} · K${r.planner?.candidates}/ODE${r.planner?.ode_steps} · ${r.actuators ?? 'source'}`;
     if (!g.has(key)) g.set(key, []); g.get(key).push(r);
   }
   return [...g.entries()].map(([key, all]) => {
-    const byScenario = {};
-    for (const r of [...all].sort((a, b) => (a.started_unix_s ?? 0) - (b.started_unix_s ?? 0))) byScenario[r.scenario_id ?? r.id] = r;
-    const unique = Object.values(byScenario), list = unique.filter(r => !isError(r));
-    return { key, n: list.length, repeats: all.length - unique.length, errors: unique.length - list.length, errorIds: unique.filter(isError).map(r => r.id),
+    const errorsAll = all.filter(isError), scored = all.filter(r => !isError(r)), byScenario = {};
+    for (const r of [...scored].sort((a, b) => (a.started_unix_s ?? 0) - (b.started_unix_s ?? 0))) byScenario[r.scenario_id ?? r.id] = r;
+    const list = Object.values(byScenario);
+    return { key, n: list.length, repeats: scored.length - list.length, errors: errorsAll.length, errorIds: errorsAll.map(r => r.id),
       goals: list.filter(r => r.outcome === 'goal_completion').length, reach: list.filter(r => r.derived?.reach_post_hoc?.reached).length, contact: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length };
   });
 }

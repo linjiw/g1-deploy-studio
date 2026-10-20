@@ -114,7 +114,9 @@ await R.check('B.torque', 'Health torque card present for a new run', async () =
   return { summary, rows, shot };
 });
 
-await R.check('4.6', 'Latency select + anchor enabling rules (anchor disabled for WX and for no latency)', async () => {
+// Since predictive anchoring for the Flow callback (1944abe), the anchor is selectable for WX whenever a
+// latency is set, and a chosen 'predict' persists across a latency change.
+await R.check('4.6', 'Latency select + anchor enabling rules (anchor disabled without latency; WX supports predict)', async () => {
   await rehearse();
   await policy(BUNDLE); await page.selectOption('#rh-latency', '0'); await sleep(150);
   const a = await page.locator('#rh-anchor').isDisabled();
@@ -126,7 +128,7 @@ await R.check('4.6', 'Latency select + anchor enabling rules (anchor disabled fo
   await page.selectOption('#rh-latency', '160'); await sleep(150);
   const anchorAfter = (await rh()).settings.anchor;
   await policy(BUNDLE); await page.selectOption('#rh-anchor', 'measured'); await page.selectOption('#rh-latency', '0');
-  assert(a && !b && l2 && c && wxText && anchorAfter === 'measured', JSON.stringify({ bundle0: a, bundle200: b, l2, wx: c, wxText, anchorAfter }));
+  assert(a && !b && l2 && !c && wxText && anchorAfter === 'predict', JSON.stringify({ bundle0: a, bundle200: b, l2, wx: c, wxText, anchorAfter }));
   return { bundle0Disabled: a, bundle200Disabled: b, wxDisabled: c, wxAnchorAfterLatency: anchorAfter };
 });
 
@@ -144,7 +146,7 @@ await R.check('B.wx-empty', 'WX-RF run on an EMPTY map (flat-ground), 2 s, lat 2
   const done = await S();
   const shot = await R.shot('result-wx-empty');
   const full = (await api(page, `/api/jobs?id=${id}`)).body;
-  assert(anchorDisabled, 'anchor disabled for WX');
+  assert(!anchorDisabled, 'anchor selectable for WX at 200 ms (predictive anchoring)');
   assert(job.status === 'completed' && full.result_session_id === id, `WX on flat-ground ended ${job.status}: ${job.error ?? ''} ${(full.log_tail ?? '').slice(-400)}`);
   assert(full.scenario.latency.ms === 200 && full.scenario.latency.anchor === 'measured', `latency ${JSON.stringify(full.scenario.latency)}`);
   return { id, map: full.scenario.map_id, boxes: (await api(page, '/api/map?id=flat-ground')).body.boxes.length, liveBadge: live.badge, done, wall_s: timing.wx2s_wall_s, outcome: full.summary?.report?.outcome ?? full.summary?.outcome, shot };
@@ -188,7 +190,7 @@ await R.check('B.robot-view', 'Robot-view label says approximate viewpoint for a
 await R.check('B.system', 'System workspace for a WX run: LiDAR/perception/route edges not used; privileged label', async () => {
   const id = jobs.wx200; if (!id) return R.blocked('R2 did not run');
   await page.click('#workspace-system'); await page.waitForSelector('#system-stage .sys-edge'); await sleep(500);
-  const edges = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#system-stage .sys-edge')].map(g => [g.dataset.edge, { opacity: g.getAttribute('opacity'), dash: g.querySelector('line').getAttribute('stroke-dasharray'), title: g.querySelector('title').textContent }])));
+  const edges = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#system-stage .sys-edge')].map(g => [g.dataset.edge, { opacity: g.getAttribute('opacity'), dash: g.querySelector('polyline, line').getAttribute('stroke-dasharray'), title: g.querySelector('title').textContent }])));
   const text = await page.locator('#system-panel, #workbench-panel, .system-panel').first().textContent().catch(() => '');
   const panel = await page.evaluate(() => document.body.innerText.match(/PRIVILEGED block[^\n]*/)?.[0] ?? null);
   const badges = await page.locator('#system-stage .sys-node-badge').allTextContents();
@@ -206,7 +208,7 @@ await R.check('B.system', 'System workspace for a WX run: LiDAR/perception/route
 await R.check('B.graph', 'Graph tab for a WX run: LiDAR/perception/route edges not used; privileged label', async () => {
   const id = jobs.wx200; if (!id) return R.blocked('R2 did not run');
   await page.click('#tab-graph'); await sleep(400);
-  const edges = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#graph-map .sys-edge')].map(g => [g.dataset.edge, { opacity: g.getAttribute('opacity'), dash: g.querySelector('line').getAttribute('stroke-dasharray'), title: g.querySelector('title').textContent }])));
+  const edges = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#graph-map .sys-edge')].map(g => [g.dataset.edge, { opacity: g.getAttribute('opacity'), dash: g.querySelector('polyline, line').getAttribute('stroke-dasharray'), title: g.querySelector('title').textContent }])));
   const intro = await page.locator('#graph-content .tab-intro').textContent();
   const shot = await R.shot('graph-wx');
   const unused = ['lidar-perception', 'state-perception', 'perception-route'];

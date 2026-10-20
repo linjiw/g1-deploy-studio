@@ -579,9 +579,9 @@ await R.check('7.1', 'System: node click updates details', async () => {
 });
 
 await R.check('7.2', 'System: deploy-topology toggle', async () => {
-  const h0 = await page.locator('#system-stage h3').first().textContent(), dash0 = await page.locator('#system-stage .sys-edge line[stroke-dasharray="7 5"]').count();
+  const h0 = await page.locator('#system-stage h3').first().textContent(), dash0 = await page.locator('#system-stage .sys-edge polyline[stroke-dasharray="7 5"]').count();
   await page.check('#system-deploy'); await sleep(300);
-  const h1 = await page.locator('#system-stage h3').first().textContent(), dash1 = await page.locator('#system-stage .sys-edge line[stroke-dasharray="7 5"]').count();
+  const h1 = await page.locator('#system-stage h3').first().textContent(), dash1 = await page.locator('#system-stage .sys-edge polyline[stroke-dasharray="7 5"]').count();
   const shot = await R.shot('system-deploy');
   await page.uncheck('#system-deploy'); await sleep(300);
   const h2 = await page.locator('#system-stage h3').first().textContent();
