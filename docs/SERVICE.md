@@ -10,12 +10,13 @@ On 2026-10-19 nothing listened on 8790. The last log, `~/research-data/g1-deploy
 
 - binds **127.0.0.1:8790 and [::1]:8790 only**; the gateway refuses non-loopback binds;
 - serves a **committed revision** from a separate release worktree, `~/research-data/g1-deploy-studio/release`, so in-progress edits never reach the user's port (review CODE-1). The served commit is shown in the status bar and at `/api/version`;
-- restarts on failure, and bounds the gateway plus its owned CPU worker to `MemoryHigh=4G` / `MemoryMax=5G`;
+- restarts on failure, and bounds the gateway plus its owned CPU worker to `MemoryHigh=4G` / `MemoryMax=5G`. With `OOMPolicy=continue`, an OOM-killed worker is recorded as killed and the gateway keeps serving;
 - logs to the user journal (polling and mesh requests are not logged).
 
 ```bash
 tools/studio_service.sh install         # once: release worktree + unit, enabled at login/boot
-tools/studio_service.sh release [REV]   # serve a new commit (default HEAD) and restart
+tools/studio_service.sh release [REV]   # serve a new commit (default HEAD); refuses while runs/suites are active
+FORCE=1 tools/studio_service.sh release # override: kills in-flight runs (they are recorded as interrupted)
 tools/studio_service.sh status          # unit state and served commit
 tools/studio_service.sh logs 100
 tools/studio_service.sh restart | stop | start
