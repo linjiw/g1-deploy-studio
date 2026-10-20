@@ -13,24 +13,24 @@
 | Robot contract | A source-verified Unitree G1 contract with 15 recorded source discrepancies. |
 | Delivery | Gzip, ETag, content-addressed meshes, bounded caches. |
 
-**Next steps toward read-only physical G1 integration.** Each step needs the owner approval noted.
+**Next steps toward read-only physical G1 integration.** Status on 2026-10-20 after the research round:
 
-1. **Resolve the high-severity contract discrepancies** (`docs/ROBOT_CONTRACT.md`):
-   - hip effort limit: 139 N·m in training vs 88 N·m in the MuJoCo models and simulator clip;
-   - the runner velocity abort is one-sided and disabled in simulation;
-   - DDS domain 0 everywhere.
-
-   This needs the runner and simulator owners.
-2. **Isolated real-time rehearsal (L3).**
-   - Upstream (owner approval): add a non-zero `--dds-domain` to the SONIC runner, `robot_sim` and `node.py`, failing closed on domain 0.
-   - Studio: add a `realtime-rehearsal` profile that launches only that loopback/non-zero-domain chain.
-   - Studio: add a subscription-only collector for `g1_debug`/`robot_config` (ZMQ :5557) and `rt/lowstate`/`rt/lowcmd` readers on that domain. Edges in the System map then turn *observed*.
-3. **Latency-faithful lockstep (L2).** Apply each plan after a modelled or measured planner latency (`fixed:<ms>` or the measured distribution), so CPU rehearsals expose stale-plan effects. This needs a Studio-side wrapper of the lockstep and callback loops; no reference repository changes.
-4. **WX in perception.** WX-RF is privileged (exact boxes). A deployable WX needs the Flow side's LiDAR-conditioned block (round ST, not adopted). When Flow adopts one, pin it as a new profile. The arena, suite and runs workflow is unchanged.
+1. **Contract discrepancies** (`docs/ROBOT_CONTRACT.md`):
+   - *Hip effort limit*: resolved by research. The limit depends on `LowState.mode_machine`. Studio rehearses with actuator profiles (`g1-current` 139/139/88 by default, `g1-rev1` 88/139/88, `source` 88/88/88) and counts substeps over every reference.
+   - Still open: the one-sided runner velocity abort, which is disabled in simulation, and ankle/waist roll-pitch at 35 vs 50 N·m.
+2. **Isolated real-time rehearsal (L3)**: decided and ready. The unchanged chain runs inside a loopback-only user+net+PID namespace (domain 0 cannot leave it).
+   - `tools/l3_rehearsal.sh` is reviewed and its dry run passes. The first real launch waits for an operator: this session's permission policy blocked it as a deployment action.
+   - Next: run it on Studio-authored tasks, import `rehearse/` and `capture.jsonl` into replay, and compare with L1/L2 at the deployed budget (K16/ODE10).
+   - An upstream `--dds-domain` remains a defence-in-depth follow-up.
+3. **Latency (L2)**: done. A delayed-execution wrapper with *measured* or *predict* anchoring for both profiles.
+   - WX at 200 ms goes from 1/12 with the measured anchor to 11/12 with predict.
+   - Remaining: the prediction is optimistic, because SONIC lags the plan. Predicting the executed state, for example with the WM-v2 execution model, is a Flow research decision.
+4. **WX in perception.** WX-RF is privileged: it plans from the exact boxes. A deployable WX needs the Flow side's LiDAR-conditioned block (round ST, not adopted). When Flow adopts one, pin it as a new profile; the arena, suite and runs workflow does not change.
 5. **Read-only robot observation (M5)** after a safety review:
    - a robot-side collector with allowlisted readers;
    - Studio's live mode fed from it, with observe-only banners and stream ages shown against the source thresholds already in the contract;
-   - physical E-stop owned by the operator.
+   - the physical E-stop owned by the operator;
+   - the first passive reading must include `mode_machine`, which selects the actuator profile.
 
 
 ## Current implementation status (2026-10-15)
@@ -39,7 +39,7 @@
 
 - M1 implemented: actual recorded lockstep SONIC replay, matching articulated model, reference ghost/window, synchronized timeline, named-joint errors, planner latency, source hashes, and MCAP roundtrip. A second recording exercises the historical separated C++/DDS process chain with explicit missing-reference limitations.
 - Parts of M2/M3 implemented: bounded loopback-only ZMQ capture and actual-source binary decoders; real recorded values transmitted/recorded and opened in the browser with observed fresh → stale → disconnected transitions; final map snapshot, configured topology and unavailable-metric handling.
-- New full C++/DDS rehearsal blocked: source hard-codes domain 0, and NVML reports driver/library mismatch. No upstream edits or new full controller run performed. Runtime ROS/DDS discovery, synchronized raw LiDAR history and new full deployment captures remain open.
+- Full C++/DDS rehearsal: superseded on 2026-10-20 by the namespace-isolated launcher (item 2 above). No upstream edits were made, and no new full controller run has been made yet. Runtime ROS/DDS discovery, synchronized raw LiDAR history and new full deployment captures remain open.
 - Live read-only bring-up is documented, not enabled or hardware validated.
 
 See `docs/ACCEPTANCE.md` for executable evidence. The original sequence below remains a roadmap, not a claim that all milestones passed.

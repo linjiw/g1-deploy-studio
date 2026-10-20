@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920, height=1080">
+<title>G1 Deploy Studio · presentation deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=block" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0f15; --panel: #121821; --panel-2: #0f141c; --raise: #18212c; --border: #26313e; --border-strong: #3a4a5c;
+    --text: #e6ebf0; --muted: #a3afbd; --dim: #8794a6; --faint: #5f6b79;
+    --cyan: #56d9d0; --amber: #efbb70; --bone: #e6dfcf; --red: #f08c85; --green: #5fd39b; --purple: #c4a0d9; --blue: #7fb4ff;
+    --font: Inter, "DejaVu Sans", sans-serif; --mono: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font); }
+  body { background: radial-gradient(1200px 700px at 78% 18%, #12202a 0%, transparent 60%), radial-gradient(900px 600px at 10% 95%, #1a1622 0%, transparent 55%), var(--bg); }
+  section { position: absolute; inset: 0; padding: 92px 120px; display: none; }
+  section.on { display: block; }
+  .grid-bg { position: absolute; inset: 0; background-image: linear-gradient(#ffffff06 1px, transparent 1px), linear-gradient(90deg, #ffffff06 1px, transparent 1px); background-size: 48px 48px; mask-image: radial-gradient(ellipse at center, #000 30%, transparent 80%); }
+  .eyebrow { font-family: var(--mono); font-size: 22px; letter-spacing: .18em; color: var(--cyan); text-transform: uppercase; }
+  h1 { font-size: 104px; line-height: 1.02; margin: 18px 0 0; font-weight: 800; letter-spacing: -0.035em; }
+  h2 { font-size: 64px; line-height: 1.08; margin: 14px 0 0; font-weight: 750; letter-spacing: -0.025em; }
+  .lede { font-size: 34px; line-height: 1.4; color: var(--muted); max-width: 1380px; margin-top: 26px; }
+  .accent { color: var(--cyan); } .amber { color: var(--amber); } .bone { color: var(--bone); } .red { color: var(--red); } .green { color: var(--green); }
+  .mono { font-family: var(--mono); }
+  .chipline { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 40px; }
+  .chip { font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: .08em; padding: 9px 16px; border-radius: 8px; border: 1.5px solid currentColor; }
+  .card { background: #121821e6; border: 1.5px solid var(--border); border-radius: 18px; padding: 30px 34px; }
+  .card h3 { margin: 0 0 12px; font-size: 34px; font-weight: 700; letter-spacing: -0.01em; }
+  .card p { margin: 0; font-size: 25px; line-height: 1.45; color: var(--muted); }
+  .cards4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; margin-top: 54px; }
+  .num { font-family: var(--mono); font-size: 22px; color: var(--faint); margin-bottom: 10px; display: block; }
+  svg text { font-family: var(--font); }
+  .footer { position: absolute; left: 120px; right: 120px; bottom: 54px; display: flex; justify-content: space-between; font-family: var(--mono); font-size: 18px; color: var(--faint); letter-spacing: .06em; }
+  .chapter { display: flex; flex-direction: column; justify-content: center; height: 100%; }
+  .chapter .big { font-family: var(--mono); font-size: 200px; font-weight: 600; color: #1d2833; line-height: 1; letter-spacing: -0.04em; }
+  .chapter h2 { font-size: 96px; }
+  .bar-label { font-size: 22px; fill: var(--muted); }
+  .axis { stroke: var(--border-strong); stroke-width: 1.5; }
+  .stat { font-size: 84px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+  .stat small { font-size: 30px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+  .statcap { font-size: 24px; color: var(--muted); margin-top: 10px; line-height: 1.35; }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 18px; padding: 4px 10px; border-radius: 6px; border: 1.5px solid currentColor; letter-spacing: .06em; }
+  table.t { border-collapse: collapse; font-size: 24px; width: 100%; }
+  table.t th { text-align: left; color: var(--dim); font-weight: 600; font-size: 19px; letter-spacing: .08em; text-transform: uppercase; padding: 10px 14px; border-bottom: 1.5px solid var(--border-strong); }
+  table.t td { padding: 13px 14px; border-bottom: 1px solid var(--border); }
+  table.t td.n { font-family: var(--mono); text-align: right; }
+</style>
+</head>
+<body>
+<div class="grid-bg"></div>
+<svg id="global-defs" width="0" height="0" style="position:absolute"></svg>
+<div id="slides"></div>
+<script src="deck-data.js"></script>
+<script>
+// ---------------------------------------------------------------- animation engine
+// Every slide is rendered as a pure function of a virtual time t (seconds), so frame capture is
+// deterministic: show(id) then setT(t). Elements opt in with data-in (start s), data-d (duration s)
+// and data-a (fade | rise | left | draw | grow | count | scale).
+const ease = p => p < 0 ? 0 : p > 1 ? 1 : 1 - Math.pow(1 - p, 3);
+const D = window.DECK_DATA || {};
+let current = null;
+function show(id) {
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('on', s.id === id));
+  current = document.getElementById(id);
+  current.querySelectorAll('path[data-a="draw"], line[data-a="draw"], polyline[data-a="draw"], rect[data-a="draw"]').forEach(el => {
+    const L = el.getTotalLength ? el.getTotalLength() : 1000; el.style.strokeDasharray = `${L}`; el.dataset.len = L;
+  });
+}
+function setT(t) {
+  if (!current) return;
+  current.querySelectorAll('[data-in]').forEach(el => {
+    const t0 = Number(el.dataset.in), d = Number(el.dataset.d || 0.6), p = ease((t - t0) / d), a = el.dataset.a || 'fade';
+    const out = el.dataset.out !== undefined ? ease((t - Number(el.dataset.out)) / 0.5) : 0;
+    const o = p * (1 - out);
+    if (a === 'draw') { el.style.strokeDashoffset = `${Number(el.dataset.len) * (1 - p)}`; el.style.opacity = p > 0 ? 1 - out : 0; return; }
+    if (a === 'grow') { el.style.transformOrigin = el.dataset.origin || 'left center'; el.style.transformBox = 'fill-box'; el.style.transform = `scaleX(${p})`; el.style.opacity = p > 0 ? 1 : 0; return; }
+    if (a === 'growy') { el.style.transformOrigin = 'center bottom'; el.style.transformBox = 'fill-box'; el.style.transform = `scaleY(${p})`; el.style.opacity = p > 0 ? 1 : 0; return; }
+    if (a === 'count') { const v = Number(el.dataset.v), dec = Number(el.dataset.dec || 0); el.textContent = (v * p).toFixed(dec) + (el.dataset.suffix || ''); el.style.opacity = p > 0 ? 1 : 0; return; }
+    el.style.opacity = o;
+    const k = 1 - p;
+    el.style.transform = a === 'rise' ? `translateY(${28 * k}px)` : a === 'left' ? `translateX(${-36 * k}px)` : a === 'scale' ? `scale(${0.92 + 0.08 * p})` : '';
+  });
+  // Pulses travelling along connectors: <circle data-path="#id" data-pin="t0" data-period="s">
+  current.querySelectorAll('circle[data-path]').forEach(c => {
+    const path = current.querySelector(c.dataset.path); if (!path) return;
+    const t0 = Number(c.dataset.pin || 0), per = Number(c.dataset.period || 1.6), off = Number(c.dataset.off || 0);
+    if (t < t0) { c.style.opacity = 0; return; }
+    const f = (((t - t0) / per) + off) % 1, L = path.getTotalLength(), pt = path.getPointAtLength(f * L);
+    c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y); c.style.opacity = Math.sin(Math.PI * f);
+  });
+}
+window.show = show; window.setT = setT;
+
+// ---------------------------------------------------------------- helpers to build slides
+const S = [];
+const slide = (id, html) => S.push(`<section id="${id}">${html}</section>`);
+const footer = (left, right = 'G1 DEPLOY STUDIO') => `<div class="footer" data-in="0.2"><span>${left}</span><span>${right}</span></div>`;
+// The animated outer group carries a CSS transform; the inner group positions the node, so the
+// two never fight (a CSS transform would replace an SVG transform attribute on the same element).
+function node(x, y, w, h, title, sub, color, t0, extra = '') {
+  return `<g data-in="${t0}" data-a="rise" data-d="0.6"><g transform="translate(${x} ${y})">
+    <rect x="0" y="0" width="${w}" height="${h}" rx="16" fill="#121821" stroke="${color}" stroke-width="2.2"/>
+    <text x="24" y="46" font-size="29" font-weight="700" fill="#e6ebf0">${title}</text>
+    <text x="24" y="82" font-size="21" fill="#a3afbd">${sub}</text>${extra}</g></g>`;
+}
+function edge(id, d, color, t0, label = '', lx = 0, ly = 0, dash = '') {
+  return `<path id="${id}" d="${d}" fill="none" stroke="${color}" stroke-width="3" ${dash ? `stroke-dasharray="${dash}"` : ''} data-in="${t0}" data-a="${dash ? 'fade' : 'draw'}" data-d="0.8" marker-end="url(#arrow-${color.replace('#', '')})"/>
+    ${label ? `<text x="${lx}" y="${ly}" font-size="20" font-family="JetBrains Mono, monospace" fill="${color}" data-in="${t0 + 0.4}">${label}</text>` : ''}`;
+}
+// Markers are defined once in a rendered (not display:none) SVG: url(#id) resolves to the first
+// element with that id, and markers inside a hidden slide would not draw.
+const MARKER_COLORS = ['#56d9d0', '#efbb70', '#e6dfcf', '#7fb4ff', '#8794a6', '#5fd39b', '#f08c85'];
+document.getElementById('global-defs').innerHTML = `<defs>${MARKER_COLORS.map(c => `<marker id="arrow-${c.replace('#', '')}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${c}"/></marker>`).join('')}</defs>`;
+const markers = () => '';
+
+// ---------------------------------------------------------------- slides
+slide('title', `
+  <div style="position:absolute; left:120px; top:250px; right:120px">
+    <div class="eyebrow" data-in="0.2">Unitree G1 · Flow planner · SONIC tracker</div>
+    <h1 data-in="0.5" data-a="rise" data-d="0.9">G1 Deploy <span class="accent">Studio</span></h1>
+    <div class="lede" data-in="1.3" data-a="rise">Deploy, visualize and rehearse humanoid navigation policies — in replay, in isolated simulation and, next, read-only on the physical robot.</div>
+    <div class="chipline">
+      <span class="chip" style="color:var(--cyan)" data-in="2.1">OBSERVE-ONLY</span>
+      <span class="chip" style="color:var(--bone)" data-in="2.3">EVIDENCE-LABELLED</span>
+      <span class="chip" style="color:var(--amber)" data-in="2.5">FIDELITY-DECLARED</span>
+      <span class="chip" style="color:var(--green)" data-in="2.7">HASH-PINNED POLICIES</span>
+    </div>
+  </div>
+  <svg width="560" height="560" viewBox="0 0 560 560" style="position:absolute; right:110px; top:120px; opacity:.9" data-in="0.8" data-a="scale" data-d="1.2">
+    <circle cx="280" cy="280" r="250" fill="none" stroke="#26313e" stroke-width="2"/>
+    <circle cx="280" cy="280" r="180" fill="none" stroke="#1d2833" stroke-width="2" stroke-dasharray="6 10"/>
+    <path id="orbitA" d="M30,280 a250,250 0 1,1 500,0 a250,250 0 1,1 -500,0" fill="none"/>
+    <path id="orbitB" d="M100,280 a180,180 0 1,0 360,0 a180,180 0 1,0 -360,0" fill="none"/>
+    <circle r="9" fill="#56d9d0" data-path="#orbitA" data-pin="0.8" data-period="7"/>
+    <circle r="7" fill="#efbb70" data-path="#orbitB" data-pin="0.8" data-period="5" data-off=".4"/>
+    <g transform="translate(280 280)" stroke="#e6dfcf" stroke-width="10" stroke-linecap="round" fill="none">
+      <circle cx="0" cy="-118" r="22" fill="#e6dfcf" stroke="none"/>
+      <path d="M0,-90 L0,10"/><path d="M0,-70 L-52,-20 M0,-70 L52,-20"/><path d="M0,10 L-30,110 M0,10 L30,110"/>
+    </g>
+  </svg>
+  ${footer('2026-10-20 · codex/replay-cockpit')}`);
+
+slide('chain', `
+  <div class="eyebrow" data-in="0.1">The deployment chain</div>
+  <h2 data-in="0.3" data-a="rise">A policy never drives the robot directly</h2>
+  <svg width="1680" height="640" viewBox="0 0 1680 640" style="position:absolute; left:120px; top:330px">
+    ${markers(['#56d9d0', '#efbb70', '#e6dfcf', '#7fb4ff', '#8794a6'])}
+    ${node(0, 60, 300, 120, 'Goal + map', 'start, goal, boxes / LiDAR', '#8794a6', 0.6)}
+    ${node(400, 60, 300, 120, 'Flow planner', 'whole-body motion plan', '#efbb70', 1.2)}
+    ${node(800, 60, 340, 120, 'SONIC tracker', 'ONNX 1570 → 29 targets', '#56d9d0', 2.2)}
+    ${node(1240, 60, 300, 120, 'Unitree G1', '29 DoF · PD motors', '#e6dfcf', 3.2)}
+    ${edge('e1', 'M300,120 L392,120', '#8794a6', 0.9)}
+    ${edge('e2', 'M700,120 L792,120', '#efbb70', 1.7, 'ZMQ pose ref', 680, 40)}
+    ${edge('e3', 'M1140,120 L1232,120', '#56d9d0', 2.7, 'DDS rt/lowcmd', 1105, 40)}
+    ${edge('e4', 'M1390,180 L1390,330 L250,330 L250,188', '#7fb4ff', 3.8, 'rt/lowstate · odometry · LiDAR', 640, 316)}
+    <circle r="8" fill="#efbb70" data-path="#e2" data-pin="2.2" data-period="1.1"/>
+    <circle r="8" fill="#56d9d0" data-path="#e3" data-pin="3.2" data-period="0.7"/>
+    <circle r="8" fill="#7fb4ff" data-path="#e4" data-pin="4.4" data-period="3.2"/>
+    <g data-in="4.8" data-a="rise">
+      <text x="0" y="440" font-size="26" fill="#a3afbd">Every hop has its own</text>
+      <text x="0" y="486" font-size="30" font-weight="700" fill="#e6ebf0">clock · rate · frame convention · joint order · failure mode</text>
+    </g>
+    <g data-in="5.6" data-a="rise">
+      <text x="0" y="560" font-size="24" fill="#8794a6" font-family="JetBrains Mono, monospace">50 Hz policy ticks · 4 physics substeps · replan ≈ every 160 ms · (10, 67) reference window · wxyz quaternions</text>
+    </g>
+  </svg>
+  ${footer('01 · WHY')}`);
+
+slide('principles', `
+  <div class="eyebrow" data-in="0.1">Design rules</div>
+  <h2 data-in="0.3" data-a="rise">Four rules the tool never breaks</h2>
+  <div class="cards4">
+    <div class="card" data-in="0.9" data-a="rise"><span class="num">01</span><h3><span class="accent">Observe</span>, never command</h3><p>No <span class="mono">rt/lowcmd</span> writer, no hand commands, no control port. The SONIC runner and Unitree SDK keep ownership of the robot.</p></div>
+    <div class="card" data-in="1.7" data-a="rise"><span class="num">02</span><h3>Label the <span class="bone">evidence</span></h3><p>Measured · simulator truth · estimated · commanded · configured. Missing telemetry stays <span class="mono">UNAVAILABLE</span>, never a healthy zero.</p></div>
+    <div class="card" data-in="2.5" data-a="rise"><span class="num">03</span><h3><span class="amber">Isolate</span> simulation</h3><p>Loopback-only gateway, owned bounded CPU workers, no DDS or ZMQ path to a robot network, no GPU or hardware by default.</p></div>
+    <div class="card" data-in="3.3" data-a="rise"><span class="num">04</span><h3><span class="green">Pin</span> what ran</h3><p>Every run records the policy profile, source revision, config and checkpoint SHA-256 and its fidelity level.</p></div>
+  </div>
+  ${footer('01 · WHY')}`);
+
+slide('architecture', `
+  <div class="eyebrow" data-in="0.1">Architecture</div>
+  <h2 data-in="0.3" data-a="rise">Off the real-time path, by construction</h2>
+  <svg width="1680" height="700" viewBox="0 0 1680 700" style="position:absolute; left:120px; top:300px">
+    ${markers(['#56d9d0', '#efbb70', '#e6dfcf', '#7fb4ff', '#8794a6', '#5fd39b'])}
+    ${node(0, 40, 360, 150, 'Browser cockpit', 'ES modules · three.js twin', '#56d9d0', 0.6, '<text x="24" y="124" font-size="19" fill="#8794a6" font-family="JetBrains Mono">replay · arena · rehearse · runs</text>')}
+    ${node(520, 40, 420, 150, 'Gateway', 'loopback · Host/Origin · CSRF', '#e6dfcf', 1.2, '<text x="24" y="124" font-size="19" fill="#8794a6" font-family="JetBrains Mono">gzip + ETag · bounded cache</text>')}
+    ${edge('a1', 'M360,115 L512,115', '#56d9d0', 1.0, 'HTTP 127.0.0.1', 372, 96)}
+    ${node(1100, 0, 520, 120, 'Recordings', 'MCAP · NPZ · JSONL · ZMQ capture', '#7fb4ff', 1.8)}
+    ${node(1100, 160, 520, 150, 'Owned CPU worker', 'one per data root · wall + output limits', '#efbb70', 2.4, '<text x="24" y="124" font-size="19" fill="#8794a6" font-family="JetBrains Mono">planner → SONIC ONNX → MuJoCo</text>')}
+    ${edge('a2', 'M940,90 L1092,60', '#7fb4ff', 2.0, 'decode', 980, 52)}
+    ${edge('a3', 'M940,140 L1092,220', '#efbb70', 2.6, 'launch · observe', 900, 236)}
+    ${node(0, 330, 500, 150, 'Policy profiles', 'identity hash · loader · limits', '#5fd39b', 3.2, '<text x="24" y="124" font-size="19" fill="#8794a6" font-family="JetBrains Mono">flow-wx-rf-23326aa-s0 · flow-bundle</text>')}
+    ${node(560, 330, 480, 150, 'Workbench', 'arenas · scenarios · suites · runs', '#e6dfcf', 3.6)}
+    ${node(1100, 380, 520, 150, 'Flow research', 'BEST_MODEL.md · pinned snapshot', '#5fd39b', 4.0, '<text x="24" y="124" font-size="19" fill="#8794a6" font-family="JetBrains Mono">read-only · no sealed reads</text>')}
+    ${edge('a4', 'M730,190 L730,322', '#e6dfcf', 3.8)}
+    ${edge('a6', 'M500,405 L552,405', '#5fd39b', 3.9)}
+    ${edge('a5', 'M1360,380 L1360,318', '#5fd39b', 4.3, 'pin', 1372, 356)}
+    <g data-in="5.0" data-a="rise">
+      <rect x="0" y="560" width="1620" height="96" rx="14" fill="#1a1414" stroke="#5a3234" stroke-width="2"/>
+      <text x="30" y="604" font-size="27" font-weight="700" fill="#f08c85">Robot control path — never touched</text>
+      <text x="30" y="640" font-size="22" fill="#a3afbd" font-family="JetBrains Mono">planner → ZMQ → SONIC runner → Unitree DDS rt/lowcmd · Studio may only subscribe (M5) — it owns no writer</text>
+    </g>
+  </svg>
+  ${footer('02 · DESIGN')}`);
+
+const RUNGS = D.ladder || [
+  ['L0', 'Replay', 'recorded sessions, decoded independently', 'done'],
+  ['L1', 'CPU lockstep', 'physics waits for each plan', 'done'],
+  ['L2', 'Planner latency', 'physics runs while the plan computes', 'done'],
+  ['L3', 'Real-time chain', 'separate processes over DDS + ZMQ', 'next'],
+  ['M5', 'Read-only robot', 'subscribe-only physical G1', 'later']];
+const rungColor = s => ({ done: '#5fd39b', approx: '#efbb70', next: '#7fb4ff', blocked: '#f08c85', later: '#8794a6' })[s] || '#8794a6';
+slide('ladder', `
+  <div class="eyebrow" data-in="0.1">Fidelity ladder</div>
+  <h2 data-in="0.3" data-a="rise">Every run declares what it proves</h2>
+  <svg width="1680" height="640" viewBox="0 0 1680 640" style="position:absolute; left:120px; top:320px">
+    ${RUNGS.map(([lvl, name, sub, status], i) => {
+      const x = i * 330, y = 380 - i * 80, t0 = 0.8 + i * 0.6, c = rungColor(status);
+      return `<g data-in="${t0}" data-a="rise">
+        <rect x="${x}" y="${y}" width="300" height="${640 - y - 20}" rx="14" fill="#121821" stroke="${c}" stroke-width="2.2"/>
+        <text x="${x + 24}" y="${y + 62}" font-size="52" font-weight="800" fill="${c}" font-family="JetBrains Mono">${lvl}</text>
+        <text x="${x + 24}" y="${y + 108}" font-size="28" font-weight="700" fill="#e6ebf0">${name}</text>
+        <foreignObject x="${x + 20}" y="${y + 124}" width="262" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="font: 21px/1.35 Inter, sans-serif; color:#a3afbd">${sub}</div></foreignObject>
+        <text x="${x + 24}" y="${620 - 16}" font-size="19" font-family="JetBrains Mono" fill="${c}">${String(status).toUpperCase()}</text></g>`;
+    }).join('')}
+  </svg>
+  ${footer('02 · DESIGN')}`);
+
+for (const [id, n, title, sub] of (D.chapters || [])) slide(id, `
+  <div class="chapter">
+    <div class="big" data-in="0.05" data-a="left" data-d="0.8">${n}</div>
+    <h2 data-in="0.25" data-a="rise" data-d="0.7">${title}</h2>
+    <div class="lede" data-in="0.6" data-a="rise">${sub}</div>
+  </div>`);
+
+// ---- results: WX vs bundle, latency dose response
+function bars(rows, x0, y0, w, rowH, t0) {
+  return rows.map((r, i) => {
+    const y = y0 + i * rowH, ww = w * r.k / r.n, lo = w * r.lo, hi = w * r.hi, t = t0 + i * 0.25;
+    return `<text x="${x0 - 20}" y="${y + rowH * 0.45}" text-anchor="end" font-size="25" fill="#e6ebf0" data-in="${t}">${r.label}</text>
+      <rect x="${x0}" y="${y + 6}" width="${w}" height="${rowH * 0.5}" rx="6" fill="#18212c" data-in="${t}"/>
+      <rect x="${x0}" y="${y + 6}" width="${ww}" height="${rowH * 0.5}" rx="6" fill="${r.color}" data-in="${t + 0.1}" data-a="grow" data-d="0.9"/>
+      <line x1="${x0 + lo}" x2="${x0 + hi}" y1="${y + 6 + rowH * 0.25}" y2="${y + 6 + rowH * 0.25}" stroke="#e6ebf0" stroke-width="2.5" data-in="${t + 0.9}"/>
+      <text x="${x0 + w + 20}" y="${y + rowH * 0.45}" font-size="27" font-weight="700" fill="${r.color}" font-family="JetBrains Mono" data-in="${t + 0.8}">${r.k}/${r.n}</text>`;
+  }).join('');
+}
+const R = D.results || {};
+slide('results', `
+  <div class="eyebrow" data-in="0.1">Robustness · CPU lockstep · random goals</div>
+  <h2 data-in="0.3" data-a="rise">The adopted planner reaches — <span class="amber">and must learn to stop</span></h2>
+  <svg width="1680" height="620" viewBox="0 0 1680 620" style="position:absolute; left:120px; top:330px">
+    <text x="0" y="30" font-size="22" fill="#8794a6" font-family="JetBrains Mono" data-in="0.6">ARRIVE &amp; HOLD · WILSON 95% INTERVALS</text>
+    ${bars(R.headline || [], 420, 60, 860, 74, 0.8)}
+  </svg>
+  <div style="position:absolute; left:120px; bottom:120px; right:120px; display:flex; gap:28px">
+    ${(R.notes || []).map((n, i) => `<div class="card" style="flex:1" data-in="${2.6 + i * 0.4}" data-a="rise"><p>${n}</p></div>`).join('')}
+  </div>
+  ${footer('04 · RESULTS')}`);
+
+slide('latency', `
+  <div class="eyebrow" data-in="0.1">Planner latency · same 12 scenarios</div>
+  <h2 data-in="0.3" data-a="rise">Latency, not geometry, is the deployment risk</h2>
+  <svg width="1680" height="640" viewBox="0 0 1680 640" style="position:absolute; left:120px; top:320px">
+    ${(() => {
+      const X = ms => 120 + ms / 200 * 900, Y = k => 560 - k / 12 * 480;
+      const series = R.latency || [];
+      const grid = [0, 3, 6, 9, 12].map(k => `<line x1="120" x2="1080" y1="${Y(k)}" y2="${Y(k)}" stroke="#1d2833"/><text x="96" y="${Y(k) + 8}" text-anchor="end" font-size="20" fill="#8794a6" font-family="JetBrains Mono">${k}</text>`).join('');
+      const xt = [0, 100, 200].map(ms => `<text x="${X(ms)}" y="600" text-anchor="middle" font-size="22" fill="#8794a6" font-family="JetBrains Mono">${ms} ms</text>`).join('');
+      const lines = series.map((s, i) => {
+        const d = s.points.map(([ms, k], j) => `${j ? 'L' : 'M'}${X(ms)},${Y(k)}`).join(' ');
+        const t0 = 0.9 + i * 0.9;
+        return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="5" ${s.dash ? 'stroke-dasharray="12 10"' : ''} data-in="${t0}" data-a="${s.dash ? 'fade' : 'draw'}" data-d="1.0"/>
+          ${s.points.map(([ms, k]) => `<circle cx="${X(ms)}" cy="${Y(k)}" r="9" fill="${s.color}" data-in="${t0 + 0.8}"/><text x="${X(ms) + 16}" y="${Y(k) - 14}" font-size="22" font-weight="700" fill="${s.color}" font-family="JetBrains Mono" data-in="${t0 + 0.9}">${k}/12</text>`).join('')}
+          <text x="1120" y="${150 + i * 64}" font-size="26" font-weight="700" fill="${s.color}" data-in="${t0}">${s.label}</text>
+          <text x="1120" y="${178 + i * 64}" font-size="19" fill="#8794a6" data-in="${t0}">${s.sub || ''}</text>`;
+      }).join('');
+      return `${grid}${xt}<text x="120" y="40" font-size="22" fill="#8794a6" font-family="JetBrains Mono" data-in="0.5">ARRIVE &amp; HOLD (of 12)</text>${lines}`;
+    })()}
+  </svg>
+  ${footer('04 · RESULTS')}`);
+
+for (const extra of (D.extraSlides || [])) slide(extra.id, extra.html);
+
+slide('validation', `
+  <div class="eyebrow" data-in="0.1">Evidence, not claims</div>
+  <h2 data-in="0.3" data-a="rise">Tested the way it will be used</h2>
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 28px; margin-top: 70px">
+    ${(D.validation || []).map((v, i) => `<div class="card" data-in="${0.8 + i * 0.35}" data-a="rise"><div class="stat" style="color:${v.color}"><span data-in="${0.9 + i * 0.35}" data-a="count" data-v="${v.v}" data-d="1.2">${v.v}</span><small>${v.unit || ''}</small></div><div class="statcap">${v.cap}</div></div>`).join('')}
+  </div>
+  <div class="card" style="margin-top:34px" data-in="2.6" data-a="rise"><p>${D.securityLine || ''}</p></div>
+  ${footer('05 · TRUST')}`);
+
+slide('roadmap', `
+  <div class="eyebrow" data-in="0.1">Next</div>
+  <h2 data-in="0.3" data-a="rise">From rehearsal to the real G1 — read-only first</h2>
+  <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-top: 70px">
+    ${(D.roadmap || []).map((r, i) => `<div class="card" data-in="${0.8 + i * 0.5}" data-a="rise"><span class="tag" style="color:${r.color}">${r.tag}</span><h3 style="margin-top:18px">${r.title}</h3><p>${r.text}</p></div>`).join('')}
+  </div>
+  ${footer('06 · NEXT')}`);
+
+slide('outro', `
+  <div style="position:absolute; left:120px; top:300px; right:120px">
+    <div class="eyebrow" data-in="0.2">G1 Deploy Studio</div>
+    <h1 data-in="0.4" data-a="rise" style="font-size:88px">Rehearse first.<br><span class="accent">Observe always.</span> Command never.</h1>
+    <div class="lede mono" data-in="1.4" data-a="rise" style="font-size:28px">${D.outroLine || ''}</div>
+  </div>`);
+
+document.getElementById('slides').innerHTML = S.join('\n');
+window.SLIDES = S.length;
+</script>
+</body>
+</html>

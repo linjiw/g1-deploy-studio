@@ -88,6 +88,18 @@ The callback's native `closed_loop.npz` is decoded independently by `studio.repl
   - In the G1 model the hips are limited to 88 N·m, while training and `g1deploy.contract` use 139 N·m.
   - A first WX check commanded up to 131 N·m at the hip roll, clamped by MuJoCo in 22 of 600 substeps. A bundle check stayed below 60 N·m.
   - This shows the source discrepancy in `ROBOT_CONTRACT.md` is binding for WX in simulation.
+- **Actuator profiles (since 2026-10-20).** Research showed the hip limits depend on the G1 hardware revision (`LowState.mode_machine`; see [ROBOT_CONTRACT.md](ROBOT_CONTRACT.md)). Every scenario now selects a profile. `studio.actuators` applies it by patching the compiled model's hip `jnt_actfrcrange` before anything reads it; no model file is copied.
+
+  | Profile | Hip pitch / roll / yaw (N·m) | Hardware |
+  |---|---|---|
+  | `g1-current` (default) | 139 / 139 / 88 | mode_machine 10–12, 15, 16, 18: the robot SONIC and Flow were trained for |
+  | `g1-rev1` | 88 / 139 / 88 | mode_machine 4–6, 13, 14 (rev_1_0): pessimistic |
+  | `source` | 88 / 88 / 88 | the unmodified deprecated mode-2 MJCF; every run before profiles |
+
+  - The receipt (before/after limits, patch hash, sources) is stored in the run metadata and report.
+  - The torque summary counts substeps above the training effort and above *each* hardware profile, whichever profile ran.
+  - The body stays the mode-2 model.
+  - Saved scenarios without the field keep running on `source`, so earlier runs stay reproducible.
 
 ## Adding another policy
 

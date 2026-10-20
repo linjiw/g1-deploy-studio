@@ -40,6 +40,7 @@ Open **Rehearse**, or click **Rehearse →** after saving an arena.
     - *measured*: the planner plans from the state at request time.
     - *predict*, labelled **L2≈ predict**: Studio gives the planner the state predicted at request + latency from the landed plan, using g1-student-deploy's method. Route and tight-mode decisions stay measured. See [POLICIES.md](POLICIES.md#latency-and-torque-checks).
   - The anchor applies only with latency; at 0 ms every plan is anchored on the measured state.
+- **Actuator limits:** the G1 hip torque profile, *Current G1 · 139/139/88* (default), *rev_1_0 · 88/139/88* or *Source model · 88/88/88*. See [POLICIES.md](POLICIES.md#latency-and-torque-checks). Health shows the profile and the substeps above the training limit and above each hardware profile.
 - **Run preset** saves the scenario and starts the worker. The live run attaches to the viewport (Follow camera, Health tab) at about 3 Hz. When it finishes, its full recording opens at the same time cursor.
 - **Run suite** runs every preset × seeds, at most 48 runs, one after another through the single owned worker. A running suite reserves the worker: manual runs are refused until it finishes or is cancelled. The suite table fills in outcomes as they arrive. **Cancel** stops the queue and the current run.
 
@@ -60,7 +61,7 @@ Cancel signals only this gateway's own process group. It is a simulation control
 
 ## 3. Runs
 
-**Robustness report.** For the runs in view, grouped by policy · criterion · latency · budget:
+**Robustness report.** For the runs in view, grouped by policy · criterion · latency · budget · actuator profile:
 - source-scorer goals with **Wilson 95% intervals**;
 - **post-hoc Flow reach**: the arena protocol (0.4 m, ≤ 2 m/s for 0.1 s, contact ≤ 5 N, no fall) re-evaluated on each run's recorded 50 Hz trajectory, so arrive-and-hold runs are also judged by Flow's criterion;
 - failure categories (timeout ≤ 0.5 m vs > 0.5 m, collision, fall, error), median time to goal or reach, path efficiency, contact count, and runs whose leg torque was clamped at the MuJoCo model limit.

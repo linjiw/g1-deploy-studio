@@ -1,0 +1,163 @@
+{
+ "schema_version": 1,
+ "title": "G1 Deploy Studio · introduction",
+ "fps": 30,
+ "voice": "af_heart",
+ "pad_s": 0.7,
+ "segments": [
+  {
+   "id": "title",
+   "kind": "deck",
+   "slide": "title",
+   "min_s": 9,
+   "say": "Meet G1 Deploy Studio: a cockpit for deploying, visualizing and rehearsing navigation policies on the [Unitree](/juːnitɹiː/) G1 humanoid. In replay, in isolated simulation, and next, read-only on the real robot."
+  },
+  {
+   "id": "chain",
+   "kind": "deck",
+   "slide": "chain",
+   "min_s": 12,
+   "say": "A navigation policy never drives the robot directly. The Flow planner turns a goal and a map into a short whole-body motion. A versioned Zero M Q message carries that reference to the SONIC tracker, which produces joint targets, and the [Unitree](/juːnitɹiː/) S D K sends them over D D S as low-level commands. Every hop has its own clock, rate, frame convention and failure mode."
+  },
+  {
+   "id": "principles",
+   "kind": "deck",
+   "slide": "principles",
+   "min_s": 12,
+   "say": "So Studio is built on four rules. It observes, and never commands: it owns no low-command writer and no control port. Every value carries its evidence class, measured, simulator truth, estimated or commanded, and missing data stays unavailable, never a healthy zero. Simulation is isolated from the robot network. And every run pins exactly which policy, configuration and checkpoints ran."
+  },
+  {
+   "id": "architecture",
+   "kind": "deck",
+   "slide": "architecture",
+   "min_s": 12,
+   "say": "The gateway listens on [loopback](/lˈupbˌæk/) only. It decodes recordings independently, and launches one owned, bounded CPU worker that runs the real Flow planner and the real SONIC tracker against MuJoCo physics. Policies plug in through hash-pinned profiles: the adopted Flow block, W X, is the first, and the frozen deploy bundle the second. Nothing in Studio sits on the robot's control path."
+  },
+  {
+   "id": "ladder",
+   "kind": "deck",
+   "slide": "ladder",
+   "min_s": 10,
+   "say": "Because simulation success is not hardware readiness, every run declares its fidelity. L zero replays recordings. L one is CPU lockstep, where physics waits for each plan. L two adds a modelled planner latency. L three is the real separate-process chain, and M five is the read-only physical robot."
+  },
+  {
+   "id": "ch-tour",
+   "kind": "deck",
+   "slide": "ch-tour",
+   "min_s": 2.6,
+   "say": ""
+  },
+  {
+   "id": "replay",
+   "kind": "app",
+   "shot": "replay",
+   "min_s": 16,
+   "say": "The Replay workspace is a digital twin of a run. The white robot is the simulator state, the cyan ghost is the SONIC reference it tracks, and the amber ghosts are the planner's future. Below, the lanes put goal distance, planner compute, SONIC inference, tracking error and contact force on one clock."
+  },
+  {
+   "id": "cameras",
+   "kind": "app",
+   "shot": "cameras",
+   "min_s": 12,
+   "say": "Cameras switch between follow, orbit, top-down and the full scene. Layers toggle the reference, plan, trajectory and environment, and robot view renders the scene from the LiDAR mount, labelled as an approximate viewpoint, not a camera."
+  },
+  {
+   "id": "inspector",
+   "kind": "app",
+   "shot": "inspector",
+   "min_s": 14,
+   "say": "The inspector explains the moment under the cursor. Intent shows the navigation target, the planner's selection and its execution check. Health shows the outcome, fidelity, budgets and leg torque against the model limit. Joints lists all twenty-nine joints by name, and Pipeline shows what crossed each model boundary."
+  },
+  {
+   "id": "sensors",
+   "kind": "app",
+   "shot": "sensors",
+   "min_s": 12,
+   "say": "The Sensors workspace is causal. Every channel shows its own timestamp and age, and goes stale when it should. Point clouds can be pinned into the 3D view. For the privileged W X block, perception is unavailable by design, because it plans from the exact boxes, and Studio says so."
+  },
+  {
+   "id": "system",
+   "kind": "app",
+   "shot": "system",
+   "min_s": 12,
+   "say": "The System map draws the deployment graph: D D S, Zero M Q and in-process edges, solid where Studio observed the traffic and dashed where it is only configured. Below it sits the source-verified [Unitree](/juːnitɹiː/) G1 contract, with every disagreement between sources listed."
+  },
+  {
+   "id": "arena",
+   "kind": "app",
+   "shot": "arena",
+   "min_s": 15,
+   "say": "To test a policy, build an arena. Start from a template, draw walls, overhead beams and pillars, and place starts and goals. Seeded random goals can be required to hide behind obstacles, a footprint check flags blocked presets, and saving creates an immutable, hashed arena."
+  },
+  {
+   "id": "rehearse",
+   "kind": "app",
+   "shot": "rehearse",
+   "min_s": 17,
+   "say": "Rehearse runs a policy on that arena. The Flow research sync shows which block is adopted, and each profile shows its identity hash and limitations. Choose the planner budget, the success criterion, a planner latency and the actuator limits, then run. The live run attaches to the viewport, and when it finishes, the full recording opens at the same moment."
+  },
+  {
+   "id": "runs",
+   "kind": "app",
+   "shot": "runs",
+   "min_s": 14,
+   "say": "Suites run every preset and seed through the same worker. The Runs workspace overlays every trajectory on the arena, colored by outcome, and the robustness report gives Wilson confidence intervals, a post-hoc Flow reach check, failure categories, and how often leg torque hit the limit."
+  },
+  {
+   "id": "ch-results",
+   "kind": "deck",
+   "slide": "ch-results",
+   "min_s": 2.6,
+   "say": ""
+  },
+  {
+   "id": "results",
+   "kind": "deck",
+   "slide": "results",
+   "min_s": 12,
+   "say": "So how robust is the adopted planner? In CPU lockstep, W X reached and held twenty-four of twenty-four random goals across four arenas, and thirty-five of thirty-six with extra seeds, against nineteen of twenty-four for the older bundle. Its weak point is stopping: it often overshoots and loops back before it holds."
+  },
+  {
+   "id": "latency",
+   "kind": "deck",
+   "slide": "latency",
+   "min_s": 12,
+   "say": "Latency is the real deployment risk. At one hundred milliseconds W X still holds eleven of twelve, but at two hundred, planning from stale state, it collapses to one of twelve, and the bundle collapses the same way. Predictive anchoring gives the planner the state the robot will be in when the plan lands. It brings W X back to eleven of twelve, with no falls and no contacts, though arrivals are slower, because the robot lags the plan it predicts."
+  },
+  {
+   "id": "torque",
+   "kind": "deck",
+   "slide": "torque",
+   "min_s": 12,
+   "say": "Research also settled a hardware question. The hip torque limit depends on the robot's revision. Current G1s have one hundred thirty-nine newton-meter hip pitch and roll motors, the robot the policies were trained for, while older revisions have eighty-eight at the hip pitch. Studio now rehearses with either profile, and reports every [substep](/sˈʌbstˌɛp/) above each limit."
+  },
+  {
+   "id": "l3",
+   "kind": "deck",
+   "slide": "l3",
+   "min_s": 12,
+   "say": "The next rung is the real-time chain: the unchanged simulator, SONIC runner and planner node, inside a network [namespace](/nˈAmspˌAs/) that has nothing but a private [loopback](/lˈupbˌæk/). Probes confirmed that no traffic can leave it and no process can outlive it. The launcher is ready, waiting for an operator's go."
+  },
+  {
+   "id": "validation",
+   "kind": "deck",
+   "slide": "validation",
+   "min_s": 12,
+   "say": "Every claim here has evidence: two hundred fifty unit tests, fifteen browser acceptance checks run directly and through an S S H tunnel, and an independent re-validation of one hundred eighteen checks. The gateway binds [loopback](/lˈupbˌæk/) only, checks the host, the origin and a per-process token, and is reached remotely through S S H."
+  },
+  {
+   "id": "roadmap",
+   "kind": "deck",
+   "slide": "roadmap",
+   "min_s": 12,
+   "say": "From here: run the real-time chain, then observe the physical G1 read-only, subscribe-only, under an operator procedure with the physical emergency stop. Reading the robot's mode machine first selects the right torque limits. Studio will still never send a command."
+  },
+  {
+   "id": "outro",
+   "kind": "deck",
+   "slide": "outro",
+   "min_s": 7,
+   "say": "G1 Deploy Studio. Rehearse first. Observe always. Command never."
+  }
+ ]
+}
