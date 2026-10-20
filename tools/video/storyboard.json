@@ -129,7 +129,7 @@
    "kind": "deck",
    "slide": "torque",
    "min_s": 12,
-   "say": "Research also settled a hardware question: the hip torque limit depends on the robot's revision. Current G1s have one hundred thirty-nine newton-meter hip pitch and roll motors, the robot the policies were trained for, while older revisions have eighty-eight at the hip pitch. And the profile matters. In lockstep, W X holds twelve of twelve on both. At two hundred milliseconds with predictive anchoring, it holds eleven of twelve on the older limits, but only seven of twelve on the current ones: it reaches the goal, and does not settle."
+   "say": "Research also settled a hardware question: the hip torque limit depends on the robot's revision. Current G1s have one hundred thirty-nine newton-meter hip pitch and roll motors, the robot the policies were trained for, while older revisions have eighty-eight at the hip pitch. And it changes the answer to the latency question. On the current limits, with predictive anchoring, W X holds twelve of twelve at the robot's one hundred sixty millisecond replan budget. At two hundred milliseconds it falls to twenty-one of thirty-six across three seeds: past a cliff, with every run reaching a torque limit."
   },
   {
    "id": "l3",
@@ -143,7 +143,7 @@
    "kind": "deck",
    "slide": "validation",
    "min_s": 12,
-   "say": "Every claim here has evidence: two hundred fifty unit tests, fifteen browser acceptance checks run directly and through an S S H tunnel, and an independent re-validation of one hundred eighteen checks. The gateway binds [loopback](/lˈupbˌæk/) only, checks the host, the origin and a per-process token, and is reached remotely through S S H."
+   "say": "Every claim here has evidence: two hundred sixty-five unit tests, fifteen browser acceptance checks run directly and through an S S H tunnel, an independent re-validation of one hundred eighteen checks, and a separate review whose findings were all fixed and re-verified. The gateway binds [loopback](/lˈupbˌæk/) only, checks the host, the origin and a per-process token, and is reached remotely through S S H."
   },
   {
    "id": "roadmap",

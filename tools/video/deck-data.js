@@ -49,18 +49,18 @@ window.DECK_DATA = {
         <div style="display:flex; flex-direction:column; gap:16px">
           <div class="card" style="padding:18px 26px" data-in="2.6" data-a="rise"><span class="tag" style="color:var(--cyan)">g1-current · default</span><p style="margin-top:8px">139 / 139 / 88 — the robot SONIC and the Flow policies were trained for.</p></div>
           <div class="card" style="padding:18px 26px" data-in="3.1" data-a="rise"><span class="tag" style="color:var(--amber)">g1-rev1 · pessimistic</span><p style="margin-top:8px">88 / 139 / 88 — older robots clamp hip pitch at 88 N·m.</p></div>
-          <div class="card" style="padding:18px 26px" data-in="3.6" data-a="rise"><span class="tag" style="color:var(--dim)">source · baseline</span><p style="margin-top:8px">88 / 88 / 88 — the unmodified deploy MJCF; hip roll matches no current G1.</p></div>
+
         </div>
       </div>
       <div class="card" style="margin-top:22px; padding:22px 34px" data-in="4.4" data-a="rise">
-        <h3 style="font-size:27px">The profile changes the result · WX-RF, same 12 scenarios, arrive &amp; hold</h3>
-        <svg width="1600" height="172" viewBox="0 0 1600 172">
-          ${[['0 ms · current G1 (139/139/88)', 12, '#56d9d0', 'no clamping'], ['200 ms predict · rev_1_0 (88/139/88)', 11, '#efbb70', 'hip pitch clamped in 11/12 · 1 fall'], ['200 ms predict · current G1', 7, '#f08c85', '4 of 5 failures stop within 0.5 m']]
-            .map(([l, k, c, note], i) => `<text x="0" y="${38 + i * 50}" font-size="23" fill="#e6ebf0" data-in="${4.6 + i * 0.4}">${l}</text>
-              <rect x="470" y="${16 + i * 50}" width="700" height="30" rx="6" fill="#18212c" data-in="${4.6 + i * 0.4}"/>
-              <rect x="470" y="${16 + i * 50}" width="${700 * k / 12}" height="30" rx="6" fill="${c}" data-in="${4.7 + i * 0.4}" data-a="grow" data-d="0.9"/>
-              <text x="1190" y="${39 + i * 50}" font-size="25" font-weight="700" fill="${c}" font-family="JetBrains Mono" data-in="${5.4 + i * 0.4}">${k}/12</text>
-              <text x="1290" y="${38 + i * 50}" font-size="19" fill="#8794a6" data-in="${5.5 + i * 0.4}">${note}</text>`).join('')}
+        <h3 style="font-size:27px">WX-RF · predictive anchor · same 12 scenarios · arrive &amp; hold</h3>
+        <svg width="1600" height="210" viewBox="0 0 1600 210">
+          ${[['0 ms · current G1 (139/139/88)', 12, 12, '#56d9d0', 'lockstep baseline'], ['160 ms · current G1 · robot replan budget', 12, 12, '#5fd39b', 'median 4.9 s to goal'], ['200 ms · current G1 · seeds 0–2', 21, 36, '#f08c85', '4–10/12 per seed · past a cliff'], ['200 ms · rev_1_0 (88/139/88) · seed 0', 11, 12, '#efbb70', 'hip pitch clipped · 1 fall']]
+            .map(([l, k, n, c, note], i) => `<text x="0" y="${34 + i * 46}" font-size="22" fill="#e6ebf0" data-in="${4.6 + i * 0.4}">${l}</text>
+              <rect x="470" y="${14 + i * 46}" width="700" height="28" rx="6" fill="#18212c" data-in="${4.6 + i * 0.4}"/>
+              <rect x="470" y="${14 + i * 46}" width="${700 * k / n}" height="28" rx="6" fill="${c}" data-in="${4.7 + i * 0.4}" data-a="grow" data-d="0.9"/>
+              <text x="1190" y="${36 + i * 46}" font-size="24" font-weight="700" fill="${c}" font-family="JetBrains Mono" data-in="${5.4 + i * 0.4}">${k}/${n}</text>
+              <text x="1300" y="${35 + i * 46}" font-size="18" fill="#8794a6" data-in="${5.5 + i * 0.4}">${note}</text>`).join('')}
         </svg>
       </div>
       <div class="footer"><span>04 · RESULTS</span><span>G1 DEPLOY STUDIO</span></div>` },
@@ -93,10 +93,10 @@ window.DECK_DATA = {
       <div class="footer"><span>04 · RESULTS</span><span>G1 DEPLOY STUDIO</span></div>` },
   ],
   validation: [
-    { v: 252, unit: '', cap: 'unit tests, plus opt-in real-worker integration tests', color: '#56d9d0' },
+    { v: 265, unit: '', cap: 'unit tests, plus opt-in real-worker integration tests', color: '#56d9d0' },
     { v: 15, unit: '/15', cap: 'browser acceptance checks, direct and through a forwarded SSH port', color: '#5fd39b' },
     { v: 118, unit: '', cap: 'independent re-validation checks across every workspace', color: '#efbb70' },
-    { v: 210, unit: '', cap: 'scored CPU rehearsals on the release, each with its policy identity hash', color: '#e6dfcf' },
+    { v: 246, unit: '', cap: 'scored CPU rehearsals on the release, each with its policy identity hash', color: '#e6dfcf' },
   ],
   validatorFound: [
     'first click after typing an arena name was lost',
@@ -104,6 +104,7 @@ window.DECK_DATA = {
     'a cancelled suite re-attached the previous run',
     'a run that survived a gateway restart was not followed',
     'an errored re-run could hide a scored trial',
+    'torque at the source clip went uncounted (review) — fixed, re-derived',
   ],
   honesty: [
     'missing telemetry renders UNAVAILABLE, never a healthy zero',

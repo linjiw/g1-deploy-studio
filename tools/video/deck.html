@@ -287,7 +287,7 @@ for (const extra of (D.extraSlides || [])) slide(extra.id, extra.html);
 slide('validation', `
   <div class="eyebrow" data-in="0.1">Evidence, not claims</div>
   <h2 data-in="0.3" data-a="rise">Tested the way it will be used</h2>
-  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 28px; margin-top: 44px">
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 28px; margin-top: 32px">
     ${(D.validation || []).map((v, i) => `<div class="card" data-in="${0.8 + i * 0.35}" data-a="rise"><div class="stat" style="color:${v.color}"><span data-in="${0.9 + i * 0.35}" data-a="count" data-v="${v.v}" data-d="1.2">${v.v}</span><small>${v.unit || ''}</small></div><div class="statcap">${v.cap}</div></div>`).join('')}
   </div>
   <div class="card" style="margin-top:22px; padding:20px 34px" data-in="2.6" data-a="rise"><p>${D.securityLine || ''}</p></div>
