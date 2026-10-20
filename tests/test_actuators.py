@@ -60,5 +60,24 @@ class ActuatorProfileTests(unittest.TestCase):
         self.assertEqual(refs['g1-rev1'][-1], 88.0, 'non-hip joints keep the training effort')
 
 
+class TorqueExceedanceTests(unittest.TestCase):
+    def test_tracker_counts_substeps_above_training_and_each_hardware_profile(self):
+        from studio.policy_worker import TorqueTracker
+        model = fake_model()
+        actuators.apply(model, JOINTS, 'g1-current')
+        training = [139.0, 139.0, 88.0, 139.0, 139.0, 139.0, 88.0, 88.0]
+        tracker = TorqueTracker(np, model, JOINTS, training)
+        tracker.observe([120, 0, 0, 0, 0, 0, 0, 0])   # above rev1 hip pitch (88), within current (139)
+        tracker.observe([-150, 0, 0, 0, 0, 0, 0, 0])  # above every ceiling and the patched model clamp
+        tracker.end_tick()
+        summary = tracker.summary(training)
+        self.assertEqual(summary['exceedance_substeps']['g1-rev1'], {'left_hip_pitch_joint': 2})
+        self.assertEqual(summary['exceedance_substeps']['g1-current'], {'left_hip_pitch_joint': 1})
+        self.assertEqual(summary['exceedance_substeps']['training'], {'left_hip_pitch_joint': 1})
+        self.assertEqual(summary['saturated_substeps'], {'left_hip_pitch_joint': 1})
+        self.assertEqual(summary['model_limit_nm']['left_hip_pitch_joint'], 139.0)
+        self.assertEqual(summary['reference_limits_nm']['g1-rev1']['left_hip_pitch_joint'], 88.0)
+
+
 if __name__ == '__main__':
     unittest.main()

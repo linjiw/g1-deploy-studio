@@ -20,6 +20,7 @@ from pathlib import Path
 import sys
 import time
 
+from studio import actuators
 from studio.policy_worker import (CRITERIA, MAX_DURATION_S, TorqueTracker, _atomic, _hash, contact_interval,
                                   executed_native_recording, task_thresholds, validate_request)
 from studio.policy_bundle import bundle_path, load_manifest, verify
@@ -198,7 +199,9 @@ def execute(request, output):
 
         pipeline = PipelineRecorder()
         sim = Physics(boxes, DEPLOY / 'bundle/sonic/sonic_release_g1.onnx')
-        torque = TorqueTracker(np, sim.model, C.MJ_JOINTS)
+        # Patch the compiled model's hip limits before anything reads them (studio.actuators).
+        actuator_receipt = actuators.apply(sim.model, C.MJ_JOINTS, req['actuators'])
+        torque = TorqueTracker(np, sim.model, C.MJ_JOINTS, C.EFFORT_MJ)
         original_pd_torque = episode_module.pd_torque
 
         def observed_pd_torque(*args, **kwargs):
@@ -258,6 +261,7 @@ def execute(request, output):
                     'calibration_identity': 'Not applicable: privileged block consumes no simulated sensor',
                     'fidelity': 'L2-approx' if req['latency']['ms'] else 'L1',
                     'latency_model': latency_model(req['latency']),
+                    'actuators': actuator_receipt,
                     'pipeline_contract': pipeline_contract(DEPLOY / 'g1deploy/sonic.py', C),
                     'provenance': {'artifacts': [_hash(root / 'manifest.json'), _hash(root / 'config.json'), _hash(Path(__file__)),
                                                  _hash(Path(__file__).with_name('latency_anchor.py'))]
@@ -581,7 +585,7 @@ def execute(request, output):
                   'tight_replans': sum(1 for x in native_plans if x.get('tight')),
                   'sonic_inference_ms': _quantiles([f['health']['sonic_inference_ms'] for f in frames if f['health']['sonic_inference_ms'] is not None]),
                   'criterion': req['criterion'], 'scoring': score.get('scoring'),
-                  'torque': torque.summary(C.EFFORT_MJ), 'latency_model': metadata['latency_model'],
+                  'torque': torque.summary(C.EFFORT_MJ), 'latency_model': metadata['latency_model'], 'actuators': actuator_receipt,
                   'parity': {'max_qpos_abs_error': qpos_error, 'max_reference_abs_error': reference_error,
                              'kind': 'native-record round-trip / tick alignment',
                              'basis': ('Studio-observed states and references vs the callback NPZ decoded independently '

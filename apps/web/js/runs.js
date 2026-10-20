@@ -22,7 +22,7 @@ const CATEGORY_LABEL = { goal: 'goal', timeout_near: 'timeout ≤0.5 m', timeout
 export function report(rows) {
   const groups = new Map();
   for (const r of rows.filter(x => x.outcome || x.status === 'failed')) {
-    const key = `${r.policy_id} · ${r.criterion ?? 'arrive_hold'} · lat ${r.latency?.ms ?? 0}${r.latency?.anchor === 'predict' ? 'p' : ''} · K${r.planner?.candidates}/ODE${r.planner?.ode_steps}`;
+    const key = `${r.policy_id} · ${r.criterion ?? 'arrive_hold'} · lat ${r.latency?.ms ?? 0}${r.latency?.anchor === 'predict' ? 'p' : ''} · K${r.planner?.candidates}/ODE${r.planner?.ode_steps} · ${r.actuators ?? 'source'}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(r);
   }
@@ -64,10 +64,10 @@ function reportHtml(rows) {
 }
 
 function csv(rows) {
-  const cols = ['id', 'label', 'policy_id', 'map_id', 'criterion', 'latency_ms', 'latency_anchor', 'candidates', 'ode_steps', 'seed', 'start_x', 'start_y', 'start_yaw', 'goal_x', 'goal_y',
+  const cols = ['id', 'label', 'policy_id', 'map_id', 'criterion', 'actuators', 'latency_ms', 'latency_anchor', 'candidates', 'ode_steps', 'seed', 'start_x', 'start_y', 'start_yaw', 'goal_x', 'goal_y',
     'outcome', 'category', 'elapsed_s', 'final_m', 'closest_m', 'reach_post_hoc', 'reach_time_s', 'path_efficiency', 'max_contact_n', 'max_tilt_rad', 'planner_p95_ms', 'torque_saturated_joints'];
   const q = v => v === null || v === undefined ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v);
-  return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.latency?.ms ?? 0, r.latency?.anchor ?? 'measured', r.planner?.candidates, r.planner?.ode_steps, r.seed,
+  return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.actuators ?? 'source', r.latency?.ms ?? 0, r.latency?.anchor ?? 'measured', r.planner?.candidates, r.planner?.ode_steps, r.seed,
     r.start_xy?.[0], r.start_xy?.[1], r.start_yaw_rad, r.goal_xy?.[0], r.goal_xy?.[1], r.outcome, category(r), r.metrics.elapsed_s, r.metrics.final_goal_distance_m,
     r.derived?.closest_m, r.derived?.reach_post_hoc?.reached, r.derived?.reach_post_hoc?.time_s, r.derived?.path_efficiency, r.metrics.max_contact_n, r.metrics.max_tilt_rad,
     r.metrics.planner_p95_ms, Object.keys(r.torque?.saturated_substeps ?? {}).length].map(q).join(','))].join('\n');

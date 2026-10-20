@@ -15,6 +15,8 @@ from pathlib import Path
 import sys
 import time
 
+from studio import actuators as _actuators
+
 REFERENCE_ROOT = Path('/home/linjiw/code/g1-student-deploy')
 REFERENCE_PYTHON = REFERENCE_ROOT / '.venv/bin/python'
 BACKEND_ID = 'flow-sonic-mujoco-cpu'
@@ -41,13 +43,18 @@ class TorqueTracker:
     disagree in practice.
     """
 
-    def __init__(self, np, model, joint_names):
+    def __init__(self, np, model, joint_names, training_effort=None):
         self.np, self.names = np, list(joint_names)
         ids = [model.joint(n).id for n in self.names]
         self.limited = np.asarray(model.jnt_actfrclimited[ids], dtype=bool)
         self.range = np.asarray(model.jnt_actfrcrange[ids], dtype=float)
         self.tick_peak = np.zeros(len(ids))
         self.saturated = np.zeros(len(ids), dtype=int)
+        # Reference ceilings independent of the model clamp: training effort and each G1 hardware profile.
+        from studio import actuators
+        self.references = ({k: np.asarray(v, dtype=float) for k, v in actuators.reference_limits(self.names, training_effort).items()}
+                           if training_effort is not None else {})
+        self.exceed = {k: np.zeros(len(ids), dtype=int) for k in self.references}
         self.substeps = 0
         self.rows = []
 
@@ -55,6 +62,8 @@ class TorqueTracker:
         t = self.np.asarray(torque, dtype=float)
         self.tick_peak = self.np.maximum(self.tick_peak, self.np.abs(t))
         self.saturated += self.limited & ((t < self.range[:, 0]) | (t > self.range[:, 1]))
+        for k, ceiling in self.references.items():
+            self.exceed[k] += self.np.abs(t) > ceiling + 1e-9
         self.substeps += 1
 
     def end_tick(self):
@@ -68,6 +77,8 @@ class TorqueTracker:
                 'model_limit_nm': {n: (float(r[1]) if lim else None) for n, r, lim in zip(self.names, self.range, self.limited)},
                 'training_effort_nm': dict(zip(self.names, np.asarray(training_effort, dtype=float).tolist())),
                 'saturated_substeps': {n: int(c) for n, c in zip(self.names, self.saturated) if c},
+                'exceedance_substeps': {k: {n: int(c) for n, c in zip(self.names, v) if c} for k, v in self.exceed.items()},
+                'reference_limits_nm': {k: dict(zip(self.names, v.tolist())) for k, v in self.references.items()},
                 'total_substeps': int(self.substeps),
                 'basis': 'Commanded = source pd_torque output per physics substep; MuJoCo clamps to actuatorfrcrange (model limit). Simulator-commanded, not measured motor torque.'}
 
@@ -175,6 +186,8 @@ def validate_request(request):
              'duration_s': _number(request.get('duration_s', 2), 'duration_s', .02, MAX_DURATION_S),
              'seed': seed, 'planner': settings, 'criterion': criterion, 'policy': clean_policy,
              'latency': validate_latency(request.get('latency')),
+             # Requests saved before actuator profiles existed ran on the unpatched source model.
+             'actuators': _actuators.validate(request.get('actuators', 'source')),
              'map': {'id': str(m.get('id', 'map'))[:100], 'label': str(m.get('label', 'Collision map'))[:200],
                      'kind': 'boxes', 'frame_id': 'world', 'boxes': clean_boxes,
                      'source': str(m.get('source', 'operator-configured'))[:1000]}}
@@ -484,7 +497,9 @@ def execute(request, output):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 current['sim'] = self
-                current['torque'] = TorqueTracker(np, self.model, contract.MJ_JOINTS)
+                # Patch the compiled model's hip limits before anything reads them (studio.actuators).
+                current['actuators'] = _actuators.apply(self.model, contract.MJ_JOINTS, req['actuators'])
+                current['torque'] = TorqueTracker(np, self.model, contract.MJ_JOINTS, contract.EFFORT_MJ)
                 original_policy = self.tracker.policy
                 signature = lambda entries: [{'name': x.name, 'shape': x.shape, 'type': x.type} for x in entries]
                 metadata['pipeline_contract']['onnx_inputs'] = signature(self.tracker.session.get_inputs())
@@ -658,6 +673,9 @@ def execute(request, output):
         report['pipeline_capture_wall_ms'] = pipeline.telemetry_wall_s*1000
         if current.get('torque') is not None:
             report['torque'] = current['torque'].summary(contract.EFFORT_MJ)
+        if current.get('actuators') is not None:
+            report['actuators'] = current['actuators']
+            metadata['actuators'] = current['actuators']
         report['latency_model'] = metadata['latency_model']
         report['pipeline_capture_timing_basis'] = 'Measured tensor copy/stat capture overhead; wrappers included in worker timing, not SONIC inference timing'
         metadata['test_result'] = report

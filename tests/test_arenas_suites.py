@@ -293,6 +293,13 @@ class ArenaTests(WorkbenchCase):
 
 
 class PolicyPreparationTests(WorkbenchCase):
+    def test_actuator_profile_defaults_to_current_g1_and_is_validated(self):
+        self.assertEqual(self.w.prepare(scenario_request())['actuators'], 'g1-current')
+        self.assertEqual(self.w.prepare(scenario_request(actuators='g1-rev1'))['actuators'], 'g1-rev1')
+        for bad in ('mode15', 88, ['source']):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.w.prepare(scenario_request(actuators=bad))
+
     def test_default_policy_and_criterion(self):
         scenario = self.w.prepare(scenario_request())
         self.assertEqual(scenario['policy_id'], DEPLOY_ID)

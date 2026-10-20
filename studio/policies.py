@@ -25,8 +25,9 @@ BEST_MODEL = FLOW_ROOT / 'research/BEST_MODEL.md'
 DEFAULT_POLICY = 'flow-bundle-20261008'
 STUDIO = Path(__file__).resolve().parent
 # Studio code that executes the policy is part of its identity (a changed adapter = a different run).
-WORKER_SOURCES = {'deploy-bundle': ['policy_worker.py', 'pipeline.py', 'replay.py'],
-                  'flow-callback': ['flow_policy_worker.py', 'policy_worker.py', 'pipeline.py', 'replay.py', 'policy_bundle.py']}
+WORKER_SOURCES = {'deploy-bundle': ['policy_worker.py', 'pipeline.py', 'replay.py', 'actuators.py'],
+                  'flow-callback': ['flow_policy_worker.py', 'policy_worker.py', 'pipeline.py', 'replay.py', 'policy_bundle.py',
+                                    'latency_anchor.py', 'actuators.py']}
 
 _hash_cache: dict = {}
 _hash_lock = threading.Lock()

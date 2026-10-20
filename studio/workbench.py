@@ -17,6 +17,8 @@ import threading
 import time
 import uuid
 
+from studio import actuators as actuator_profiles
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY_ID = 'flow-bundle-20261008'
 DATA_ROOT = Path.home() / 'research-data/g1-deploy-studio/workbench'
@@ -543,6 +545,8 @@ class Workbench:
                 'backends': [self.capabilities()], 'policies': catalog['policies'],
                 'flow_research': catalog['flow_research'],
                 'criteria': self._criteria(),
+                'actuators': [{'id': k, **{f: v[f] for f in ('label', 'hardware', 'description')}} for k, v in actuator_profiles.PROFILES.items()],
+                'default_actuators': actuator_profiles.DEFAULT_PROFILE,
                 'limits': {'arenas': MAX_ARENAS, 'presets': MAX_PRESETS, 'boxes': MAX_BOXES,
                            'suite_runs': MAX_SUITE_RUNS, 'jobs': MAX_JOBS, 'scenarios': MAX_SCENARIOS,
                            'latency_ms': [0, MAX_LATENCY_MS]},
@@ -601,6 +605,7 @@ class Workbench:
                     'policy_id': profile['id'],
                     'criterion': self._criterion(request.get('criterion', 'arrive_hold')),
                     'latency': self._latency(request.get('latency'), profile),
+                    'actuators': actuator_profiles.validate(request.get('actuators')),
                     'preset_label': label(request['preset_label']) if request.get('preset_label') else None,
                     'planner': {'candidates': integer(planner.get('candidates', 2), 'candidates', 1, max_k),
                                 'ode_steps': integer(planner.get('ode_steps', 4), 'ODE steps', 1, max_ode)}}
@@ -1211,6 +1216,8 @@ class Workbench:
                'derived': trajectory_metrics(rows, scenario.get('start_xy'), scenario.get('goal_xy')),
                'criterion': scenario.get('criterion', 'arrive_hold'),
                'latency': scenario.get('latency') or {'ms': 0, 'anchor': 'measured'},
+               # Scenarios saved before actuator profiles ran on the unpatched source model.
+               'actuators': scenario.get('actuators', 'source'),
                'torque': report.get('torque'),
                'trajectory_basis': 'Decimated simulator-ground-truth root XY from progress.jsonl (time, x, y)',
                'clock_domain': 'simulation'}

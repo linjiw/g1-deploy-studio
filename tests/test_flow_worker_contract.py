@@ -59,6 +59,12 @@ def flow_request(bundle_id=BUNDLE_ID, **overrides):
 
 
 class ValidateRequestTests(unittest.TestCase):
+    def test_actuators_default_to_source_for_requests_saved_before_profiles(self):
+        self.assertEqual(validate_request(base_request())['actuators'], 'source')
+        self.assertEqual(validate_request(base_request(actuators='g1-current'))['actuators'], 'g1-current')
+        with self.assertRaises(ValueError):
+            validate_request(base_request(actuators='unknown'))
+
     def test_default_policy_and_criterion_when_absent(self):
         clean = validate_request(base_request())
         self.assertEqual(clean['policy'], {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle', 'identity_sha256': None})

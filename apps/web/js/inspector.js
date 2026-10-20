@@ -131,12 +131,15 @@ export function fidelity(meta = {}) {
   return { level: 'L0', label: 'L0 · recorded replay', proves: 'Data and adapter correctness of a recording.', hides: 'Everything dynamic; nothing re-executed.' };
 }
 
-function torqueSummary(t) {
+function torqueSummary(t, actuators = null) {
   if (!t?.peak_commanded_nm) return '';
   const rows = Object.entries(t.peak_commanded_nm).filter(([n]) => /hip|knee|ankle/.test(n))
     .sort((a, b) => b[1] / (t.model_limit_nm[b[0]] ?? Infinity) - a[1] / (t.model_limit_nm[a[0]] ?? Infinity)).slice(0, 6);
   const saturated = Object.entries(t.saturated_substeps ?? {});
+  const exceed = Object.entries(t.exceedance_substeps ?? {}).map(([ref, joints]) => [ref, Object.values(joints).reduce((a, b) => a + b, 0)]);
   return `<details class="torque-details" ${saturated.length ? 'open' : ''}><summary>Leg torque vs model limit ${saturated.length ? `<span class="chip chip-commanded">SATURATED ${saturated.length} joint${saturated.length > 1 ? 's' : ''}</span>` : ''}</summary>
+    ${actuators ? fact('Actuator profile', `${actuators.label ?? actuators.profile}`) : fact('Actuator profile', 'source model (run predates profiles)')}
+    ${exceed.length ? fact('Substeps above training / current G1 / rev_1_0', ['training', 'g1-current', 'g1-rev1'].map(k => (exceed.find(e => e[0] === k) ?? [k, 0])[1]).join(' / ')) : ''}
     <table class="joint-table"><thead><tr><th>Joint</th><th>Peak cmd</th><th>Model</th><th>Training</th><th>Clamped</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${escape(n.replace('_joint', ''))}</td><td class="${v > (t.model_limit_nm[n] ?? Infinity) ? 'value-bad' : ''}">${num(v, 1)}</td><td>${num(t.model_limit_nm[n], 0)}</td><td>${num(t.training_effort_nm?.[n], 0)}</td><td>${escape(t.saturated_substeps?.[n] ?? 0)}</td></tr>`).join('')}</tbody></table>
     ${tiny(`Commanded PD torque (N·m) vs MuJoCo actuatorfrcrange; ${t.total_substeps} substeps. Where the training effort (contract) exceeds the model limit, MuJoCo clamps: see ROBOT_CONTRACT hip_effort_limit.`)}</details>`;
 }
@@ -151,7 +154,7 @@ function outcomeCard(state) {
     ${fact('Max root tilt / min height', `${num(result.maximum_root_tilt_rad, 3, 'rad')} / ${num(result.minimum_root_height_m, 3, 'm')}`)}
     ${result.runtime_error ? notice(result.runtime_error, 'warning') : ''}${interval ? tiny(`Final contact interval ${num(interval.start_s, 3)}–${num(interval.end_s, 3, 's')}: ${num(interval.max_force_n, 2, 'N')}.`) : ''}
     ${fact('Fidelity level', f.label)}${tiny(`Proves: ${f.proves} Hides: ${f.hides} Not a deployment or hardware result.`)}
-    ${torqueSummary(result.torque)}`,
+    ${torqueSummary(result.torque, result.actuators ?? meta.actuators)}`,
   { evidence: 'sim-truth', id: 'recorded-outcome' });
 }
 
