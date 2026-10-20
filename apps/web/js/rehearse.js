@@ -18,6 +18,9 @@ export async function initRehearse(catalog) {
   rh.catalog = catalog;
   rh.policyId ??= catalog.defaults.policy_id;
   rh.settings.actuators ??= catalog.default_actuators ?? 'g1-current';
+  // The preselected profile starts at its own default budget until the user chooses one.
+  const d = policy()?.default_planner;
+  if (d && !rh.budgetChosen) Object.assign(rh.settings, { candidates: d.candidates, ode_steps: d.ode_steps });
   rh.mapId ??= (catalog.maps.find(m => m.origin === 'arena-editor') ?? catalog.maps.find(m => m.id === 'flow-detour') ?? catalog.maps[0])?.id;
   await selectMap(rh.mapId, false);
   render();
@@ -74,7 +77,7 @@ export function render() {
   const suiteRuns = list.length * rh.seeds, suiteLimit = rh.catalog.limits?.suite_runs ?? 48;
   root.innerHTML = `
     <div class="panel-section"><h4>Flow research sync</h4>${research.available
-      ? `<div class="research-sync">${chip('configured', research.basis)} Adopted block <strong>${escape(research.adopted_block)}</strong> · ${escape(research.adopted_at)} · commit <code>${escape(research.adopted_commit)}</code></div><p class="tiny">${escape(research.last_update ?? '')}</p>`
+      ? `<div class="research-sync">${chip('configured', research.basis)} Adopted block <strong>${escape(research.adopted_block)}</strong> · ${escape(research.adopted_at)} · commit <code>${escape(research.adopted_commit)}</code></div>${research.last_update ? `<details class="tiny research-note"><summary>Latest research note</summary>${escape(research.last_update)}</details>` : ''}`
       : `<div class="callout warning">${escape(research.reason ?? 'Flow research tracker unavailable')}</div>`}
       ${rh.catalog.policies.some(p => p.matches_adopted) ? '' : '<p class="tiny warn-text">No deployable Studio profile matches the adopted block yet.</p>'}</div>
     <div class="panel-section"><h4>Policy profile</h4><div class="policy-list">${rh.catalog.policies.map(p => policyCard(p, research)).join('')}</div></div>
@@ -86,7 +89,7 @@ export function render() {
     <div class="panel-section"><h4>Run settings</h4>
       <div class="grid-fields"><label>Duration s<input id="rh-duration" type="number" min="1" max="10" step="0.5" value="${rh.settings.duration_s}"></label><label>Seed<input id="rh-seed" type="number" min="0" max="2147483647" step="1" value="${rh.settings.seed}"></label><label>Seeds in suite<input id="rh-seeds" type="number" min="1" max="4" step="1" value="${rh.seeds}"></label>
       <label>Candidates K<input id="rh-k" type="number" min="1" max="${pol?.limits?.candidates?.[1] ?? 16}" step="1" value="${rh.settings.candidates}"></label><label>ODE steps<input id="rh-ode" type="number" min="1" max="${pol?.limits?.ode_steps?.[1] ?? 10}" step="1" value="${rh.settings.ode_steps}"></label><span></span></div>
-      <div class="field-row compact budget-buttons">${BUDGETS.map(([n, k, o]) => `<button data-budget="${k},${o}" class="${rh.settings.candidates === k && rh.settings.ode_steps === o ? 'active' : ''}">${n} ${k}/${o}</button>`).join('')}${deployed ? `<button data-budget="${deployed.candidates},${deployed.ode_steps}" class="${rh.settings.candidates === deployed.candidates && rh.settings.ode_steps === deployed.ode_steps ? 'active' : ''}" title="The profile's deployed planner budget">Deployed ${deployed.candidates}/${deployed.ode_steps}</button>` : ''}</div>
+      <div class="field-row compact budget-buttons">${BUDGETS.map(([n, k, o]) => `<button data-budget="${k},${o}" class="${rh.settings.candidates === k && rh.settings.ode_steps === o ? 'active' : ''}">${n} ${k}/${o}</button>`).join('')}${deployed ? `<button data-budget="${deployed.candidates},${deployed.ode_steps}" class="${rh.settings.candidates === deployed.candidates && rh.settings.ode_steps === deployed.ode_steps ? 'active' : ''}" title="${pol?.loader === 'flow-callback' ? 'The budget this block was evaluated at (Isaac)' : 'The profile\'s deployed planner budget'}">Deployed ${deployed.candidates}/${deployed.ode_steps}</button>` : ''}</div>
       <div class="grid-fields"><label>Planner latency<select id="rh-latency">${[0, 100, 160, 200, 300, 500].map(v => `<option value="${v}" ${v === rh.settings.latency_ms ? 'selected' : ''}>${v ? `${v} ms` : 'none (L1)'}</option>`).join('')}</select></label>
         <label>Anchor<select id="rh-anchor" ${!rh.settings.latency_ms ? 'disabled' : ''}><option value="measured" ${rh.settings.anchor === 'measured' ? 'selected' : ''}>measured</option><option value="predict" ${rh.settings.anchor === 'predict' ? 'selected' : ''}>predict (latency-aware)</option></select></label><span></span></div>
       <p class="tiny">${rh.settings.latency_ms ? `L2: each plan starts ${rh.settings.latency_ms} ms after it is requested while physics keeps running${pol?.loader === 'flow-callback' ? ` (Studio delayed-execution approximation for the Flow callback, L2≈${rh.settings.anchor === 'predict' ? ' predict: Studio gives the planner the state predicted at request + latency from the landed plan, the g1-student-deploy method; route and tight-mode decisions stay measured' : ''})` : ' (source lockstep latency model)'}.` : 'L1: physics waits for every replan, hiding planner latency.'}</p>
@@ -109,14 +112,21 @@ function bind() {
   $('rh-preset').addEventListener('change', e => { rh.presetIndex = Number(e.target.value); render(); emit('rehearse:preview', previewMarkers()); });
   $('rh-edit-arena').addEventListener('click', () => emit('rehearse:edit-arena', rh.mapId));
   for (const [id, key] of [['rh-duration', 'duration_s'], ['rh-seed', 'seed'], ['rh-k', 'candidates'], ['rh-ode', 'ode_steps']])
-    $(id).addEventListener('change', e => { const v = Number(e.target.value); if (finite(v)) rh.settings[key] = v; render(); });
+    $(id).addEventListener('change', e => {
+      // Clamp to the field's allowed range here, instead of a server error after Run (review L6).
+      const el = e.target, v = Number(el.value), lo = Number(el.min), hi = Number(el.max);
+      if (finite(v)) rh.settings[key] = Math.round(Math.min(finite(hi) ? hi : v, Math.max(finite(lo) ? lo : v, v)) * 2) / 2;
+      if (key === 'candidates' || key === 'ode_steps') { rh.settings[key] = Math.round(rh.settings[key]); rh.budgetChosen = true; }
+      if (key === 'seed') rh.settings.seed = Math.round(rh.settings.seed);
+      render();
+    });
   $('rh-criterion').addEventListener('change', e => { rh.settings.criterion = e.target.value; });
   $('rh-actuators')?.addEventListener('change', e => { rh.settings.actuators = e.target.value; render(); });
   $('rh-latency').addEventListener('change', e => { rh.settings.latency_ms = Number(e.target.value); render(); });
   $('rh-anchor').addEventListener('change', e => { rh.settings.anchor = e.target.value; render(); });
   $('rh-seeds').addEventListener('change', e => { rh.seeds = Math.max(1, Math.min(4, Number(e.target.value) || 1)); render(); });
   document.querySelectorAll('[data-budget]').forEach(b => b.addEventListener('click', () => {
-    const [k, o] = b.dataset.budget.split(',').map(Number); Object.assign(rh.settings, { candidates: k, ode_steps: o }); render();
+    const [k, o] = b.dataset.budget.split(',').map(Number); Object.assign(rh.settings, { candidates: k, ode_steps: o }); rh.budgetChosen = true; render();
   }));
   $('rh-run').addEventListener('click', () => guarded(runPreset));
   $('rh-suite').addEventListener('click', () => guarded(runSuite));
@@ -181,7 +191,7 @@ async function cancel() {
 
 export async function refreshActive() {
   const { jobs } = await request('/api/jobs');
-  const live = jobs.find(j => ACTIVE.includes(j.status));
+  const live = jobs.find(j => FOLLOW.includes(j.status));  // includes runs a restarted gateway does not own
   if (live && !rh.job) { rh.job = live; poll(); }
   const { suites } = await request('/api/suites');
   const runningSuite = suites.find(s => ['queued', 'running', 'cancelling'].includes(s.status));
@@ -249,7 +259,7 @@ function renderSuite() {
   if (!s) { node.innerHTML = ''; return; }
   const done = s.runs.filter(r => r.outcome).length, goals = s.runs.filter(r => r.outcome === 'goal_completion').length;
   node.innerHTML = `<h4>Suite · ${escape(s.status)}</h4><p class="tiny">${escape(s.label)} · ${done}/${s.runs.length} finished · ${goals} goal${goals === 1 ? '' : 's'} · started ${escape(ago(s.created_unix_s))}</p>
-    <table class="suite-table"><tbody>${s.runs.map(r => `<tr><td>${outcomeChip(r.outcome, r.status)}</td><td>${escape(r.preset ?? r.label ?? r.scenario_id)}${r.seed !== undefined ? '' : ''}</td><td>${r.job_id && r.outcome ? `<button class="link-button" data-open-session="${escape(r.job_id)}">open</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
+    <table class="suite-table"><tbody>${s.runs.map(r => `<tr><td>${outcomeChip(r.outcome, r.status)}</td><td>${escape(r.preset ?? r.label ?? r.scenario_id)}${r.seed !== undefined && r.seed !== null ? ` · s${escape(r.seed)}` : ''}</td><td>${r.job_id && r.outcome ? `<button class="link-button" data-open-session="${escape(r.job_id)}">open</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
   node.querySelectorAll('[data-open-session]').forEach(b => b.addEventListener('click', () => emit('open-session', b.dataset.openSession)));
 }
 

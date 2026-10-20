@@ -396,6 +396,12 @@ on('arena:rehearse', async id => { await setWorkspace('rehearse'); await rehears
 on('arena:preview3d', enabled => {
   arena.preview3d = enabled;
   setStage(enabled ? '3d' : 'arena');
+  // The 3D preview shows a draft arena: the title, inspector and transport must not read as the last recording.
+  setPreviewing(enabled);
+  if (enabled) {
+    $('session-title').textContent = `Arena draft · ${arena.label || 'unsaved'}`;
+    $('source-badge').className = 'chip chip-configured'; $('source-badge').textContent = 'CONFIGURED';
+  } else if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
   if (enabled) { const q = activePreset(); scene.setArenaPreview(arenaDocument(), { start: q?.start_xy, yaw: q?.start_yaw_rad, goal: q?.goal_xy }); scene.fitScene(); }
 });
 on('arena:changed', () => { if (arena.preview3d) { const q = activePreset(); scene.setArenaPreview(arenaDocument(), { start: q?.start_xy, yaw: q?.start_yaw_rad, goal: q?.goal_xy }); } });

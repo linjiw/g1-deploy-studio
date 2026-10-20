@@ -107,19 +107,20 @@ export function render() {
   const outcomes = [...new Set(runs.table.map(r => r.outcome ?? r.status))];
   const stats = policies.map(id => {
     const all = rows.filter(r => r.policy_id === id), rs = all.filter(r => r.outcome);
-    return { id, n: rs.length, unscored: all.length - rs.length, goals: rs.filter(r => r.outcome === 'goal_completion').length,
+    const conditions = new Set(rs.map(r => `${r.criterion}|${r.latency?.ms ?? 0}|${r.latency?.anchor}|${r.actuators ?? 'source'}|${r.planner?.candidates}/${r.planner?.ode_steps}`));
+    return { id, n: rs.length, unscored: all.length - rs.length, goals: rs.filter(r => r.outcome === 'goal_completion').length, mixed: conditions.size > 1,
       contact: rs.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length, contactUnknown: rs.filter(r => !finite(r.metrics.max_contact_n)).length };
   }).filter(s => s.n || s.unscored);
-  root.innerHTML = `<div class="panel-section"><label class="field">Arena<select id="runs-map"><option value="">All</option>${maps.map(m => `<option value="${escape(m)}" ${runs.filters.map === m ? 'selected' : ''}>${escape(mapLabel(m))}</option>`).join('')}</select></label>
+  root.innerHTML = `<div class="panel-section"><label class="field">Arena<select id="runs-map"><option value="">All</option>${maps.map(m => `<option value="${escape(m)}" ${runs.filters.map === m ? 'selected' : ''}>${escape(mapOptionLabel(m, maps))}</option>`).join('')}</select></label>
       <div class="grid-fields"><label>Policy<select id="runs-policy"><option value="">All</option>${policies.map(p => `<option value="${escape(p)}" ${runs.filters.policy === p ? 'selected' : ''}>${escape(p)}</option>`).join('')}</select></label>
       <label>Outcome<select id="runs-outcome"><option value="">All</option>${outcomes.map(o => `<option value="${escape(o)}" ${runs.filters.outcome === o ? 'selected' : ''}>${escape(String(o).replaceAll('_', ' '))}</option>`).join('')}</select></label></div>
       <div class="field-row compact"><label class="check"><input type="radio" name="runs-color" value="outcome" ${runs.colorBy === 'outcome' ? 'checked' : ''}> Color by outcome</label><label class="check"><input type="radio" name="runs-color" value="policy" ${runs.colorBy === 'policy' ? 'checked' : ''}> by policy</label><button id="runs-refresh">Refresh</button></div></div>
-    ${stats.length ? `<div class="panel-section"><h4>Outcomes in view</h4>${stats.map(s => `<div class="stat-row"><i style="background:${policyColor(s.id)}"></i><span>${escape(s.id)}</span><strong>${s.goals}/${s.n} goals</strong><small>${s.contact} with contact${s.contactUnknown ? ` · ${s.contactUnknown} contact unknown` : ''}${s.unscored ? ` · ${s.unscored} not scored (killed/cancelled/running)` : ''} · criteria mixed: see report below</small></div>`).join('')}<p class="tiny">Individual CPU lockstep checks, mostly one seed each: not a success-rate estimate.</p></div>` : ''}
+    ${stats.length ? `<div class="panel-section"><h4>Outcomes in view</h4>${stats.map(s => `<div class="stat-row"><i style="background:${policyColor(s.id)}"></i><span>${escape(s.id)}</span><strong>${s.goals}/${s.n} goals</strong><small>${s.contact} with contact${s.contactUnknown ? ` · ${s.contactUnknown} contact unknown` : ''}${s.unscored ? ` · ${s.unscored} not scored (killed/cancelled/running)` : ''}${s.mixed ? ' · conditions mixed: see the report below' : ''}</small></div>`).join('')}<p class="tiny">Pooled over every condition in view. Per-condition rates with confidence intervals are in the robustness report below.</p></div>` : ''}
     ${reportHtml(rows)}
     <div class="panel-section runs-list">${rows.length ? rows.map(r => `<div class="run-row ${runs.selected.has(r.id) ? 'selected' : ''}">
         <label class="run-check" title="Compare"><input type="checkbox" data-run-select="${escape(r.id)}" ${runs.selected.has(r.id) ? 'checked' : ''} ${r.trajectory ? '' : 'disabled'}><i style="background:${runColor(r)}"></i></label>
         <div class="run-main"><div class="run-title">${outcomeChip(r.outcome, r.status)}<span title="${escape(r.label)}">${escape(shortLabel(r))}</span></div>
-          <div class="run-meta">${escape(r.policy_id)} · K${r.planner?.candidates ?? '—'}/ODE${r.planner?.ode_steps ?? '—'} · s${r.seed ?? '—'} · ${escape(r.criterion === 'arena_reach' ? 'reach' : 'arrive & hold')}${r.latency?.ms ? ` · lat ${r.latency.ms} ms${r.latency.anchor === 'predict' ? ' predict' : ''}` : ''} · ${escape(ago(r.started_unix_s))}</div>
+          <div class="run-meta">${escape(r.policy_id)} · K${r.planner?.candidates ?? '—'}/ODE${r.planner?.ode_steps ?? '—'} · s${r.seed ?? '—'} · ${escape(r.criterion === 'arena_reach' ? 'reach' : 'arrive & hold')}${r.latency?.ms ? ` · lat ${r.latency.ms} ms${r.latency.anchor === 'predict' ? ' predict' : ''}` : ''} · <span class="actuator-token" title="Actuator limits (hip pitch/roll/yaw)">${escape(ACTUATOR_SHORT[r.actuators ?? 'source'] ?? r.actuators)}</span> · ${escape(ago(r.started_unix_s))}</div>
           <div class="run-meta">${num(r.metrics.elapsed_s, 2, 's')} · final ${num(r.metrics.final_goal_distance_m, 2, 'm')} · contact ${num(r.metrics.max_contact_n, 0, 'N')} · plan p95 ${num(r.metrics.planner_p95_ms, 0, 'ms')}</div></div>
         ${r.replayable ? `<button class="link-button" data-open-session="${escape(r.id)}">Replay</button>` : ''}</div>`).join('') : '<p class="tiny">No runs match these filters.</p>'}</div>`;
   $('runs-map').addEventListener('change', e => { runs.filters.map = e.target.value; render(); });
@@ -138,6 +139,12 @@ export function render() {
 }
 
 function mapLabel(id) { return runs.catalogMaps?.find(m => m.id === id)?.label ?? id; }
+const ACTUATOR_SHORT = { 'g1-current': 'G1 139/139/88', 'g1-rev1': 'rev1 88/139/88', source: 'src 88/88/88' };
+// Arena filter labels: disambiguate identical names with the arena id suffix.
+function mapOptionLabel(id, ids) {
+  const label = mapLabel(id);
+  return ids.filter(x => mapLabel(x) === label).length > 1 ? `${label} · ${String(id).slice(-6)}` : label;
+}
 function shortLabel(r) {
   if (r.preset_label) return `${mapLabel(r.map_id)} · ${r.preset_label}`;
   return r.label ?? r.id;  // older runs: full label (shown with an ellipsis and a tooltip)

@@ -64,6 +64,17 @@ class TrajectoryMetricsTests(unittest.TestCase):
         self.assertIsNone(wb.trajectory_metrics(rows_toward([1, 0], 10), [0, 0], None))
 
 
+class PathEfficiencyBoundTests(unittest.TestCase):
+    def test_stopping_short_of_the_goal_never_exceeds_one(self):
+        # Straight walk from x=0 that stops 0.15 m before a goal 2 m away (review L2: ratio was 2.0/1.85 > 1).
+        n = 94
+        rows = [{'time': i * .02, 'qpos': [1.85 * i / (n - 1), 0.0, .75, 1, 0, 0, 0], 'health': {'contact_force_n': 0.0}} for i in range(n)]
+        m = wb.trajectory_metrics(rows, [0, 0], [2.0, 0.0])
+        self.assertAlmostEqual(m['path_efficiency'], 1.0, places=6)
+        detour = rows + [{'time': n * .02, 'qpos': [1.85, 0.5, .75, 1, 0, 0, 0], 'health': {'contact_force_n': 0.0}}]
+        self.assertLess(wb.trajectory_metrics(detour, [0, 0], [2.0, 0.0])['path_efficiency'], 1.0)
+
+
 class LatencyAndReuseTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

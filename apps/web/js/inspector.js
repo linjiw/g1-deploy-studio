@@ -40,7 +40,7 @@ function renderIntent(state) {
   const windowRows = r?.window ?? [];
   const nav = goal ? card('Navigation target', `${fact('Goal · world XY', `[${vector(goal, 2)}] m`)}${fact('Distance now', num(dist, 3, 'm'), dist !== null && crit && dist <= crit.goal_radius_m ? 'value-good' : '')}
       ${crit ? tiny(`Success needs ≤ ${num(crit.goal_radius_m, 2, 'm')} and speed ≤ ${num(crit.goal_speed_m_s, 2, 'm/s')} held ${num(crit.goal_hold_s, 2, 's')}. Collision > ${num(crit.obstacle_contact_threshold_n, 0, 'N')}.`) : ''}`, { evidence: 'configured' }) : '';
-  const plan = card('Planner selection', p ? `${fact('Selection rule', p.rule ?? 'Unavailable', 'value-amber')}${fact('Plan age at cursor', num(p.age_s, 3, 's'))}${fact('Waypoint · world', p.waypoint ? `[${vector(p.waypoint, 2)}] m` : 'Unavailable')}
+  const plan = card('Planner selection', p ? `${fact('Selection rule', p.rule ?? 'Unavailable', 'value-amber')}${fact(p.attribution ? 'Executing for' : 'Plan age at cursor', num(p.age_s, 3, 's'))}${p.attribution ? tiny(p.attribution) : ''}${fact('Waypoint · world', p.waypoint ? `[${vector(p.waypoint, 2)}] m` : 'Unavailable')}
       ${fact(isLockstep(state) ? 'CPU compute · physics paused' : 'Compute latency', num(p.latency_ms, 1, 'ms'))}
       ${p.exec_check ? `<div class="fact"><span>Execution check ${chip('estimated', 'WM-v2 predicted SONIC execution, trained on Isaac; accuracy under MuJoCo is unmeasured.')}</span><strong class="${p.exec_check.ok ? 'value-good' : 'value-amber'}">${p.exec_check.ok ? 'pass' : 'fail'} · clearance ${num(p.exec_check.clearance_m * 100, 1, 'cm')} · tilt ${num(p.exec_check.tilt_rad, 2, 'rad')} · ${escape(p.exec_check.tries ?? '—')} tr${p.exec_check.tries === 1 ? 'y' : 'ies'}</strong></div>` : ''}
       ${p.tight !== undefined && p.tight !== null ? fact('Planner level', p.tight ? `tight / narrow passage · corridor ${num(p.corridor_m, 2, 'm')}` : 'nominal') : ''}${isLockstep(state) ? tiny('Lockstep pauses simulated time while planning, so this latency does not delay the plan in simulation. On the robot a replan has ~160 ms.') : ''}`
@@ -119,7 +119,7 @@ export function fidelity(meta = {}) {
   const latency = meta.latency_model?.ms;
   if (meta.recording_kind === 'sonic-mujoco-lockstep' && latency > 0) {
     const approx = meta.fidelity === 'L2-approx', predict = approx && meta.latency_model.anchor === 'predict';
-    const short = approx ? (predict ? 'L2≈ predict' : 'L2≈') : 'L2';
+    const short = approx ? (predict ? 'L2≈ predict' : 'L2≈') : meta.latency_model.anchor === 'predict' ? 'L2 predict' : 'L2';
     return { level: meta.fidelity ?? 'L2', short, label: `${short} · lockstep with ${latency} ms planner latency`,
       proves: `Planner/tracker logic plus the effect of plans arriving ${latency} ms after they are requested (${meta.latency_model.anchor} anchor).`,
       hides: `DDS/ZMQ transport, C++/TensorRT numerics, real sensors${predict ? '; Studio, not Flow, predicts the planner history from the landed plan (g1-student-deploy method) while route and tight-mode decisions stay on the measured pose (approximation)' : approx ? '; the Flow callback still anchors replans on its latest plan (approximation)' : ''}.` };
@@ -150,6 +150,17 @@ function torqueSummary(t, actuators = null) {
       <tbody><tr><td>all joints</td>${refs.map(([k]) => `<td>${ref(k) === null ? (k in t.exceedance_substeps ? '0' : '—') : escape(ref(k))}</td>`).join('')}</tr></tbody></table>` : ''}
     <table class="joint-table"><thead><tr><th>Joint</th><th>Peak cmd</th><th>Model</th><th>Training</th><th>At limit</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${escape(n.replace('_joint', ''))}</td><td class="${atLimit(n) ? 'value-bad' : ''}">${num(v, 1)}</td><td>${num(t.model_limit_nm[n], 0)}</td><td>${num(t.training_effort_nm?.[n], 0)}</td><td>${atLimit(n) ? (t.saturated_substeps?.[n] ? escape(`${t.saturated_substeps[n]} substeps`) : 'yes (peak)') : 'no'}</td></tr>`).join('')}</tbody></table>
     ${tiny(`Commanded PD torque (N·m), ${t.total_substeps} substeps. The source clips to the training effort, then MuJoCo clamps to the model limit; "at limit" means the command reached the smaller of the two. Runs recorded before 2026-10-20 counted only the model clamp, so "yes (peak)" is derived from the recorded peak.`)}</details>`;
+}
+
+// Predictive anchoring: how far the predicted planner anchor was from where the robot really was at landing.
+function anchorCard(state) {
+  const a = state.session.metadata.test_result?.anchor_prediction;
+  if (!a) return '';
+  const q = (k, digits, unit) => a[k] ? `${num(a[k].p50, digits)} / ${num(a[k].p95, digits)} / ${num(a[k].max, digits, unit)}` : 'Unavailable';
+  return card('Anchor prediction error', `<p class="tiny">Predicted anchor (estimated) vs the measured pre-action state at the landing tick ${chip('sim-truth')}.</p>
+    ${fact('Landed plans (predicted)', `${a.landed_plans ?? 0} (${a.predicted_plans ?? 0})`)}${fact('Root XY p50 / p95 / max', q('xy_m', 3, 'm'))}
+    ${fact('Yaw p50 / p95 / max', q('yaw_rad', 3, 'rad'))}${fact('Joint RMSE p50 / p95 / max', q('joint_rmse_rad', 3, 'rad'))}
+    ${tiny('The planner was given the state predicted at request + latency from the landed plan; this is the error of that prediction. It assumes SONIC tracks the plan exactly, so a lagging tracker makes it optimistic.')}`, { evidence: 'estimated' });
 }
 
 function outcomeCard(state) {
@@ -190,7 +201,7 @@ function renderHealth(state) {
   const recent = events.filter(e => e.time <= state.time).slice(-8).reverse();
   const diag = card('Replay diagnostic', `<label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame ? 'checked' : ''} ${hasPose(state.frame) ? '' : 'disabled'}> Hold state while the cursor advances</label>${tiny('Injects a stale measured state in the viewer only. Display marks it stale after 100 ms. No producer or controller is affected.')}`, { cls: state.frozenFrame ? 'card-warning' : '' });
   $('health-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${meta.mode === 'simulation' ? 'LIVE CPU WORKER' : meta.mode === 'partial-live' ? 'PARTIAL LIVE SAMPLES · RUN ENDED WITHOUT RECORDING' : 'RECORDED DIAGNOSTICS'}</span><h3>Run health</h3></div>
-    ${outcomeCard(state)}${goalCard}${timing}${pipelineHealthLink(state)}${contact}${streams}${runtime}
+    ${outcomeCard(state)}${anchorCard(state)}${goalCard}${timing}${pipelineHealthLink(state)}${contact}${streams}${runtime}
     ${card('Events up to cursor', recent.length ? `<ol class="event-list">${recent.map(e => `<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>` : '<p class="unavailable">No event before this cursor.</p>', { evidence: 'recorded' })}
     ${diag}${unavailableList(missing)}
     <div class="card card-flat">${fact(hasPose(m) ? 'State source time' : 'Event source time', num(m?.source_time, 6, 's'))}${fact('Source clock', m?.source_clock_domain)}${fact('Receipt time', num(m?.receipt_time, 6, 's'))}${fact('Sequence', m?.sequence)}</div>`;
@@ -215,7 +226,8 @@ export function perceptionAt(session, time) {
 
 function renderPerception(state) {
   const p = state.session.perception;
-  const unseen = notice('Planner limitation: the source Flow selector and route treat unseen cells as free. Studio keeps unseen space visibly unknown.', 'warning');
+  // Bundle-only caveat: a privileged block plans from the exact boxes and has no unseen cells.
+  const unseen = state.session.metadata?.privileged_map ? '' : notice('Planner limitation: the source Flow selector and route treat unseen cells as free. Studio keeps unseen space visibly unknown.', 'warning');
   if (p?.frames) {
     const s = perceptionAt(state.session, state.time);
     $('perception-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">CAUSAL SIMULATED PERCEPTION</span><h3>What the planner observes</h3><p>Latest map and LiDAR sample at or before the cursor.</p></div>

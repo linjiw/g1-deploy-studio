@@ -286,3 +286,20 @@ class DelayedPlansTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ExecutingPlanStartsTests(unittest.TestCase):
+    """Every plan that begins driving SONIC is recorded as (start tick, request tick) (review M4)."""
+
+    def test_first_plan_starts_at_once_and_later_plans_at_request_plus_latency(self):
+        import numpy as np
+        from studio.latency_anchor import DelayedPlans
+        d = DelayedPlans(10, 'measured')
+        q, dq = np.zeros(36), np.zeros(35)
+        first, second = object(), object()
+        d.target_args(first, q, dq, 0, 0)
+        for tick in range(1, 8):
+            d.target_args(first, q, dq, tick, tick)
+        for tick in range(8, 20):  # second plan requested at tick 8; the callback hands it over from then on
+            d.target_args(second, q, dq, tick - 8, tick)
+        self.assertEqual(d.starts, [(0, 0), (18, 8)])

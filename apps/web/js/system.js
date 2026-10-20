@@ -90,6 +90,11 @@ function nodeBadge(id, session) {
   if (id === 'sonic' && r.sonic_inference_ms) return `p50 ${num(r.sonic_inference_ms.p50, 1)} · p95 ${num(r.sonic_inference_ms.p95, 1)} ms`;
   if (id === 'perception' && session?.perception?.frames?.length) return `${session.perception.frames.length} map snapshots`;
   if ((id === 'perception' || id === 'lidar') && sessionKind(session) === 'privileged') return 'not used (privileged)';
+  if (id === 'robot' && ['worker', 'privileged'].includes(sessionKind(session))) {
+    const hips = session?.metadata?.actuators?.hips;
+    const nm = side => hips?.[`left_hip_${side}_joint`]?.after_nm;
+    return hips ? `hips ${num(nm('pitch'), 0)}/${num(nm('roll'), 0)}/${num(nm('yaw'), 0)} N·m` : 'hips 88/88/88 (source model)';
+  }
   return '';
 }
 

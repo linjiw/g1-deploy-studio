@@ -143,15 +143,22 @@ class DelayedPlans:
         self.pending = []  # [(ready_tick, entry)], oldest first
         self.request = None  # predicted planner inputs waiting for their plan object
         self.landings = []  # (tick, entry) for every plan that landed from the queue
+        self.starts = []  # (start_tick, request_tick) for every plan that began driving SONIC, in order
 
     @property
     def predictive(self):
         return self.anchor == 'predict' and self.latency_ticks > 0
 
+    @staticmethod
+    def request_tick(entry):
+        """Tick at which the entry's plan was requested (the prediction knows it; measured anchors equal it)."""
+        return int(entry[4]['tick']) if entry[4] is not None else int(entry[3])
+
     def land(self, tick):
         while self.pending and self.pending[0][0] <= tick:
             self.executing = self.pending.pop(0)[1]
             self.landings.append((tick, self.executing))
+            self.starts.append((tick, self.request_tick(self.executing)))
 
     def predict(self, history, tick):
         """Planner inputs predicted at tick + L, or None when the plan is anchored on the measured history.
@@ -188,6 +195,7 @@ class DelayedPlans:
             self.request = None
             if self.executing is None:
                 self.executing = entry  # the first plan starts immediately, as in lockstep
+                self.starts.append((tick, request_tick))
             else:
                 self.pending.append((request_tick + self.latency_ticks, entry))
         self.land(tick)

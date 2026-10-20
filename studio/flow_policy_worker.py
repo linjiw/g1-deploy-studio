@@ -13,6 +13,7 @@ route consume the exact configured boxes (simulator ground truth), not LiDAR.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import os
@@ -223,7 +224,12 @@ def execute(request, output):
                    'arm': manifest['flow']['arm'], 'bundle_id': manifest['id'],
                    'identity_sha256': req['policy'].get('identity_sha256'), 'loader': 'flow-callback',
                    'deployed_budget': manifest['deployed_budget']}
-        limitations = list(manifest['caveats']) + [
+        # The bundle manifest's lockstep caveat ("physics waits for each replan") is false under a latency model.
+        caveats = [c for c in manifest['caveats'] if not (req['latency']['ms'] and 'physics waits' in c.lower())]
+        if req['latency']['ms']:
+            caveats.append(f"Planner latency is modelled: each plan starts {req['latency']['ms']} ms after it is requested while "
+                           'physics keeps running (Studio delayed-execution wrapper, L2≈).')
+        limitations = caveats + [
             'Fresh in-process CPU MuJoCo + SONIC ONNX execution of the Flow callback; not a C++/DDS or real-time deployment validation.',
             f"Planner budget K{req['planner']['candidates']}/ODE{req['planner']['ode_steps']}"
             + ('' if req['planner'] == manifest['deployed_budget'] else f" differs from the evaluated {manifest['deployed_budget']['candidates']}/{manifest['deployed_budget']['ode_steps']}") + '.',
@@ -543,10 +549,23 @@ def execute(request, output):
         by_tick = {row.get('tick'): row for row in native_plans}
         anchors = {row['tick']: row['anchor'] for row in plans if row.get('anchor')}
         active = None
+        # Under latency a plan drives SONIC only from request + L: attribute each frame to the plan that is
+        # executing, not to the latest requested one (review M4). Lockstep keeps the source attribution.
+        starts = sorted(delayed.starts) if latency_ticks else []
+        start_ticks = [s for s, _ in starts]
         for i, (frame, decoded) in enumerate(zip(frames[:n], session['frames'][:n])):
-            if i in by_tick:
-                active = by_tick[i]
-            frame['plan'] = decoded['plan']
+            if starts:
+                k = bisect.bisect_right(start_ticks, i) - 1
+                start_tick, request_tick = starts[k] if k >= 0 else (None, None)
+                source = session['frames'][request_tick]['plan'] if request_tick is not None and request_tick < n else None
+                active = by_tick.get(request_tick)
+                frame['plan'] = None if source is None else dict(
+                    source, age_s=(i - start_tick) * DT, requested_at_s=request_tick * DT, executing_since_s=start_tick * DT,
+                    attribution=f"executing plan: requested at {request_tick * DT:.2f} s, driving SONIC since {start_tick * DT:.2f} s")
+            else:
+                if i in by_tick:
+                    active = by_tick[i]
+                frame['plan'] = decoded['plan']
             if frame['plan'] is not None and active is not None:
                 frame['plan'].update(jsonable({'exec_check': active.get('exec_check'), 'tight': active.get('tight'),
                                                'corridor_m': active.get('corridor_m'), 'gate_side_gap_m': active.get('gate_side_gap_m'),

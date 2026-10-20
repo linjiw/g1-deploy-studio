@@ -323,7 +323,9 @@ def trajectory_metrics(rows, start, goal, dt=.02):
             break
     first_contact = next((t[i] for i, r in enumerate(rows) if ((r.get('health') or {}).get('contact_force_n') or 0) > 0), None)
     return {'path_length_m': path, 'straight_line_m': straight,
-            'path_efficiency': straight / path if path > 1e-6 else None,
+            # Progress per metre walked: (start distance - final distance) / path, in [0, 1]. A plain
+            # straight/path ratio exceeds 1 when a run stops short of the goal (review L2).
+            'path_efficiency': min(1.0, max(0.0, straight - dist[-1]) / path) if path > 1e-6 else None,
             'first_entry_s': {'0.3': entry[.3], '0.4': entry[.4]},
             'closest_m': min(dist), 'final_m': dist[-1],
             'max_tilt_rad': max((v for v in (tilt(r['qpos']) for r in rows) if v is not None), default=None),
@@ -1060,6 +1062,8 @@ class Workbench:
                      'created_unix_s': time.time(), 'finished_unix_s': None,
                      'runs': [{'scenario_id': sid, 'label': self.scenarios[sid].get('label'),
                                'preset': self.scenarios[sid].get('preset_label'),
+                               'seed': self.scenarios[sid].get('seed'),
+                               'actuators': self.scenarios[sid].get('actuators', 'source'),
                                'job_id': None, 'status': 'queued', 'outcome': None} for sid in ids],
                      'note': 'Runs execute one at a time in the owned CPU worker; each run is an independent bounded simulation.'}
             self.suites[suite['id']] = suite
