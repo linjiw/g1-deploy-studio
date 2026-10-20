@@ -55,7 +55,9 @@ def verify(root, *, deep=True):
         if current != manifest['src_files']:
             changed = sorted(set(current.items()) ^ set(manifest['src_files'].items()))
             problems.append(f'src tree differs from manifest ({len(changed)} entries), e.g. {changed[:2]}')
-    if sha256(root / 'config.json') != manifest['flow']['config_sha256']:
+    if not (root / 'config.json').is_file():
+        problems.append('missing config.json')
+    elif sha256(root / 'config.json') != manifest['flow']['config_sha256']:
         problems.append('config.json hash mismatch')
     for entry in manifest['artifacts'] + manifest['humanoid_lfh']['files'] + manifest['deploy']['files']:
         path = Path(entry['path'])

@@ -30,6 +30,7 @@ MAX_PRESETS = 16
 MAX_SUITE_RUNS = 12
 MAX_SUITES = 64
 SUITE_ACTIVE = ('queued', 'running', 'cancelling')
+SUITE_TERMINAL = ('completed', 'cancelled', 'interrupted', 'failed')
 ACTIVE_STATES = ('starting', 'running', 'cancelling')
 TERMINAL_STATES = ('completed', 'failed', 'cancelled')
 HISTORY_FIELDS = ('id', 'status', 'scenario_id', 'scenario', 'started_unix_s', 'finished_unix_s',
@@ -240,6 +241,13 @@ def point_status(map_data, point, clearance=.25):
     return {'status': 'configured_free', 'reason': 'No configured box intersects the standing footprint; path and dynamic feasibility untested'}
 
 
+def ident(value, name):
+    """JSON identifiers must be strings; lists/objects are invalid input, not crashes."""
+    if not isinstance(value, str):
+        raise ValueError(f'{name} must be a string identifier')
+    return value
+
+
 def _ms(seconds):
     return seconds * 1000 if isinstance(seconds, (int, float)) and math.isfinite(seconds) else None
 
@@ -322,7 +330,10 @@ class Workbench:
                 self.maps[path.stem] = dict(validate_map(data), id=path.stem, provenance=data.get('provenance'))
             except (ValueError, OSError):
                 continue
-        for path in sorted((self.root/'maps').glob('arena-*.json'))[:MAX_ARENAS]:
+        for path in sorted((self.root/'maps').glob('arena-*.json')):
+            if sum(k.startswith('arena-') for k in self.maps) >= MAX_ARENAS:
+                self.map_warnings.append(f'Arena {path.stem} not loaded: {MAX_ARENAS}-arena limit reached')
+                continue
             try:
                 data = read_json(path, 4*1024*1024)
                 arena = dict(validate_map(data), id=path.stem, provenance=data.get('provenance'),
@@ -464,6 +475,7 @@ class Workbench:
                                'Scans require collision geometry before physics testing']}
 
     def map(self, key):
+        key = ident(key, 'map_id')
         with self.lock:
             if key not in self.maps:
                 raise KeyError('Unknown map')
@@ -537,7 +549,7 @@ class Workbench:
     @staticmethod
     def _criterion(value):
         from studio.policy_worker import CRITERIA
-        if value not in CRITERIA:
+        if not isinstance(value, str) or value not in CRITERIA:
             raise ValueError(f'Success criterion must be one of {sorted(CRITERIA)}')
         return value
 
@@ -553,6 +565,7 @@ class Workbench:
 
     def start_job(self, scenario_id, suite_id=None):
         from studio import policies
+        scenario_id = ident(scenario_id, 'scenario_id')
         with self.lock:
             if scenario_id not in self.scenarios:
                 raise KeyError('Unknown saved scenario')
@@ -701,6 +714,7 @@ class Workbench:
                     pass
 
     def cancel_job(self, key):
+        key = ident(key, 'job id')
         with self.lock:
             if key not in self.jobs:
                 raise KeyError('Unknown owned job')
@@ -803,7 +817,7 @@ class Workbench:
         if document.get('kind', 'boxes') != 'boxes':
             raise ValueError('Arenas are explicit box collision geometry')
         base = document.get('base_map_id')
-        if base is not None and base not in self.maps:
+        if base is not None and ident(base, 'base_map_id') not in self.maps:
             raise ValueError('Unknown base map for arena')
         data = validate_map({'label': document.get('label'), 'kind': 'boxes', 'frame_id': 'world',
                              'units': 'm', 'boxes': document.get('boxes', []),
@@ -851,7 +865,7 @@ class Workbench:
             raise ValueError(f'A suite needs 1–{MAX_SUITE_RUNS} saved scenario IDs')
         with self.lock:
             for scenario_id in ids:
-                if scenario_id not in self.scenarios:
+                if ident(scenario_id, 'scenario_id') not in self.scenarios:
                     raise KeyError('Unknown saved scenario')
                 checked = self.prepare(self.scenarios[scenario_id])
                 if not checked['validation']['valid']:
@@ -872,8 +886,9 @@ class Workbench:
                      'note': 'Runs execute one at a time in the owned CPU worker; each run is an independent bounded simulation.'}
             self.suites[suite['id']] = suite
             self._persist_suite(suite)
+            snapshot = copy.deepcopy(suite)
         threading.Thread(target=self._run_suite, args=(suite['id'],), daemon=True).start()
-        return copy.deepcopy(suite)
+        return snapshot
 
     def _wait_idle(self, timeout_s):
         deadline = time.monotonic() + timeout_s
@@ -887,8 +902,18 @@ class Workbench:
 
     def _run_suite(self, key):
         suite = self.suites[key]
+        try:
+            self._run_suite_body(suite)
+        except BaseException as error:  # a dead thread must not leave a suite 'running' forever
+            with self.lock:
+                suite.update(status='failed', error=f'{type(error).__name__}: {error}'[:500], finished_unix_s=time.time())
+                self._persist_suite(suite)
+
+    def _run_suite_body(self, suite):
+        key = suite['id']
         with self.lock:
-            suite['status'] = 'running'
+            if suite['status'] == 'queued':
+                suite['status'] = 'running'
             self._persist_suite(suite)
         for run in suite['runs']:
             with self.lock:
@@ -934,6 +959,7 @@ class Workbench:
             self._persist_suite(suite)
 
     def cancel_suite(self, key):
+        key = ident(key, 'suite id')
         with self.lock:
             if key not in self.suites:
                 raise KeyError('Unknown suite')
@@ -986,7 +1012,7 @@ class Workbench:
             terminal = job['status'] in TERMINAL_STATES
             cached = self._run_rows.get(key)
             if terminal and cached and cached['status'] == job['status']:
-                return cached
+                return copy.deepcopy(cached)
             snapshot = {k: job.get(k) for k in HISTORY_FIELDS}
             output = job['output']
         summary = self._optional_json(output/'run/result.json', 1024*1024) or {}

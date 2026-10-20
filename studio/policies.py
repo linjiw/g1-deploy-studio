@@ -144,34 +144,40 @@ def _wx_profiles():
     rows = []
     for root in sorted(POLICY_ROOT.glob('flow-wx-rf-*')):
         try:
-            manifest = load_manifest(root)
-        except (OSError, ValueError, KeyError):
-            continue
-        quick = verify(root, deep=False)  # sizes/presence; full hashes run inside the worker
-        teacher = next((a['path'] for a in manifest['artifacts'] if a['role'] == 'flow teacher checkpoint'), '')
-        rows.append({
-            'id': manifest['id'], 'label': manifest['label'], 'short_label': f"WX-RF {manifest['flow']['commit'][:7]}",
-            'family': 'flow', 'research_block': manifest['research_block'], 'variant': manifest['variant'],
-            'revision': manifest['flow']['commit'], 'adopted_commit': manifest['flow']['adopted_commit'],
-            'pin_basis': manifest['flow']['pin_basis'], 'config_path': manifest['flow']['config_path'],
-            'config_sha256': manifest['flow']['config_sha256'], 'arm': manifest['flow']['arm'],
-            'research_lineage': f"Flow {manifest['variant']} · {Path(teacher).parent.name}",
-            'loader': 'flow-callback', 'bundle_id': manifest['id'], 'flow_snapshot': str(root),
-            'planner': {'name': manifest['variant'], 'checkpoint': teacher, 'deployed_budget': manifest['deployed_budget'],
-                        'execution_check': 'WM-v2 3-member ensemble (Isaac-trained)', 'map': 'privileged exact boxes'},
-            'tracker': {'name': 'SONIC release G1 · fused ONNX 1570 → 29', 'path': str(DEPLOY_ROOT / 'bundle/sonic/sonic_release_g1.onnx')},
-            'runtime': {'kind': 'cpu-flow-callback', 'source': 'motion2scene_flow.closed_loop.callback (pinned snapshot)',
-                        'physics': 'MuJoCo · g1_29dof rubber hands', 'device': 'cpu'},
-            'privileged_map': True,
-            'artifacts': [Path(root / 'manifest.json'), Path(root / 'config.json')] + [Path(a['path']) for a in manifest['artifacts']],
-            'repositories': [DEPLOY_ROOT],
-            'available': not quick, 'missing': quick,
-            'limits': {'candidates': [1, 16], 'ode_steps': [1, 10], 'duration_s': [1, 10], 'wall_s': 480},
-            'default_planner': {'candidates': 8, 'ode_steps': 6},
-            'limitations': list(manifest['caveats']) + [
-                'Default Studio budget K8/ODE6 differs from the evaluated 16/10 (≈3–4 s per CPU replan at 16/10 on this host).'],
-        })
+            rows.append(_wx_profile(root, load_manifest, verify))
+        except Exception as error:  # one incomplete bundle must not hide the others
+            rows.append({'id': root.name, 'label': f'Unavailable bundle {root.name}', 'available': False,
+                         'missing': [f'{type(error).__name__}: {error}'], 'artifacts': [], 'repositories': [],
+                         'loader': 'flow-callback', 'family': 'flow'})
     return rows
+
+
+def _wx_profile(root, load_manifest, verify):
+    manifest = load_manifest(root)
+    quick = verify(root, deep=False)  # sizes/presence; full hashes run inside the worker
+    teacher = next((a['path'] for a in manifest['artifacts'] if a['role'] == 'flow teacher checkpoint'), '')
+    return {
+        'id': manifest['id'], 'label': manifest['label'], 'short_label': f"WX-RF {manifest['flow']['commit'][:7]}",
+        'family': 'flow', 'research_block': manifest['research_block'], 'variant': manifest['variant'],
+        'revision': manifest['flow']['commit'], 'adopted_commit': manifest['flow']['adopted_commit'],
+        'pin_basis': manifest['flow']['pin_basis'], 'config_path': manifest['flow']['config_path'],
+        'config_sha256': manifest['flow']['config_sha256'], 'arm': manifest['flow']['arm'],
+        'research_lineage': f"Flow {manifest['variant']} · {Path(teacher).parent.name}",
+        'loader': 'flow-callback', 'bundle_id': manifest['id'], 'flow_snapshot': str(root),
+        'planner': {'name': manifest['variant'], 'checkpoint': teacher, 'deployed_budget': manifest['deployed_budget'],
+                    'execution_check': 'WM-v2 3-member ensemble (Isaac-trained)', 'map': 'privileged exact boxes'},
+        'tracker': {'name': 'SONIC release G1 · fused ONNX 1570 → 29', 'path': str(DEPLOY_ROOT / 'bundle/sonic/sonic_release_g1.onnx')},
+        'runtime': {'kind': 'cpu-flow-callback', 'source': 'motion2scene_flow.closed_loop.callback (pinned snapshot)',
+                    'physics': 'MuJoCo · g1_29dof rubber hands', 'device': 'cpu'},
+        'privileged_map': True,
+        'artifacts': [Path(root / 'manifest.json'), Path(root / 'config.json')] + [Path(a['path']) for a in manifest['artifacts']],
+        'repositories': [DEPLOY_ROOT],
+        'available': not quick, 'missing': quick,
+        'limits': {'candidates': [1, 16], 'ode_steps': [1, 10], 'duration_s': [1, 10], 'wall_s': 480},
+        'default_planner': {'candidates': 8, 'ode_steps': 6},
+        'limitations': list(manifest['caveats']) + [
+            'Default Studio budget K8/ODE6 differs from the evaluated 16/10 (≈3–4 s per CPU replan at 16/10 on this host).'],
+    }
 
 
 def _expand(builder):
@@ -214,7 +220,7 @@ def get_profile(policy_id):
 def identity(profile):
     """Resolved, hashable identity pinned into each scenario/run."""
     artifacts = [file_identity(p) for p in profile.get('artifacts', [])]
-    missing = [a['path'] for a in artifacts if not a['available']] + list(profile.get('missing', []))
+    missing = list(dict.fromkeys([a['path'] for a in artifacts if not a['available']] + list(profile.get('missing', []))))
     repos = [git_identity(r) for r in profile.get('repositories', [])]
     pinned = hashlib.sha256(json.dumps({'id': profile['id'],
                                         'artifacts': [(a['path'], a['sha256']) for a in artifacts],

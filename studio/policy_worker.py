@@ -101,7 +101,7 @@ def validate_request(request):
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**31 - 1:
         raise ValueError('seed must be an integer in 0..2147483647')
     criterion = request.get('criterion', 'arrive_hold')
-    if criterion not in CRITERIA:
+    if not isinstance(criterion, str) or criterion not in CRITERIA:
         raise ValueError(f'criterion must be one of {sorted(CRITERIA)}')
     policy = request.get('policy') or {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle'}
     if not isinstance(policy, dict) or policy.get('loader') not in LOADERS:

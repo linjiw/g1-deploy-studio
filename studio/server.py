@@ -332,18 +332,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def respond_cached(self, encoded: Encoded, cache="private, no-cache"):
         """Revalidated (ETag) response with a reusable gzip body."""
-        if self.headers.get('If-None-Match') == encoded.etag:
+        gz = (len(encoded.body) > 1024 and encoded.kind.startswith(COMPRESSIBLE)
+              and 'gzip' in self.headers.get('Accept-Encoding', ''))
+        # Each encoding is a distinct representation with its own strong validator.
+        gz_etag = encoded.etag[:-1] + '-gz"'
+        etag = gz_etag if gz else encoded.etag
+        # Either validator identifies the same content, so both revalidate.
+        if self.headers.get('If-None-Match') in (encoded.etag, gz_etag):
             self.send_response(304)
-            self.send_header("ETag", encoded.etag)
+            self.send_header("ETag", etag)
             self.send_header("Cache-Control", cache)
+            self.send_header("Vary", "Accept-Encoding")
             self.end_headers()
             return
-        body, encoding = encoded.body, None
-        if (len(body) > 1024 and encoded.kind.startswith(COMPRESSIBLE)
-                and 'gzip' in self.headers.get('Accept-Encoding', '')):
-            body, encoding = encoded.gzip(), 'gzip'
+        body, encoding = (encoded.gzip(), 'gzip') if gz else (encoded.body, None)
         self.send_response(200)
-        self._headers(encoded.kind, len(body), cache, encoded.etag, encoding)
+        self._headers(encoded.kind, len(body), cache, etag, encoding)
         self._write(body)
 
     def do_HEAD(self):
@@ -408,7 +412,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(load_profile())
             if path == '/api/sensors':
                 from studio.sensors import get_sensor_snapshot
-                key = query.get('session', [next(iter(catalog.entries))])[0]
+                key = query.get('session', [next(iter(catalog.entries), None)])[0]
+                if key is None:
+                    raise KeyError('No session')
                 at = float(query.get('time', ['0'])[0])
                 snapshot = get_sensor_snapshot(catalog.session(key)[0], at,
                                                include_masks=query.get('masks', ['0'])[0] == '1')
@@ -421,7 +427,9 @@ class Handler(BaseHTTPRequestHandler):
                                      "hardware_read_only": True, "simulation_jobs_enabled": bool(workbench),
                                      "allowed_mutations": ['local scenarios', 'map imports', 'owned CPU simulation jobs'] if workbench else []})
             if path in ("/api/session", "/api/model", "/api/kinematics", "/api/export"):
-                key = query.get("id", [next(iter(catalog.entries))])[0]
+                key = query.get("id", [next(iter(catalog.entries), None)])[0]
+                if key is None:
+                    raise KeyError("No session")
                 if path == "/api/session":
                     data, encoded = catalog.entry(key)
                     live = key in catalog.providers
@@ -465,6 +473,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": "Unknown session or resource"}, status=404)
         except (ValueError, FileNotFoundError) as error:
             self.respond({"error": str(error)}, status=422)
+        except TypeError as error:
+            self.respond({"error": f"Invalid request value: {error}"}, status=422)
 
     POST_ROUTES = ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel',
                    '/api/arenas', '/api/suites', '/api/suites/cancel')
@@ -509,6 +519,9 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({'error': 'Unknown map, scenario, suite or owned job'}, status=404)
         except (ValueError, OSError) as error:
             self.respond({'error': str(error)}, status=422)
+        except TypeError as error:
+            # Malformed JSON value types are invalid input, never a dropped connection.
+            self.respond({'error': f'Invalid request value: {error}'}, status=422)
 
 
 def main():
