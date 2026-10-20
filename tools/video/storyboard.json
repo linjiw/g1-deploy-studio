@@ -115,21 +115,21 @@
    "kind": "deck",
    "slide": "results",
    "min_s": 12,
-   "say": "So how robust is the adopted planner? In CPU lockstep, W X reached and held twenty-four of twenty-four random goals across four arenas, and thirty-five of thirty-six with extra seeds, against nineteen of twenty-four for the older bundle. Its weak point is stopping: it often overshoots and loops back before it holds."
+   "say": "So how robust is the adopted planner? In CPU lockstep on the source actuator model, W X reached and held twenty-four of twenty-four random goals across four arenas, and thirty-five of thirty-six with extra seeds, against nineteen of twenty-four for the older bundle. Its weak point is stopping: it often overshoots and loops back before it holds."
   },
   {
    "id": "latency",
    "kind": "deck",
    "slide": "latency",
    "min_s": 12,
-   "say": "Latency is the real deployment risk. At one hundred milliseconds W X still holds eleven of twelve, but at two hundred, planning from stale state, it collapses to one of twelve, and the bundle collapses the same way. Predictive anchoring gives the planner the state the robot will be in when the plan lands. It brings W X back to eleven of twelve, with no falls and no contacts, though arrivals are slower, because the robot lags the plan it predicts."
+   "say": "Latency is the real deployment risk. At one hundred milliseconds W X still holds eleven of twelve, but at two hundred, planning from stale state, it collapses to one of twelve, and the bundle collapses the same way. Predictive anchoring gives the planner the state the robot will be in when the plan lands, and on the source model it brings W X back to eleven of twelve, with no contacts."
   },
   {
    "id": "torque",
    "kind": "deck",
    "slide": "torque",
    "min_s": 12,
-   "say": "Research also settled a hardware question. The hip torque limit depends on the robot's revision. Current G1s have one hundred thirty-nine newton-meter hip pitch and roll motors, the robot the policies were trained for, while older revisions have eighty-eight at the hip pitch. Studio now rehearses with either profile, and reports every [substep](/sˈʌbstˌɛp/) above each limit."
+   "say": "Research also settled a hardware question: the hip torque limit depends on the robot's revision. Current G1s have one hundred thirty-nine newton-meter hip pitch and roll motors, the robot the policies were trained for, while older revisions have eighty-eight at the hip pitch. And the profile matters. In lockstep, W X holds twelve of twelve on both. At two hundred milliseconds with predictive anchoring, it holds eleven of twelve on the older limits, but only seven of twelve on the current ones: it reaches the goal, and does not settle."
   },
   {
    "id": "l3",

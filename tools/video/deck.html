@@ -252,7 +252,7 @@ slide('results', `
   <div class="eyebrow" data-in="0.1">Robustness · CPU lockstep · random goals</div>
   <h2 data-in="0.3" data-a="rise">The adopted planner reaches — <span class="amber">and must learn to stop</span></h2>
   <svg width="1680" height="620" viewBox="0 0 1680 620" style="position:absolute; left:120px; top:330px">
-    <text x="0" y="30" font-size="22" fill="#8794a6" font-family="JetBrains Mono" data-in="0.6">ARRIVE &amp; HOLD · WILSON 95% INTERVALS</text>
+    <text x="0" y="30" font-size="22" fill="#8794a6" font-family="JetBrains Mono" data-in="0.6">ARRIVE &amp; HOLD · WILSON 95% INTERVALS · SOURCE ACTUATOR MODEL (88/88/88)</text>
     ${bars(R.headline || [], 420, 60, 860, 74, 0.8)}
   </svg>
   <div style="position:absolute; left:120px; bottom:120px; right:120px; display:flex; gap:28px">
@@ -277,7 +277,7 @@ slide('latency', `
           <text x="1120" y="${150 + i * 64}" font-size="26" font-weight="700" fill="${s.color}" data-in="${t0}">${s.label}</text>
           <text x="1120" y="${178 + i * 64}" font-size="19" fill="#8794a6" data-in="${t0}">${s.sub || ''}</text>`;
       }).join('');
-      return `${grid}${xt}<text x="120" y="40" font-size="22" fill="#8794a6" font-family="JetBrains Mono" data-in="0.5">ARRIVE &amp; HOLD (of 12)</text>${lines}`;
+      return `${grid}${xt}<text x="120" y="40" font-size="22" fill="#8794a6" font-family="JetBrains Mono" data-in="0.5">ARRIVE &amp; HOLD (of 12) · SOURCE ACTUATOR MODEL</text>${lines}`;
     })()}
   </svg>
   ${footer('04 · RESULTS')}`);
@@ -287,15 +287,15 @@ for (const extra of (D.extraSlides || [])) slide(extra.id, extra.html);
 slide('validation', `
   <div class="eyebrow" data-in="0.1">Evidence, not claims</div>
   <h2 data-in="0.3" data-a="rise">Tested the way it will be used</h2>
-  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 28px; margin-top: 70px">
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 28px; margin-top: 44px">
     ${(D.validation || []).map((v, i) => `<div class="card" data-in="${0.8 + i * 0.35}" data-a="rise"><div class="stat" style="color:${v.color}"><span data-in="${0.9 + i * 0.35}" data-a="count" data-v="${v.v}" data-d="1.2">${v.v}</span><small>${v.unit || ''}</small></div><div class="statcap">${v.cap}</div></div>`).join('')}
   </div>
-  <div class="card" style="margin-top:34px" data-in="2.6" data-a="rise"><p>${D.securityLine || ''}</p></div>
-  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 34px">
+  <div class="card" style="margin-top:22px; padding:20px 34px" data-in="2.6" data-a="rise"><p>${D.securityLine || ''}</p></div>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 22px">
     <div class="card" data-in="3.2" data-a="rise"><h3 style="font-size:28px">An independent validator broke it — then re-checked</h3>
-      ${(D.validatorFound || []).map((x, i) => `<p data-in="${3.5 + i * 0.25}" style="margin-top:8px">· ${x}</p>`).join('')}</div>
+      ${(D.validatorFound || []).map((x, i) => `<p data-in="${3.5 + i * 0.25}" style="margin-top:4px; font-size:22px">· ${x}</p>`).join('')}</div>
     <div class="card" data-in="3.6" data-a="rise"><h3 style="font-size:28px">Honesty is tested, not assumed</h3>
-      ${(D.honesty || []).map((x, i) => `<p data-in="${3.9 + i * 0.25}" style="margin-top:8px">· ${x}</p>`).join('')}</div>
+      ${(D.honesty || []).map((x, i) => `<p data-in="${3.9 + i * 0.25}" style="margin-top:4px; font-size:22px">· ${x}</p>`).join('')}</div>
   </div>
   ${footer('05 · TRUST')}`);
 

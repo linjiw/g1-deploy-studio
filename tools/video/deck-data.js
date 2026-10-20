@@ -36,7 +36,7 @@ window.DECK_DATA = {
     { id: 'torque', html: `
       <div class="eyebrow" data-in="0.1">Hardware question, settled by research</div>
       <h2 data-in="0.3" data-a="rise">The hip limit depends on the robot's revision</h2>
-      <div style="display:grid; grid-template-columns: 1.25fr 1fr; gap: 44px; margin-top: 60px">
+      <div style="display:grid; grid-template-columns: 1.25fr 1fr; gap: 36px; margin-top: 30px">
         <div class="card" data-in="0.9" data-a="rise">
           <table class="t">
             <tr><th>mode_machine</th><th>Hip pitch</th><th>Hip roll</th><th>Hip yaw</th></tr>
@@ -46,11 +46,22 @@ window.DECK_DATA = {
           </table>
           <p style="margin-top:22px; font-size:20px" class="mono">N·m · Unitree unitree_ros model table (7520-14.3 = 88, 7520-22.5 = 139) · NVIDIA GR00T #174</p>
         </div>
-        <div style="display:flex; flex-direction:column; gap:22px">
-          <div class="card" data-in="2.6" data-a="rise"><span class="tag" style="color:var(--cyan)">g1-current · default</span><p style="margin-top:12px">139 / 139 / 88 — the robot SONIC and the Flow policies were trained for.</p></div>
-          <div class="card" data-in="3.1" data-a="rise"><span class="tag" style="color:var(--amber)">g1-rev1 · pessimistic</span><p style="margin-top:12px">88 / 139 / 88 — older robots clamp hip pitch at 88 N·m.</p></div>
-          <div class="card" data-in="3.6" data-a="rise"><span class="tag" style="color:var(--dim)">source · baseline</span><p style="margin-top:12px">88 / 88 / 88 — the unmodified deploy MJCF; hip roll matches no current G1.</p></div>
+        <div style="display:flex; flex-direction:column; gap:16px">
+          <div class="card" style="padding:18px 26px" data-in="2.6" data-a="rise"><span class="tag" style="color:var(--cyan)">g1-current · default</span><p style="margin-top:8px">139 / 139 / 88 — the robot SONIC and the Flow policies were trained for.</p></div>
+          <div class="card" style="padding:18px 26px" data-in="3.1" data-a="rise"><span class="tag" style="color:var(--amber)">g1-rev1 · pessimistic</span><p style="margin-top:8px">88 / 139 / 88 — older robots clamp hip pitch at 88 N·m.</p></div>
+          <div class="card" style="padding:18px 26px" data-in="3.6" data-a="rise"><span class="tag" style="color:var(--dim)">source · baseline</span><p style="margin-top:8px">88 / 88 / 88 — the unmodified deploy MJCF; hip roll matches no current G1.</p></div>
         </div>
+      </div>
+      <div class="card" style="margin-top:22px; padding:22px 34px" data-in="4.4" data-a="rise">
+        <h3 style="font-size:27px">The profile changes the result · WX-RF, same 12 scenarios, arrive &amp; hold</h3>
+        <svg width="1600" height="172" viewBox="0 0 1600 172">
+          ${[['0 ms · current G1 (139/139/88)', 12, '#56d9d0', 'no clamping'], ['200 ms predict · rev_1_0 (88/139/88)', 11, '#efbb70', 'hip pitch clamped in 11/12 · 1 fall'], ['200 ms predict · current G1', 7, '#f08c85', '4 of 5 failures stop within 0.5 m']]
+            .map(([l, k, c, note], i) => `<text x="0" y="${38 + i * 50}" font-size="23" fill="#e6ebf0" data-in="${4.6 + i * 0.4}">${l}</text>
+              <rect x="470" y="${16 + i * 50}" width="700" height="30" rx="6" fill="#18212c" data-in="${4.6 + i * 0.4}"/>
+              <rect x="470" y="${16 + i * 50}" width="${700 * k / 12}" height="30" rx="6" fill="${c}" data-in="${4.7 + i * 0.4}" data-a="grow" data-d="0.9"/>
+              <text x="1190" y="${39 + i * 50}" font-size="25" font-weight="700" fill="${c}" font-family="JetBrains Mono" data-in="${5.4 + i * 0.4}">${k}/12</text>
+              <text x="1290" y="${38 + i * 50}" font-size="19" fill="#8794a6" data-in="${5.5 + i * 0.4}">${note}</text>`).join('')}
+        </svg>
       </div>
       <div class="footer"><span>04 · RESULTS</span><span>G1 DEPLOY STUDIO</span></div>` },
     { id: 'l3', html: `
@@ -85,7 +96,7 @@ window.DECK_DATA = {
     { v: 252, unit: '', cap: 'unit tests, plus opt-in real-worker integration tests', color: '#56d9d0' },
     { v: 15, unit: '/15', cap: 'browser acceptance checks, direct and through a forwarded SSH port', color: '#5fd39b' },
     { v: 118, unit: '', cap: 'independent re-validation checks across every workspace', color: '#efbb70' },
-    { v: 180, unit: '+', cap: 'owned CPU rehearsals recorded with policy identity hashes', color: '#e6dfcf' },
+    { v: 210, unit: '', cap: 'scored CPU rehearsals on the release, each with its policy identity hash', color: '#e6dfcf' },
   ],
   validatorFound: [
     'first click after typing an arena name was lost',

@@ -139,15 +139,16 @@ export const SHOTS = {
     await h.click('[data-arena-tool="pillar"]', { after: 0.2 });
     await h.click(at(0.42, 0.7), { after: 0.6 });
     await h.click('[data-arena-tool="select"]', { after: 0.2 });
+    await h.caption('Arena · footprint preflight', 'The new pillar blocks a preset start — flagged before anything runs');
+    await h.spot('#arena-status', 'preflight', { dim: false });
+    await h.hold(2.2);
+    await h.clearSpots();
     await h.caption('Arena · seeded random goals', '“Behind an obstacle”: the straight line to each goal must cross a box');
     await h.click('.random-goals summary', { after: 0.4 });
     await page.fill('#rg-count', '5'); await page.fill('#rg-seed', '7');
     await h.click('#rg-obstructed', { after: 0.3 });
     await h.click('#rg-generate', { after: 1.6 });
-    await page.locator('#arena-status').scrollIntoViewIfNeeded(); await h.settle(200);
-    await h.spot('#arena-status', 'footprint preflight', { dim: false, below: true });
-    await h.hold(1.6);
-    await h.clearSpots();
+    await h.hold(1.2);
     await page.fill('#arena-label', 'Video demo · doorway + wall');
     await page.locator('#arena-label').dispatchEvent('input');
     await h.click('#arena-save', { after: 1.0 });
@@ -196,13 +197,14 @@ export const SHOTS = {
     await h.ready();
     await h.caption('Runs · compare and report', 'Every owned rehearsal, newest first — overlay paths on the arena');
     await h.click('#workspace-runs', { after: 1.0 });
+    await page.waitForFunction(() => document.querySelectorAll('#runs-map option').length > 1, null, { timeout: 30000 }).catch(() => {});
     const clutter = await page.evaluate(() => [...document.querySelectorAll('#runs-map option')].find(o => /clutter/i.test(o.textContent))?.value);
     if (clutter) { await page.selectOption('#runs-map', clutter); await h.settle(1000); }
     await h.hold(1.0);
     const all = page.locator('#runs-select-all');
     if (await all.count()) await h.click('#runs-select-all', { after: 1.6 });
     await h.caption('Runs · robustness report', 'Wilson intervals · post-hoc Flow reach · failure categories · torque clamping');
-    await h.spot('.report-group', 'per policy · criterion · latency · budget', { dim: false, below: true });
+    await h.spot('.report-group', 'per policy · criterion · latency · budget · actuator limits', { dim: false, below: true });
     await h.hold(3.2);
     await h.clearSpots();
     const panel = page.locator('#runs-panel, [data-panel="runs"]').first();

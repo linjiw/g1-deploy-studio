@@ -23,6 +23,25 @@ def probe_duration(ffprobe, path):
     return float(out.strip())
 
 
+def split_cue(start, end, text, max_chars=84):
+    """Split one narration phrase into readable cues; time is shared in proportion to text length."""
+    import re
+    parts = [x.strip() for x in re.split(r'(?<=[.!?;:])\s+', text.strip()) if x.strip()]
+    pieces = []
+    for part in parts:
+        while len(part) > max_chars:
+            cut = max((part.rfind(sep, 0, max_chars) for sep in (', ', ' — ', ' and ', ' but ')), default=-1)
+            cut = cut if cut > 20 else part.rfind(' ', 0, max_chars)
+            pieces.append(part[:cut + 1].strip()); part = part[cut + 1:].strip()
+        pieces.append(part)
+    total = sum(len(x) for x in pieces) or 1
+    t, cues = start, []
+    for x in pieces:
+        d = (end - start) * len(x) / total
+        cues.append((t, t + d, x)); t += d
+    return cues
+
+
 def srt_time(t):
     ms = int(round(t * 1000))
     return f'{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}'
@@ -55,12 +74,12 @@ def main():
         n = narration.get(seg['id'])
         wav = out / 'audio' / f"{seg['id']}.wav"
         if n and n.get('duration_s') and wav.exists():
-            idx = len(inputs) + 1
+            idx = len(inputs) // 2 + 1  # input 0 is the concatenated video; each audio adds ('-i', path)
             inputs += ['-i', str(wav)]
             delay = int(round((t + LEAD_S) * 1000))
             filters.append(f'[{idx}:a]adelay={delay}:all=1[a{idx}]')
             for p in n['phrases']:
-                cues.append((t + LEAD_S + p['start_s'], t + LEAD_S + p['end_s'], p['text']))
+                cues += split_cue(t + LEAD_S + p['start_s'], t + LEAD_S + p['end_s'], p['text'])
         t += dur
     concat.close()
     total = t
@@ -69,7 +88,7 @@ def main():
     srt.write_text(''.join(f'{i}\n{srt_time(a)} --> {srt_time(b)}\n{text.strip()}\n\n' for i, (a, b, text) in enumerate(cues, 1)))
     (out / 'chapters.txt').write_text(''.join(f'{int(a) // 60:02d}:{int(a) % 60:02d} {name}\n' for a, name in chapters))
 
-    labels = ''.join(f'[a{i + 1}]' for i in range(len(filters)))
+    labels = ''.join(f'[a{i + 1}]' for i in range(len(filters)))  # one [aN] per audio input, N = 1..len
     mix = ';'.join(filters) + f';{labels}amix=inputs={len(filters)}:normalize=0:duration=longest,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]'
     final = out / f'{args.name}.mp4'
     cmd = [args.ffmpeg, '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', concat.name, *inputs, '-i', str(srt),
