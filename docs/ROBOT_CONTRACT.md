@@ -60,6 +60,32 @@ Unitree motor index = MuJoCo body-joint index (rp:90-126 enum, ct:5, xml hinge o
 
 - **KP discrepancy confirmed.** 7520_22: Python 99.13 vs runner/training formula 99.0984 (+0.032 %); 2x5020 28.51 vs 28.5012; kd differs by up to 0.25 % (1.81 vs 1.8144). The in-process lockstep and the Studio CPU worker use the Python values (ct:86-91, `g1deploy/sonic.py:128-130`); `rt/lowcmd` carries the C++ values (cpp:3127-3128). Training (g1.py:13-29) matches the C++ formula exactly.
 - **Hip effort conflict (material).** Training and ct use 139 N·m for hip pitch and roll. Both deployment MJCFs and gear_sonic_sim's `np.clip` (base_sim.py:466) use 88. The rev_1_0 MJCF in the bundle contract says pitch 88 / roll 139. The runner applies no torque limit; pp:110 notes "old is 7520_14 new is 7520_22", so the physical limit depends on the motor revision.
+- **Resolved by research (2026-10-20): the limit is per hardware revision, identified by `LowState.mode_machine`.**
+
+  | mode_machine | Hip pitch | Hip roll | Hip yaw | Unitree model |
+  |---|---:|---:|---:|---|
+  | 1, 2, 3 (deprecated) | 88 | 88 | 88 | original `g1_29dof` (the student and lucid MJCFs, and unitree_mujoco's default) |
+  | 4, 5, 6, 13, 14 | 88 (7520-14.3) | 139 (7520-22.5) | 88 | `rev_1_0` |
+  | 10, 11, 12, 15, 16, 18 | 139 (7520-22.5) | 139 | 88 | `mode_15` / `mode_11`: the black-pelvis robot SONIC was built for |
+
+  Sources:
+  - unitree_ros@5994d4faef `robots/g1_description/README.md`: the gear ratio per mode_machine (14.3 → 88 N·m, 22.5 → 139 N·m) and the per-mode URDF effort attributes;
+  - NVlabs GR00T-WholeBodyControl issue #174 (2026-06-04/08): SONIC was trained for the newer hip pitch motor.
+
+  The student MJCF's hip roll of 88 N·m therefore matches no currently supported G1.
+
+  Studio's decision:
+  - Rehearsals take an **actuator profile**. Each one patches the compiled model's `jnt_actfrcrange` in memory; no model file is copied or edited.
+    - `g1-current` 139/139/88 is the default;
+    - `g1-rev1` 88/139/88 is the pessimistic profile;
+    - `source` 88/88/88 is the historical baseline.
+  - Every run also reports how many substeps exceeded the training limit and each hardware profile.
+  - The body stays the mode-2 model, whose torso is about 1.8 kg heavier than rev_1_0.
+  - Before any hardware step, read `mode_machine` passively and choose the matching profile.
+
+  Not settled by these sources:
+  - ankle and waist roll/pitch: the newest Unitree URDFs say 35 N·m, while the MJCF and training say 50;
+  - absolute peak torques: the official spec page gives only the knee, 90 N·m (G1) or 120 N·m (EDU).
 - Velocity limits (training only, g1.py:256-331): 20 rad/s hip pitch/roll/knee, 32 hip/waist yaw, 37 ankle/waist roll-pitch/arm, 22 wrist pitch/yaw.
 - Waist roll/pitch (13/14) are marked INVALID for waist-locked units (rp:108-111). The runner has no waist-lock branch. `mode_pr` is always PR = 0 (cpp:2170, 2663), so 4/5, 10/11 and 13/14 are pitch/roll joints, not A/B motors. `mode_machine` is echoed from LowState (cpp:2644, 2664). gear_sonic_sim never sets it, so the physical variant stays unknown.
 - Hands: lockstep uses rubber hands (xml); the C++/DDS rehearsal uses Dex3 (yaml:3 `scene_43dof.xml`). Dex3 qpos interleaves 7 hand joints after each arm.
