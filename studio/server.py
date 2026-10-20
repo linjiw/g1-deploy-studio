@@ -29,6 +29,10 @@ SEND_CHUNK = 256 * 1024
 COMPRESSIBLE = ('application/json', 'text/', 'application/javascript', 'model/stl',
                 'image/svg+xml')
 QUIET_PREFIXES = ('/api/sensors', '/api/jobs', '/assets/', '/vendor/', '/api/version')
+# Runs written by tools/l3_rehearsal.sh (outside Git). Discovered read-only; never launched from here.
+L3_BASE = Path.home() / 'research-data/g1-deploy-studio/l3'
+L3_RESCAN_S = 10.0
+L3_GROUP = 'Real-time rehearsals (L3)'
 INDEX_HTML = ROOT / 'apps/web/index.html'
 INLINE_SCRIPT = re.compile(rb'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', re.S)
 _script_policy = {}
@@ -85,6 +89,22 @@ def build_identity(root=ROOT):
             'started_unix_s': time.time()}
 
 
+def mark_l3(data, provenance_path):
+    """Label a recording made by tools/l3_rehearsal.sh as L3, with its isolation receipt."""
+    try:
+        provenance = json.loads(Path(provenance_path).read_text())
+    except (OSError, ValueError):
+        provenance = None
+    m = data['metadata']
+    m['fidelity'] = 'L3'
+    m['l3_provenance'] = provenance
+    m['title'] = f"L3 real-time · {Path(provenance_path).parent.name}"
+    note = ('Recorded by tools/l3_rehearsal.sh: the unchanged simulator, C++ SONIC runner and planner node as separate '
+            'processes inside a user+net+pid namespace with only a private loopback (DDS domain 0 cannot leave it). '
+            'Timing ran on a shared GPU under contention. Not hardware evidence.')
+    m['limitations'] = [note] + [x for x in m.get('limitations', []) if 'Historical simulator configuration' not in x]
+
+
 class NoRecording(LookupError):
     """A known session whose recording does not exist (e.g. a run cancelled before writing one)."""
 
@@ -107,6 +127,7 @@ class Catalog:
         self.providers = {}
         self.workbench = None
         self.policies = None
+        self.l3_base = L3_BASE
 
     def enable_workbench(self, data_root=None):
         from studio.workbench import Workbench, DATA_ROOT
@@ -123,7 +144,32 @@ class Catalog:
                 self.providers.pop(key, None)
             self.cache.pop(key, None)
 
+    def discover_l3(self, base=None, *, force=False):
+        """Register completed L3 runs (rehearse/sim.npz) and their wire captures. Read-only, throttled."""
+        base = Path(base) if base is not None else self.l3_base
+        now = time.monotonic()
+        if not force and now - getattr(self, '_l3_scanned', -L3_RESCAN_S) < L3_RESCAN_S:
+            return
+        self._l3_scanned = now
+        if base is None or not base.is_dir():
+            return
+        for run in sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith('.')):
+            slug = re.sub(r'[^a-zA-Z0-9_-]', '-', run.name)[:50]
+            provenance = run / 'l3_provenance.json'
+            rehearse = run / 'rehearse'
+            started = (run / 't0').stat().st_mtime if (run / 't0').exists() else None
+            extra = {'group': L3_GROUP, 'started_unix_s': started, 'l3_provenance': str(provenance) if provenance.is_file() else None}
+            with self.lock:
+                if (rehearse / 'sim.npz').is_file() and f'l3-{slug}' not in self.entries:
+                    boxes = rehearse / 'boxes.json'
+                    self.entries[f'l3-{slug}'] = {'id': f'l3-{slug}', 'path': str(rehearse), 'label': f'L3 real-time · {run.name}',
+                                                  'environment_path': str(boxes) if boxes.is_file() else None, **extra}
+                if (run / 'capture.jsonl').is_file() and f'l3-{slug}-wire' not in self.entries:
+                    self.entries[f'l3-{slug}-wire'] = {'id': f'l3-{slug}-wire', 'path': str(run / 'capture.jsonl'),
+                                                       'label': f'L3 wire capture · {run.name}', **extra}
+
     def listing(self):
+        self.discover_l3()
         with self.lock:
             items = list(self.entries.items())
             live = set(self.providers)
@@ -157,6 +203,8 @@ class Catalog:
             data = load_mcap(item["path"])
         else:
             data = load_session(item["path"], environment_path=item.get("environment_path"))
+        if item.get('l3_provenance'):
+            mark_l3(data, Path(item['l3_provenance']))
         return data
 
     def _finish(self, key, data):

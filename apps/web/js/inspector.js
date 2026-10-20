@@ -126,6 +126,9 @@ export function fidelity(meta = {}) {
   }
   if (meta.recording_kind === 'sonic-mujoco-lockstep') return { level: 'L1', label: 'L1 · CPU lockstep',
     proves: 'Planner and tracker logic, geometry, scoring.', hides: 'Planner latency (physics waits for each replan), DDS/ZMQ transport, C++/TensorRT numerics, start-up transient, real sensors.' };
+  if (meta.fidelity === 'L3') return { level: 'L3', label: 'L3 · real-time chain in an isolated namespace',
+    proves: 'Separate simulator, C++/TensorRT SONIC runner and planner processes over real DDS and ZMQ, at real-time rates.',
+    hides: 'Physical sensors and actuators, robot network and multicast discovery, Orin timing (host GPU under contention).' };
   if (meta.recording_kind === 'recorded-wire-transport') return { level: 'L0', label: 'L0 · transport replay',
     proves: 'Wire framing and decoding of recorded packets.', hides: 'Controller execution and robot state.' };
   return { level: 'L0', label: 'L0 · recorded replay', proves: 'Data and adapter correctness of a recording.', hides: 'Everything dynamic; nothing re-executed.' };

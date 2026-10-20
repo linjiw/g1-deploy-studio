@@ -344,6 +344,55 @@ class WorkbenchRouteTests(GatewayCase):
         self.assertEqual(full['metadata'], {'heavy': True})
 
 
+class L3DiscoveryTests(unittest.TestCase):
+    """Runs written by tools/l3_rehearsal.sh appear as sessions; nothing is launched."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        config = base / 'sessions.json'
+        config.write_text(json.dumps({'sessions': []}))
+        self.catalog = Catalog(config)
+        self.l3 = base / 'l3'
+        run = self.l3 / 'l3-clutter-r1-a'
+        (run / 'rehearse').mkdir(parents=True)
+        (run / 'rehearse/sim.npz').write_bytes(b'')
+        (run / 'rehearse/boxes.json').write_text('[]')
+        (run / 'capture.jsonl').write_text('')
+        (run / 'l3_provenance.json').write_text(json.dumps({'dds_domain': 0, 'isolation': 'user+net+pid+mount namespace, lo only'}))
+        (run / 't0').write_text('')
+        (self.l3 / 'incomplete-run').mkdir()  # no recording yet: not listed
+        self.catalog.l3_base = self.l3
+
+    def test_completed_runs_and_wire_captures_are_registered_once(self):
+        self.catalog.discover_l3(force=True)
+        self.catalog.discover_l3(force=True)
+        rows = {r['id']: r for r in self.catalog.listing()['sessions']}
+        self.assertEqual(sorted(rows), ['l3-l3-clutter-r1-a', 'l3-l3-clutter-r1-a-wire'])
+        self.assertTrue(all(r['group'] == server_module.L3_GROUP and r['available'] for r in rows.values()))
+        entry = self.catalog.entries['l3-l3-clutter-r1-a']
+        self.assertTrue(entry['environment_path'].endswith('rehearse/boxes.json'))
+        self.assertTrue(entry['l3_provenance'].endswith('l3_provenance.json'))
+
+    def test_rescans_are_throttled(self):
+        self.catalog.discover_l3(force=True)
+        late = self.l3 / 'late-run/rehearse'; late.mkdir(parents=True); (late / 'sim.npz').write_bytes(b'')
+        self.catalog.discover_l3()
+        self.assertNotIn('l3-late-run', self.catalog.entries)
+        self.catalog.discover_l3(force=True)
+        self.assertIn('l3-late-run', self.catalog.entries)
+
+    def test_mark_l3_labels_fidelity_and_replaces_the_historical_caveat(self):
+        data = {'metadata': {'limitations': ['Historical simulator configuration used loopback, but did not record a nonzero DDS domain.', 'other']}}
+        server_module.mark_l3(data, self.l3 / 'l3-clutter-r1-a/l3_provenance.json')
+        m = data['metadata']
+        self.assertEqual(m['fidelity'], 'L3')
+        self.assertEqual(m['l3_provenance']['dds_domain'], 0)
+        self.assertTrue(m['limitations'][0].startswith('Recorded by tools/l3_rehearsal.sh'))
+        self.assertNotIn('Historical simulator configuration', ' '.join(m['limitations']))
+        self.assertIn('other', m['limitations'])
+
+
 class EmptyCatalogTests(GatewayCase):
     def attach(self):
         self.catalog.entries.clear()  # a valid {"sessions": []} configuration, as in a fresh Studio

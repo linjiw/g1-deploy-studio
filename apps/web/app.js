@@ -49,7 +49,7 @@ async function refreshSessionList(selected = state.sessionId) {
   const groups = new Map();
   const ordered = [...sessions].sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0));
   for (const s of ordered) { const g = s.group ?? 'Recordings'; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); }
-  const order = ['CPU rehearsals', 'Recordings'];
+  const order = ['CPU rehearsals', 'Real-time rehearsals (L3)', 'Recordings'];
   $('session-picker').innerHTML = [...groups.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
     .map(([g, list]) => `<optgroup label="${escape(g)}">${list.map(sessionOption).join('')}</optgroup>`).join('');
   if (selected && sessions.some(s => s.id === selected)) $('session-picker').value = selected;
@@ -126,7 +126,7 @@ function updateModeBadge() {
   }
   const fid = fidelity(m), level = fid.short ?? (fid.level === 'L2-approx' ? 'L2≈' : fid.level);
   const detached = live && state.liveStatus === 'detached';
-  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? `REPLAY · CPU REHEARSAL · ${level}` : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : 'REPLAY · L0';
+  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? `REPLAY · CPU REHEARSAL · ${level}` : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : m.fidelity === 'L3' ? 'REPLAY · REAL-TIME CHAIN · L3' : 'REPLAY · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;

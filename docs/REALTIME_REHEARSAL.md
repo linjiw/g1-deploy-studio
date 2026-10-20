@@ -46,7 +46,9 @@ Reviewed by the lead; the dry run (`DRY_RUN=1`) passed. It:
    - It starts `studio.recorder` (subscribe-only, `:5557` `g1_debug`/`robot_config` and `:5556` `pose`) before the chain.
 4. Afterwards, from the host, checks: no surviving chain processes, no chain port ever bound in the host namespace (sampled every 2 s), unchanged git/SHA, and no files written in the reference repositories.
 
-Outputs go to `~/research-data/g1-deploy-studio/l3/<run-id>/`. `rehearse/` is read by `studio.replay` (real-time loader, `environment_path=<run>/rehearse/boxes.json` via `config/local.json`), and `capture.jsonl` is read by `studio.capture_replay`.
+Outputs go to `~/research-data/g1-deploy-studio/l3/<run-id>/`. The gateway discovers them on its own: it rescans at most every 10 s and never launches anything. Each completed run appears in the session picker under **Real-time rehearsals (L3)**:
+- `L3 real-time · <run-id>` is the separate-process recording, decoded by `studio.replay`, with the scene from `rehearse/boxes.json`. It is badged **REPLAY · REAL-TIME CHAIN · L3** and carries the namespace receipt from `l3_provenance.json`.
+- `L3 wire capture · <run-id>` is the subscribe-only ZMQ capture.
 
 Use Studio-authored tasks: every L1/L2 job writes a compatible `run/task.json` and `initial_state.npz`. The node runs the frozen bundle at its deployed budget (K16/ODE10, LiDAR route), so an L1 comparison should use *Deployed 16/10*.
 
