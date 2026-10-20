@@ -20,7 +20,7 @@ from pathlib import Path
 import sys
 import time
 
-from studio.policy_worker import (CRITERIA, MAX_DURATION_S, _atomic, _hash, contact_interval,
+from studio.policy_worker import (CRITERIA, MAX_DURATION_S, TorqueTracker, _atomic, _hash, contact_interval,
                                   task_thresholds, validate_request)
 from studio.policy_bundle import bundle_path, load_manifest, verify
 
@@ -77,6 +77,7 @@ def execute(request, output):
         from motion2scene_flow.closed_loop import callback as cbm, planner as plm, sensor_map
         from g1deploy import contract as C
         from sim.episode import Physics, stand_start_state
+        import sim.episode as episode_module
         from studio.replay import decode_reference, load_session, _plan, _git_provenance
         from studio.pipeline import PipelineRecorder, contract as pipeline_contract, SONIC_SAMPLE_EVERY
         if not Path(motion2scene_flow.__file__).resolve().is_relative_to((root / 'src').resolve()):
@@ -124,6 +125,14 @@ def execute(request, output):
 
         pipeline = PipelineRecorder()
         sim = Physics(boxes, DEPLOY / 'bundle/sonic/sonic_release_g1.onnx')
+        torque = TorqueTracker(np, sim.model, C.MJ_JOINTS)
+        original_pd_torque = episode_module.pd_torque
+
+        def observed_pd_torque(*args, **kwargs):
+            result = original_pd_torque(*args, **kwargs)
+            torque.observe(result)
+            return result
+        episode_module.pd_torque = observed_pd_torque
         frames, plans, contact_intervals, events = [], [], [], []
         physics_positions, physics_quaternions = [], []
         current = {'tgt': None, 'plan': None, 'inference_ms': None, 'sonic_sample': None, 'last_write': -math.inf}
@@ -166,6 +175,13 @@ def execute(request, output):
                                          'control_dt_s': C.DT, 'physics_dt_s': C.SIM_DT,
                                          'command_kind': 'PD position target; source applies clipped PD torques internally'},
                     'calibration_identity': 'Not applicable: privileged block consumes no simulated sensor',
+                    'fidelity': 'L2-approx' if req['latency']['ms'] else 'L1',
+                    'latency_model': {'ms': req['latency']['ms'], 'anchor': 'measured',
+                                      'implementation': 'Studio delayed execution around the Flow callback plan_target',
+                                      'basis': ('Each plan is executed from request tick + latency; the previous plan keeps '
+                                                'driving SONIC meanwhile (pipelined). The callback still anchors its next '
+                                                'replan on the latest computed plan, so this approximates, not reproduces, '
+                                                'an asynchronous planner.') if req['latency']['ms'] else 'No latency: synchronous lockstep.'},
                     'pipeline_contract': pipeline_contract(DEPLOY / 'g1deploy/sonic.py', C),
                     'provenance': {'artifacts': [_hash(root / 'manifest.json'), _hash(root / 'config.json'), _hash(Path(__file__))]
                                    + [{k: a[k] for k in ('path', 'sha256', 'bytes')} for a in manifest['artifacts'] + manifest['humanoid_lfh']['files'] + manifest['deploy']['files']],
@@ -264,6 +280,7 @@ def execute(request, output):
             tic = time.perf_counter()
             pos, quat, force, target = sim.step(tgt[:, :29], tgt[:, 29:58], tgt[:, 58:64])
             step_ms = (time.perf_counter() - tic) * 1000
+            torque.end_tick()
             for p_, q_, f_ in zip(pos, quat, force):
                 capture['positions'].append(np.asarray(p_, dtype=np.float64))
                 capture['quaternions'].append(np.asarray(q_, dtype=np.float64))
@@ -310,8 +327,24 @@ def execute(request, output):
         ncl.validate_tracker_feature_contract = lambda module, names: 0
         original_target, original_make = cbm.plan_target, cbm.make_planner
 
-        def target_hook(*args, **kwargs):
-            tgt, clamped = original_target(*args, **kwargs)
+        latency_ticks = int(round(req['latency']['ms'] / 1000 / DT))
+        delayed = {'last': None, 'executing': None, 'pending': []}
+
+        def target_hook(plan, anchor_q, anchor_dq, elapsed, *rest, **kwargs):
+            if latency_ticks:
+                tick = len(frames)
+                if plan is not delayed['last']:  # a newly computed plan (strong ref held, so identity is unique)
+                    delayed['last'] = plan
+                    entry = (plan, np.array(anchor_q, copy=True), np.array(anchor_dq, copy=True), tick - int(elapsed))
+                    if delayed['executing'] is None:
+                        delayed['executing'] = entry  # the first plan starts immediately, as in lockstep
+                    else:
+                        delayed['pending'].append((entry[3] + latency_ticks, entry))
+                while delayed['pending'] and delayed['pending'][0][0] <= tick:
+                    delayed['executing'] = delayed['pending'].pop(0)[1]
+                plan, anchor_q, anchor_dq, request_tick = delayed['executing']
+                elapsed = tick - request_tick
+            tgt, clamped = original_target(plan, anchor_q, anchor_dq, elapsed, *rest, **kwargs)
             projected = np.array(tgt, dtype=np.float64, copy=True)
             projected[:, 58:64] = ncl.project_rotation_6d(projected[:, 58:64])
             current['tgt'] = projected
@@ -369,7 +402,8 @@ def execute(request, output):
         np.savez_compressed(output / 'physics_observations.npz',
                             interval_start_s=[x['start_s'] for x in contact_intervals], interval_end_s=[x['end_s'] for x in contact_intervals],
                             obstacle_contact_n=[x['samples_n'] for x in contact_intervals],
-                            root_positions_m=physics_positions, root_quaternions_wxyz=physics_quaternions)
+                            root_positions_m=physics_positions, root_quaternions_wxyz=physics_quaternions,
+                            peak_commanded_torque_nm=torque.rows, joint_names=list(C.MJ_JOINTS))
         _atomic(output / 'pipeline_observations.json', pipeline.data())
         session = load_session(native, environment_path=output / 'boxes.json')
         # Independent decoder parity. The callback stores float32; compare at that precision.
@@ -412,9 +446,11 @@ def execute(request, output):
                   'tight_replans': sum(1 for x in native_plans if x.get('tight')),
                   'sonic_inference_ms': _quantiles([f['health']['sonic_inference_ms'] for f in frames if f['health']['sonic_inference_ms'] is not None]),
                   'criterion': req['criterion'], 'scoring': score.get('scoring'),
+                  'torque': torque.summary(C.EFFORT_MJ), 'latency_model': metadata['latency_model'],
                   'parity': {'max_qpos_abs_error': qpos_error, 'max_reference_abs_error': reference_error,
                              'basis': 'Observed physics vs independent native NPZ decoder (float32 storage)'},
-                  'worker_wall_to_summary_s': time.monotonic() - started, 'latency_s': 0.0, 'anchor_mode': 'synchronous lockstep'}
+                  'worker_wall_to_summary_s': time.monotonic() - started, 'latency_s': req['latency']['ms'] / 1000,
+                  'anchor_mode': 'measured (Studio delayed execution)' if req['latency']['ms'] else 'synchronous lockstep'}
         report['worker_real_time_factor'] = report['elapsed_s'] / max(1e-9, report['worker_wall_to_summary_s'])
         metadata.update(mode='replay', duration_s=frames[-1]['time'], executed_sim_duration_s=report['elapsed_s'],
                         source_samples=len(frames), recording_complete=episode_error is None, test_result=report)

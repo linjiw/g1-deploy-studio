@@ -13,7 +13,8 @@ export const arena = {
 };
 
 const clone = v => structuredClone(v);
-const snap = v => arena.snap ? Math.round(v / 0.05) * 0.05 : Math.round(v * 1000) / 1000;
+const mm = v => Math.round(v * 1000) / 1000;
+const snap = v => mm(arena.snap ? Math.round(v / 0.05) * 0.05 : v);
 const deg = r => r * 180 / Math.PI, rad = d => d * Math.PI / 180;
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
 const preset = () => arena.presets[arena.active];
@@ -43,6 +44,33 @@ export const TEMPLATES = {
   } },
 };
 function p(label, start, yaw, goal) { return { label, start_xy: start, start_yaw_rad: yaw, goal_xy: goal }; }
+
+// Seeded random start/goal presets for robustness checks. Every sample must pass
+// the same standing-footprint preflight as a hand-placed preset; the seed and
+// parameters are recorded in the labels and the arena description.
+export function randomPresets({ count = 8, minDist = 1.5, maxDist = 4.5, seed = 1, randomStart = false, heading = 'toward', replace = true } = {}) {
+  const r = rng(seed * 7919 + 17), doc = { boxes: arena.boxes, bounds: arenaBounds(arena.boxes, []) };
+  const lo = doc.bounds.min.map(v => v + 0.6), hi = doc.bounds.max.map(v => v - 0.6);
+  const base = arena.presets[arena.active] ?? p('Base', [0, 0], 0, [3, 0]);
+  const out = [];
+  for (let attempt = 0; out.length < count && attempt < 4000; attempt++) {
+    const start = randomStart ? [snap(lo[0] + r() * (hi[0] - lo[0])), snap(lo[1] + r() * (hi[1] - lo[1]))] : base.start_xy.slice();
+    const goal = [snap(lo[0] + r() * (hi[0] - lo[0])), snap(lo[1] + r() * (hi[1] - lo[1]))];
+    const d = Math.hypot(goal[0] - start[0], goal[1] - start[1]);
+    if (d < minDist || d > maxDist) continue;
+    if (pointStatus(doc, start).status !== 'configured_free' || pointStatus(doc, goal).status !== 'configured_free') continue;
+    if (out.some(q => Math.hypot(q.goal_xy[0] - goal[0], q.goal_xy[1] - goal[1]) < 0.4 && Math.hypot(q.start_xy[0] - start[0], q.start_xy[1] - start[1]) < 0.4)) continue;
+    const toward = Math.atan2(goal[1] - start[1], goal[0] - start[0]);
+    const yaw = heading === 'toward' ? toward : heading === 'random' ? (r() * 2 - 1) * Math.PI : base.start_yaw_rad;
+    out.push(p(`Random ${out.length + 1} · seed ${seed}`, start, wrap(Math.round(yaw / rad(5)) * rad(5)), goal));
+  }
+  arena.presets = replace ? out : [...arena.presets, ...out].slice(0, 16);
+  arena.active = 0;
+  const note = `Random presets: seed ${seed}, ${out.length} goals, ${minDist}–${maxDist} m, start ${randomStart ? 'random' : 'fixed'}, heading ${heading}.`;
+  arena.description = [arena.description?.replace(/Random presets:[^.]*\.[^.]*\.[^.]*\./, '').trim(), note].filter(Boolean).join(' ').slice(0, 500);
+  changed(); draw();
+  return out;
+}
 
 // ---------------------------------------------------------------- geometry
 export function arenaBounds(boxes = arena.boxes, presets = arena.presets) {
@@ -375,7 +403,12 @@ export function renderPanel() {
       ${q ? `<label class="field">Preset name<input id="preset-label" maxlength="100" value="${escape(q.label)}"></label><div class="grid-fields">
         <label>Start X<input id="preset-sx" type="number" step="0.05"></label><label>Start Y<input id="preset-sy" type="number" step="0.05"></label><label>Heading °<input id="preset-yaw" type="number" step="5"></label>
         <label>Goal X<input id="preset-gx" type="number" step="0.05"></label><label>Goal Y<input id="preset-gy" type="number" step="0.05"></label><span></span></div>` : ''}
-      <div class="field-row compact"><button id="preset-add" ${arena.presets.length >= 16 ? 'disabled' : ''}>+ Add preset</button><button id="preset-mirror" title="Add a copy mirrored across y = 0">Mirror Y</button></div></div>
+      <div class="field-row compact"><button id="preset-add" ${arena.presets.length >= 16 ? 'disabled' : ''}>+ Add preset</button><button id="preset-mirror" title="Add a copy mirrored across y = 0">Mirror Y</button></div>
+      <details class="random-goals" ${arena.randomOpen ? 'open' : ''}><summary>Random goals (seeded)</summary>
+        <div class="grid-fields"><label>Count<input id="rg-count" type="number" min="1" max="16" value="${arena.rg?.count ?? 8}"></label><label>Min m<input id="rg-min" type="number" step="0.5" min="0.5" value="${arena.rg?.minDist ?? 1.5}"></label><label>Max m<input id="rg-max" type="number" step="0.5" min="1" value="${arena.rg?.maxDist ?? 4.5}"></label>
+        <label>Seed<input id="rg-seed" type="number" min="0" max="99999" value="${arena.rg?.seed ?? 1}"></label><label>Heading<select id="rg-heading"><option value="toward">toward goal</option><option value="random">random</option><option value="fixed">keep start's</option></select></label><span></span></div>
+        <div class="field-row compact"><label class="check"><input id="rg-start" type="checkbox" ${arena.rg?.randomStart ? 'checked' : ''}> Random start too</label><label class="check"><input id="rg-append" type="checkbox"> Append</label><button id="rg-generate" class="primary-action">Generate</button></div>
+        <p class="tiny">Samples inside the arena bounds; each start and goal must clear the standing footprint. Same seed → same presets. Save the arena, then Rehearse → Run suite.</p></details></div>
     <div class="panel-section" id="arena-status"></div>
     <div class="panel-section sticky-actions"><button id="arena-save" class="primary-action">${arena.savedId ? 'Saved ✓' : 'Save arena'}</button><button id="arena-rehearse" ${arena.savedId ? '' : 'disabled'} title="Open Rehearse with this arena">Rehearse →</button>
       <button id="arena-export">↓ JSON</button><label class="file-button">↑ JSON<input id="arena-import" type="file" accept="application/json,.json"></label></div>`;
@@ -417,6 +450,15 @@ function bindPanel() {
     bindPreset('preset-gx', v => { q.goal_xy[0] = v; }); bindPreset('preset-gy', v => { q.goal_xy[1] = v; });
   }
   $('preset-add').addEventListener('click', () => { const base = preset() ?? p('Preset', [0, 0], 0, [3, 0]); arena.presets.push({ ...clone(base), label: `Preset ${arena.presets.length + 1}` }); arena.active = arena.presets.length - 1; changed(); draw(); });
+  $('rg-heading').value = arena.rg?.heading ?? 'toward';
+  document.querySelector('.random-goals').addEventListener('toggle', e => { arena.randomOpen = e.target.open; });
+  $('rg-generate').addEventListener('click', () => {
+    arena.rg = { count: Math.max(1, Math.min(16, Number($('rg-count').value) || 8)), minDist: Number($('rg-min').value) || 1.5,
+      maxDist: Number($('rg-max').value) || 4.5, seed: Math.max(0, Number($('rg-seed').value) || 0), randomStart: $('rg-start').checked,
+      heading: $('rg-heading').value, replace: !$('rg-append').checked };
+    const made = randomPresets(arena.rg);
+    if (made.length < arena.rg.count) emit('arena:error', `Only ${made.length} of ${arena.rg.count} goals fit the distance band and preflight; widen the band or enlarge the arena.`);
+  });
   $('preset-mirror').addEventListener('click', () => { const base = preset(); if (!base || arena.presets.length >= 16) return; arena.presets.push({ label: `${base.label} · mirrored`, start_xy: [base.start_xy[0], -base.start_xy[1]], start_yaw_rad: -base.start_yaw_rad, goal_xy: [base.goal_xy[0], -base.goal_xy[1]] }); arena.active = arena.presets.length - 1; changed(); draw(); });
   $('arena-save').addEventListener('click', async e => { e.currentTarget.disabled = true; try { await saveArena(); } catch (err) { emit('arena:error', err.message); } finally { const b = $('arena-save'); if (b) b.disabled = false; } });
   $('arena-rehearse').addEventListener('click', () => emit('arena:rehearse', arena.savedId));

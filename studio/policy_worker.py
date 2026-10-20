@@ -32,6 +32,57 @@ CRITERIA = {
 LOADERS = ('deploy-bundle', 'flow-callback')
 
 
+class TorqueTracker:
+    """Peak commanded PD torque per joint and substeps beyond the model actuator range.
+
+    Commanded torque is the source ``pd_torque`` return written to MuJoCo ``ctrl``;
+    MuJoCo then clamps it to each joint's ``actuatorfrcrange``. Saturated substeps
+    show where the training effort limit (g1deploy.contract) and the model limit
+    disagree in practice.
+    """
+
+    def __init__(self, np, model, joint_names):
+        self.np, self.names = np, list(joint_names)
+        ids = [model.joint(n).id for n in self.names]
+        self.limited = np.asarray(model.jnt_actfrclimited[ids], dtype=bool)
+        self.range = np.asarray(model.jnt_actfrcrange[ids], dtype=float)
+        self.tick_peak = np.zeros(len(ids))
+        self.saturated = np.zeros(len(ids), dtype=int)
+        self.substeps = 0
+        self.rows = []
+
+    def observe(self, torque):
+        t = self.np.asarray(torque, dtype=float)
+        self.tick_peak = self.np.maximum(self.tick_peak, self.np.abs(t))
+        self.saturated += self.limited & ((t < self.range[:, 0]) | (t > self.range[:, 1]))
+        self.substeps += 1
+
+    def end_tick(self):
+        self.rows.append(self.tick_peak.copy())
+        self.tick_peak[:] = 0
+
+    def summary(self, training_effort):
+        np = self.np
+        peak = np.max(self.rows, axis=0) if self.rows else np.zeros(len(self.names))
+        return {'peak_commanded_nm': dict(zip(self.names, peak.round(2).tolist())),
+                'model_limit_nm': {n: (float(r[1]) if lim else None) for n, r, lim in zip(self.names, self.range, self.limited)},
+                'training_effort_nm': dict(zip(self.names, np.asarray(training_effort, dtype=float).tolist())),
+                'saturated_substeps': {n: int(c) for n, c in zip(self.names, self.saturated) if c},
+                'total_substeps': int(self.substeps),
+                'basis': 'Commanded = source pd_torque output per physics substep; MuJoCo clamps to actuatorfrcrange (model limit). Simulator-commanded, not measured motor torque.'}
+
+
+def validate_latency(value):
+    value = value or {'ms': 0, 'anchor': 'measured'}
+    if not isinstance(value, dict):
+        raise ValueError('latency must be {ms, anchor}')
+    ms = _number(value.get('ms', 0), 'latency.ms', 0, 1000)
+    anchor = value.get('anchor', 'measured')
+    if not isinstance(anchor, str) or anchor not in ('measured', 'predict'):
+        raise ValueError("latency.anchor must be 'measured' or 'predict'")
+    return {'ms': int(math.floor(ms / 20 + .5)) * 20, 'anchor': anchor}  # half-up to whole 20 ms ticks
+
+
 def task_thresholds(criterion):
     return {k: v for k, v in CRITERIA[criterion].items() if k != 'label'}
 
@@ -123,6 +174,7 @@ def validate_request(request):
              'start_yaw_rad': _number(request.get('start_yaw_rad', 0), 'start_yaw_rad', -math.pi, math.pi),
              'duration_s': _number(request.get('duration_s', 2), 'duration_s', .02, MAX_DURATION_S),
              'seed': seed, 'planner': settings, 'criterion': criterion, 'policy': clean_policy,
+             'latency': validate_latency(request.get('latency')),
              'map': {'id': str(m.get('id', 'map'))[:100], 'label': str(m.get('label', 'Collision map'))[:200],
                      'kind': 'boxes', 'frame_id': 'world', 'boxes': clean_boxes,
                      'source': str(m.get('source', 'operator-configured'))[:1000]}}
@@ -284,7 +336,13 @@ def execute(request, output):
                     'policy_hash_at_recording': next(f['sha256'] for f in source_files if f['path'].endswith('/sonic_release_g1.onnx')),
                     'recorded_model_hash': model_identity['sha256'],
                     'planner_configuration': dict(req['planner'], device='cpu', implementation='eager',
-                                                   route_source='sensor', lidar='mjray', start='stand'),
+                                                   route_source='sensor', lidar='mjray', start='stand',
+                                                   latency_s=req['latency']['ms'] / 1000, anchor_mode=req['latency']['anchor'],
+                                                   inflight=1),
+                    'fidelity': 'L2' if req['latency']['ms'] else 'L1',
+                    'latency_model': {'ms': req['latency']['ms'], 'anchor': req['latency']['anchor'],
+                                      'implementation': 'g1-student-deploy sim.lockstep run_episode(latency_s, anchor_mode, inflight=1)',
+                                      'basis': 'A plan requested at tick t becomes usable at t + latency while physics keeps running.'},
                     'control_contract': {'joint_names': list(contract.MJ_JOINTS),
                                          'kp_nm_per_rad': contract.KP_MJ.tolist(),
                                          'kd_nm_per_rad_s': contract.KD_MJ.tolist(),
@@ -394,6 +452,8 @@ def execute(request, output):
 
         def observed_pd_torque(*args, **kwargs):
             result = original_pd_torque(*args, **kwargs)
+            if current.get('torque') is not None:
+                current['torque'].observe(result)
             if current['sonic_sample'] is not None:
                 current['pd_torques'].append(np.asarray(result).copy().tolist())
             return result
@@ -424,6 +484,7 @@ def execute(request, output):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 current['sim'] = self
+                current['torque'] = TorqueTracker(np, self.model, contract.MJ_JOINTS)
                 original_policy = self.tracker.policy
                 signature = lambda entries: [{'name': x.name, 'shape': x.shape, 'type': x.type} for x in entries]
                 metadata['pipeline_contract']['onnx_inputs'] = signature(self.tracker.session.get_inputs())
@@ -447,6 +508,7 @@ def execute(request, output):
                 current['pd_torques'] = []
                 tic = time.perf_counter()
                 result = super().step(ref_q_mj, ref_dq_mj, ref_ori6, push)
+                current['torque'].end_tick()
                 interval = contact_interval(result[2], t, float((len(frames)+1)*contract.DT))
                 previous_contact = contact_intervals[-1] if contact_intervals else None
                 contact_intervals.append(interval)
@@ -538,7 +600,8 @@ def execute(request, output):
         try:
             report = lockstep.run_episode(output / 'task.json', req['seed'], output / 'native',
                         device='cpu', planner_impl='eager', start='stand', route_source='sensor',
-                        lidar='mjray', deadline_s=req['duration_s'], planner_overrides=req['planner'])
+                        lidar='mjray', deadline_s=req['duration_s'], planner_overrides=req['planner'],
+                        latency_s=req['latency']['ms'] / 1000, anchor_mode=req['latency']['anchor'], inflight=1)
         except Exception as exc:
             episode_error = exc
             if not frames or not (output / 'native/score.json').is_file():
@@ -558,7 +621,9 @@ def execute(request, output):
                             interval_start_s=[x['start_s'] for x in contact_intervals],
                             interval_end_s=[x['end_s'] for x in contact_intervals],
                             obstacle_contact_n=[x['samples_n'] for x in contact_intervals],
-                            root_positions_m=physics_positions, root_quaternions_wxyz=physics_quaternions)
+                            root_positions_m=physics_positions, root_quaternions_wxyz=physics_quaternions,
+                            peak_commanded_torque_nm=current['torque'].rows if current.get('torque') else [],
+                            joint_names=list(contract.MJ_JOINTS))
         _atomic(output / 'scorer_observations.json', scorer_observations)
         _atomic(output / 'pipeline_observations.json', pipeline.data())
         native_path, extraction = (executed_native_recording(output, len(frames)) if episode_error else
@@ -591,6 +656,9 @@ def execute(request, output):
         report['worker_real_time_factor'] = report['elapsed_s']/report['worker_wall_to_summary_s']
         report['worker_timing_basis'] = 'Measured startup, policy execution and native decoding; excludes final session serialization'
         report['pipeline_capture_wall_ms'] = pipeline.telemetry_wall_s*1000
+        if current.get('torque') is not None:
+            report['torque'] = current['torque'].summary(contract.EFFORT_MJ)
+        report['latency_model'] = metadata['latency_model']
         report['pipeline_capture_timing_basis'] = 'Measured tensor copy/stat capture overhead; wrappers included in worker timing, not SONIC inference timing'
         metadata['test_result'] = report
         metadata['goal_xy'] = req['goal_xy']

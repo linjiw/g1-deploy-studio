@@ -115,11 +115,25 @@ function updateJoints(state) {
 // ---------------------------------------------------------------- Health
 // Fidelity ladder (review §7.1): what a run proves and what it hides.
 export function fidelity(meta = {}) {
+  const latency = meta.latency_model?.ms;
+  if (meta.recording_kind === 'sonic-mujoco-lockstep' && latency > 0) return { level: meta.fidelity ?? 'L2', label: `${meta.fidelity === 'L2-approx' ? 'L2≈' : 'L2'} · lockstep with ${latency} ms planner latency`,
+    proves: `Planner/tracker logic plus the effect of plans arriving ${latency} ms after they are requested (${meta.latency_model.anchor} anchor).`,
+    hides: `DDS/ZMQ transport, C++/TensorRT numerics, real sensors${meta.fidelity === 'L2-approx' ? '; the Flow callback still anchors replans on its latest plan (approximation)' : ''}.` };
   if (meta.recording_kind === 'sonic-mujoco-lockstep') return { level: 'L1', label: 'L1 · CPU lockstep',
     proves: 'Planner and tracker logic, geometry, scoring.', hides: 'Planner latency (physics waits for each replan), DDS/ZMQ transport, C++/TensorRT numerics, start-up transient, real sensors.' };
   if (meta.recording_kind === 'recorded-wire-transport') return { level: 'L0', label: 'L0 · transport replay',
     proves: 'Wire framing and decoding of recorded packets.', hides: 'Controller execution and robot state.' };
   return { level: 'L0', label: 'L0 · recorded replay', proves: 'Data and adapter correctness of a recording.', hides: 'Everything dynamic; nothing re-executed.' };
+}
+
+function torqueSummary(t) {
+  if (!t?.peak_commanded_nm) return '';
+  const rows = Object.entries(t.peak_commanded_nm).filter(([n]) => /hip|knee|ankle/.test(n))
+    .sort((a, b) => b[1] / (t.model_limit_nm[b[0]] ?? Infinity) - a[1] / (t.model_limit_nm[a[0]] ?? Infinity)).slice(0, 6);
+  const saturated = Object.entries(t.saturated_substeps ?? {});
+  return `<details class="torque-details" ${saturated.length ? 'open' : ''}><summary>Leg torque vs model limit ${saturated.length ? `<span class="chip chip-commanded">SATURATED ${saturated.length} joint${saturated.length > 1 ? 's' : ''}</span>` : ''}</summary>
+    <table class="joint-table"><thead><tr><th>Joint</th><th>Peak cmd</th><th>Model</th><th>Training</th><th>Clamped</th></tr></thead><tbody>${rows.map(([n, v]) => `<tr><td>${escape(n.replace('_joint', ''))}</td><td class="${v > (t.model_limit_nm[n] ?? Infinity) ? 'value-bad' : ''}">${num(v, 1)}</td><td>${num(t.model_limit_nm[n], 0)}</td><td>${num(t.training_effort_nm?.[n], 0)}</td><td>${escape(t.saturated_substeps?.[n] ?? 0)}</td></tr>`).join('')}</tbody></table>
+    ${tiny(`Commanded PD torque (N·m) vs MuJoCo actuatorfrcrange; ${t.total_substeps} substeps. Where the training effort (contract) exceeds the model limit, MuJoCo clamps: see ROBOT_CONTRACT hip_effort_limit.`)}</details>`;
 }
 
 function outcomeCard(state) {
@@ -131,7 +145,8 @@ function outcomeCard(state) {
     ${fact('Final / closest goal distance', `${num(result.final_goal_distance_xy_m, 3)} / ${num(result.minimum_goal_distance_xy_m, 3, 'm')}`)}${fact('Peak obstacle contact', num(result.maximum_obstacle_contact_n, 2, 'N'))}
     ${fact('Max root tilt / min height', `${num(result.maximum_root_tilt_rad, 3, 'rad')} / ${num(result.minimum_root_height_m, 3, 'm')}`)}
     ${result.runtime_error ? notice(result.runtime_error, 'warning') : ''}${interval ? tiny(`Final contact interval ${num(interval.start_s, 3)}–${num(interval.end_s, 3, 's')}: ${num(interval.max_force_n, 2, 'N')}.`) : ''}
-    ${fact('Fidelity level', f.label)}${tiny(`Proves: ${f.proves} Hides: ${f.hides} Not a deployment or hardware result.`)}`,
+    ${fact('Fidelity level', f.label)}${tiny(`Proves: ${f.proves} Hides: ${f.hides} Not a deployment or hardware result.`)}
+    ${torqueSummary(result.torque)}`,
   { evidence: 'sim-truth', id: 'recorded-outcome' });
 }
 

@@ -1,6 +1,69 @@
 // Runs browser and comparison overlay. Every row is an owned CPU rehearsal;
 // outcomes come from the unmodified source scorer and are not hardware results.
-import { $, escape, num, request, outcomeChip, outcomeColor, ago, emit, finite } from './util.js';
+import { $, escape, num, request, outcomeChip, outcomeColor, ago, emit, finite, download } from './util.js';
+
+// Wilson 95% interval for k successes in n trials (honest for small n).
+export function wilson(k, n, z = 1.96) {
+  if (!n) return [null, null];
+  const p = k / n, d = 1 + z * z / n, c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d;
+  return [Math.max(0, c - h), Math.min(1, c + h)];
+}
+const median = xs => { const v = xs.filter(finite).sort((a, b) => a - b); return v.length ? (v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2) : null; };
+export function category(r) {
+  if (r.outcome === 'goal_completion') return 'goal';
+  if (r.outcome === 'timeout') return (r.metrics.final_goal_distance_m ?? Infinity) <= 0.5 ? 'timeout_near' : 'timeout_far';
+  if (r.outcome === 'obstacle_collision') return 'collision';
+  if (r.outcome === 'fall') return 'fall';
+  if (r.outcome === 'runtime_error' || r.status === 'failed') return 'error';
+  return r.outcome ?? r.status ?? 'unknown';
+}
+const CATEGORY_LABEL = { goal: 'goal', timeout_near: 'timeout ≤0.5 m', timeout_far: 'timeout >0.5 m', collision: 'collision', fall: 'fall', error: 'error' };
+
+export function report(rows) {
+  const groups = new Map();
+  for (const r of rows.filter(x => x.outcome || x.status === 'failed')) {
+    const key = `${r.policy_id} · ${r.criterion ?? 'arrive_hold'} · lat ${r.latency?.ms ?? 0}${r.latency?.anchor === 'predict' ? 'p' : ''} · K${r.planner?.candidates}/ODE${r.planner?.ode_steps}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  return [...groups.entries()].map(([key, list]) => {
+    const n = list.length, goals = list.filter(r => r.outcome === 'goal_completion');
+    const reach = list.filter(r => r.derived?.reach_post_hoc?.reached);
+    const cats = {};
+    for (const r of list) cats[category(r)] = (cats[category(r)] ?? 0) + 1;
+    return { key, n, goals: goals.length, ci: wilson(goals.length, n), reach: reach.length, reachCi: wilson(reach.length, n), cats,
+      timeToGoal: median(goals.map(r => r.metrics.elapsed_s)), reachTime: median(reach.map(r => r.derived.reach_post_hoc.time_s)),
+      efficiency: median(goals.map(r => r.derived?.path_efficiency)), contactRuns: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length,
+      saturatedRuns: list.filter(r => Object.keys(r.torque?.saturated_substeps ?? {}).length).length, torqueKnown: list.filter(r => r.torque).length,
+      plannerP95: median(list.map(r => r.metrics.planner_p95_ms)), finalMedian: median(list.map(r => r.metrics.final_goal_distance_m)) };
+  });
+}
+const pct = (k, n) => n ? `${Math.round(100 * k / n)}%` : '—';
+const ciText = ci => ci[0] === null ? '' : ` [${Math.round(100 * ci[0])}–${Math.round(100 * ci[1])}%]`;
+
+function reportHtml(rows) {
+  const groups = report(rows);
+  if (!groups.length) return '';
+  return `<div class="panel-section"><h4>Robustness report · runs in view</h4>${groups.map(g => `<div class="report-group">
+      <div class="report-key">${escape(g.key)}</div>
+      <div class="report-main"><strong>${g.goals}/${g.n}</strong> source-scorer goals <span>${pct(g.goals, g.n)}${ciText(g.ci)}</span></div>
+      <div class="report-main"><strong>${g.reach}/${g.n}</strong> post-hoc Flow reach <span>${pct(g.reach, g.n)}${ciText(g.reachCi)}</span></div>
+      <div class="report-cats">${Object.entries(g.cats).map(([c, k]) => `<span class="cat cat-${escape(c)}">${escape(CATEGORY_LABEL[c] ?? c)} ${k}</span>`).join('')}</div>
+      <div class="report-meta">median time to goal ${num(g.timeToGoal, 2, 's')} · to reach ${num(g.reachTime, 2, 's')} · path efficiency ${num(g.efficiency, 2)} · final ${num(g.finalMedian, 2, 'm')} · planner p95 ${num(g.plannerP95, 0, 'ms')}</div>
+      <div class="report-meta">${g.contactRuns} run${g.contactRuns === 1 ? '' : 's'} with obstacle contact · ${g.torqueKnown ? `${g.saturatedRuns}/${g.torqueKnown} with leg torque clamped at the model limit` : 'torque not recorded'}</div></div>`).join('')}
+    <p class="tiny">95% Wilson intervals. Source scorer = the run's own criterion; post-hoc reach = Flow arena protocol (0.4 m, 2 m/s, 0.1 s, contact ≤5 N) re-evaluated on the recorded trajectory. CPU lockstep simulation, single robot model; not a hardware success rate.</p>
+    <div class="field-row compact"><button id="runs-select-all">Select all in view</button><button id="runs-export">↓ CSV</button><button id="runs-export-json">↓ JSON</button></div></div>`;
+}
+
+function csv(rows) {
+  const cols = ['id', 'label', 'policy_id', 'map_id', 'criterion', 'latency_ms', 'candidates', 'ode_steps', 'seed', 'start_x', 'start_y', 'start_yaw', 'goal_x', 'goal_y',
+    'outcome', 'category', 'elapsed_s', 'final_m', 'closest_m', 'reach_post_hoc', 'reach_time_s', 'path_efficiency', 'max_contact_n', 'max_tilt_rad', 'planner_p95_ms', 'torque_saturated_joints'];
+  const q = v => v === null || v === undefined ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v);
+  return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.latency?.ms ?? 0, r.planner?.candidates, r.planner?.ode_steps, r.seed,
+    r.start_xy?.[0], r.start_xy?.[1], r.start_yaw_rad, r.goal_xy?.[0], r.goal_xy?.[1], r.outcome, category(r), r.metrics.elapsed_s, r.metrics.final_goal_distance_m,
+    r.derived?.closest_m, r.derived?.reach_post_hoc?.reached, r.derived?.reach_post_hoc?.time_s, r.derived?.path_efficiency, r.metrics.max_contact_n, r.metrics.max_tilt_rad,
+    r.metrics.planner_p95_ms, Object.keys(r.torque?.saturated_substeps ?? {}).length].map(q).join(','))].join('\n');
+}
 
 export const runs = { table: [], selected: new Set(), filters: { map: '', policy: '', outcome: '' }, maps: new Map(), canvas: null, colorBy: 'outcome', hover: null };
 const POLICY_COLORS = ['#56d9d0', '#c4a0d9', '#efbb70', '#7fb4ff', '#5fd39b', '#f08c85'];
@@ -44,6 +107,7 @@ export function render() {
       <label>Outcome<select id="runs-outcome"><option value="">All</option>${outcomes.map(o => `<option value="${escape(o)}" ${runs.filters.outcome === o ? 'selected' : ''}>${escape(String(o).replaceAll('_', ' '))}</option>`).join('')}</select></label></div>
       <div class="field-row compact"><label class="check"><input type="radio" name="runs-color" value="outcome" ${runs.colorBy === 'outcome' ? 'checked' : ''}> Color by outcome</label><label class="check"><input type="radio" name="runs-color" value="policy" ${runs.colorBy === 'policy' ? 'checked' : ''}> by policy</label><button id="runs-refresh">Refresh</button></div></div>
     ${stats.length ? `<div class="panel-section"><h4>Outcomes in view</h4>${stats.map(s => `<div class="stat-row"><i style="background:${policyColor(s.id)}"></i><span>${escape(s.id)}</span><strong>${s.goals}/${s.n} goals</strong><small>${s.contact} with contact</small></div>`).join('')}<p class="tiny">Individual CPU lockstep checks, mostly one seed each: not a success-rate estimate.</p></div>` : ''}
+    ${reportHtml(rows)}
     <div class="panel-section runs-list">${rows.length ? rows.map(r => `<div class="run-row ${runs.selected.has(r.id) ? 'selected' : ''}">
         <label class="run-check" title="Compare"><input type="checkbox" data-run-select="${escape(r.id)}" ${runs.selected.has(r.id) ? 'checked' : ''} ${r.trajectory ? '' : 'disabled'}><i style="background:${runColor(r)}"></i></label>
         <div class="run-main"><div class="run-title">${outcomeChip(r.outcome, r.status)}<span title="${escape(r.label)}">${escape(shortLabel(r))}</span></div>
@@ -55,8 +119,11 @@ export function render() {
   $('runs-outcome').addEventListener('change', e => { runs.filters.outcome = e.target.value; render(); });
   document.querySelectorAll('input[name=runs-color]').forEach(r => r.addEventListener('change', () => { runs.colorBy = r.value; render(); drawCompare(); }));
   $('runs-refresh').addEventListener('click', () => refreshRuns().catch(e => emit('workbench:error', e.message)));
+  $('runs-select-all')?.addEventListener('click', () => { runs.selected = new Set(rows.filter(r => r.trajectory).slice(0, 64).map(r => r.id)); render(); drawCompare(); });
+  $('runs-export')?.addEventListener('click', () => download(`studio-runs-${Date.now()}.csv`, csv(rows), 'text/csv'));
+  $('runs-export-json')?.addEventListener('click', () => download(`studio-runs-${Date.now()}.json`, { report: report(rows), runs: rows.map(({ trajectory, ...r }) => r) }));
   document.querySelectorAll('[data-run-select]').forEach(c => c.addEventListener('change', () => {
-    if (c.checked) { if (runs.selected.size >= 12) { c.checked = false; return; } runs.selected.add(c.dataset.runSelect); } else runs.selected.delete(c.dataset.runSelect);
+    if (c.checked) { if (runs.selected.size >= 64) { c.checked = false; return; } runs.selected.add(c.dataset.runSelect); } else runs.selected.delete(c.dataset.runSelect);
     render(); drawCompare();
   }));
   document.querySelectorAll('[data-open-session]').forEach(b => b.addEventListener('click', () => emit('open-session', b.dataset.openSession)));

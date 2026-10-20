@@ -474,7 +474,7 @@ class SuiteTests(WorkerCase):
         invalid = self.scenario(label='Off-map goal', goal_xy=[6, 0])
         for document, error in [(['not', 'a', 'dict'], ValueError), ({}, ValueError),
                                 ({'scenario_ids': valid}, ValueError), ({'scenario_ids': []}, ValueError),
-                                ({'scenario_ids': [valid] * 13}, ValueError),
+                                ({'scenario_ids': [valid] * (wb.MAX_SUITE_RUNS + 1)}, ValueError),
                                 ({'scenario_ids': [valid, 'scenario-unknown']}, KeyError),
                                 ({'scenario_ids': [valid], 'label': ''}, ValueError)]:
             with self.subTest(document=document), self.assertRaises(error):

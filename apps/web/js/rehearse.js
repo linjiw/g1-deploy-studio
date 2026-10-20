@@ -4,7 +4,7 @@ import { $, escape, num, vector, fact, chip, request, outcomeChip, finite, emit,
 
 export const rh = {
   catalog: null, policyId: null, mapId: null, map: null, presetIndex: 0,
-  settings: { duration_s: 8, seed: 0, candidates: 4, ode_steps: 6, criterion: 'arrive_hold' }, seeds: 1,
+  settings: { duration_s: 8, seed: 0, candidates: 4, ode_steps: 6, criterion: 'arrive_hold', latency_ms: 0, anchor: 'measured' }, seeds: 1,
   job: null, suite: null, timer: null, suiteTimer: null, attached: null, busy: false, lastPerception: -Infinity,
 };
 
@@ -77,6 +77,9 @@ export function render() {
       <div class="grid-fields"><label>Duration s<input id="rh-duration" type="number" min="1" max="10" step="0.5" value="${rh.settings.duration_s}"></label><label>Seed<input id="rh-seed" type="number" min="0" max="2147483647" step="1" value="${rh.settings.seed}"></label><label>Seeds in suite<input id="rh-seeds" type="number" min="1" max="4" step="1" value="${rh.seeds}"></label>
       <label>Candidates K<input id="rh-k" type="number" min="1" max="${pol?.limits?.candidates?.[1] ?? 16}" step="1" value="${rh.settings.candidates}"></label><label>ODE steps<input id="rh-ode" type="number" min="1" max="${pol?.limits?.ode_steps?.[1] ?? 10}" step="1" value="${rh.settings.ode_steps}"></label><span></span></div>
       <div class="field-row compact budget-buttons">${BUDGETS.map(([n, k, o]) => `<button data-budget="${k},${o}" class="${rh.settings.candidates === k && rh.settings.ode_steps === o ? 'active' : ''}">${n} ${k}/${o}</button>`).join('')}${deployed ? `<button data-budget="${deployed.candidates},${deployed.ode_steps}" class="${rh.settings.candidates === deployed.candidates && rh.settings.ode_steps === deployed.ode_steps ? 'active' : ''}" title="The profile's deployed planner budget">Deployed ${deployed.candidates}/${deployed.ode_steps}</button>` : ''}</div>
+      <div class="grid-fields"><label>Planner latency<select id="rh-latency">${[0, 100, 160, 200, 300, 500].map(v => `<option value="${v}" ${v === rh.settings.latency_ms ? 'selected' : ''}>${v ? `${v} ms` : 'none (L1)'}</option>`).join('')}</select></label>
+        <label>Anchor<select id="rh-anchor" ${pol?.loader === 'flow-callback' || !rh.settings.latency_ms ? 'disabled' : ''}><option value="measured" ${rh.settings.anchor === 'measured' ? 'selected' : ''}>measured</option><option value="predict" ${rh.settings.anchor === 'predict' ? 'selected' : ''}>predict (latency-aware)</option></select></label><span></span></div>
+      <p class="tiny">${rh.settings.latency_ms ? `L2: each plan starts ${rh.settings.latency_ms} ms after it is requested while physics keeps running${pol?.loader === 'flow-callback' ? ' (Studio delayed-execution approximation for the Flow callback)' : ' (source lockstep latency model)'}.` : 'L1: physics waits for every replan, hiding planner latency.'}</p>
       <label class="field">Success criterion<select id="rh-criterion">${(rh.catalog.criteria ?? [{ id: 'arrive_hold', label: 'Arrive and hold' }]).map(c => `<option value="${escape(c.id)}" ${c.id === rh.settings.criterion ? 'selected' : ''} title="${escape(`radius ${c.goal_radius_m} m · speed ≤ ${c.goal_speed_m_s} m/s for ${c.goal_hold_s} s · collision > ${c.obstacle_contact_threshold_n} N`)}">${escape(c.label)}</option>`).join('')}</select></label>
       <p class="tiny">CPU lockstep pauses physics while planning, so larger budgets cost wall time, not simulated time. Wall limit for this profile: ${pol?.limits?.wall_s ?? 180} s.</p></div>
     <div class="panel-section sticky-actions"><button id="rh-run" class="primary-action" ${active || !pol?.available ? 'disabled' : ''}>▶ Run preset</button><button id="rh-suite" ${active || !pol?.available ? 'disabled' : ''} title="Run every preset of this arena (× seeds) one after another">Run suite · ${list.length * rh.seeds} run${list.length * rh.seeds === 1 ? '' : 's'}</button>${active ? '<button id="rh-cancel" class="danger">Cancel</button>' : ''}</div>
@@ -97,6 +100,8 @@ function bind() {
   for (const [id, key] of [['rh-duration', 'duration_s'], ['rh-seed', 'seed'], ['rh-k', 'candidates'], ['rh-ode', 'ode_steps']])
     $(id).addEventListener('change', e => { const v = Number(e.target.value); if (finite(v)) rh.settings[key] = v; render(); });
   $('rh-criterion').addEventListener('change', e => { rh.settings.criterion = e.target.value; });
+  $('rh-latency').addEventListener('change', e => { rh.settings.latency_ms = Number(e.target.value); if (policy()?.loader === 'flow-callback') rh.settings.anchor = 'measured'; render(); });
+  $('rh-anchor').addEventListener('change', e => { rh.settings.anchor = e.target.value; });
   $('rh-seeds').addEventListener('change', e => { rh.seeds = Math.max(1, Math.min(4, Number(e.target.value) || 1)); render(); });
   document.querySelectorAll('[data-budget]').forEach(b => b.addEventListener('click', () => {
     const [k, o] = b.dataset.budget.split(',').map(Number); Object.assign(rh.settings, { candidates: k, ode_steps: o }); render();
@@ -114,8 +119,9 @@ async function guarded(task) {
 
 function scenarioRequest(q, seed) {
   const pol = policy();
-  const label = `${rh.map.label} · ${q.label} · ${pol?.short_label ?? rh.policyId} · K${rh.settings.candidates}/ODE${rh.settings.ode_steps} · s${seed}${rh.settings.criterion === 'arena_reach' ? ' · reach' : ''}`.slice(0, 100);
-  return { label, map_id: rh.mapId, backend_id: 'flow-sonic-cpu', policy_id: rh.policyId, criterion: rh.settings.criterion, duration_s: rh.settings.duration_s,
+  const label = `${rh.map.label} · ${q.label} · ${pol?.short_label ?? rh.policyId} · K${rh.settings.candidates}/ODE${rh.settings.ode_steps} · s${seed}${rh.settings.criterion === 'arena_reach' ? ' · reach' : ''}${rh.settings.latency_ms ? ` · lat ${rh.settings.latency_ms}${rh.settings.anchor === 'predict' ? 'p' : ''}` : ''}`.slice(0, 100);
+  const latency = { ms: rh.settings.latency_ms, anchor: policy()?.loader === 'flow-callback' ? 'measured' : rh.settings.anchor };
+  return { label, map_id: rh.mapId, backend_id: 'flow-sonic-cpu', policy_id: rh.policyId, criterion: rh.settings.criterion, latency, duration_s: rh.settings.duration_s,
     start_xy: q.start_xy, goal_xy: q.goal_xy, start_yaw_rad: q.start_yaw_rad ?? 0, seed,
     planner: { candidates: rh.settings.candidates, ode_steps: rh.settings.ode_steps } };
 }

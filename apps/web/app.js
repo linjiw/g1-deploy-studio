@@ -110,8 +110,8 @@ async function loadSession(id, { keepCamera = false } = {}) {
 function updateModeBadge() {
   const m = state.session?.metadata ?? {};
   const live = m.mode === 'simulation';
-  $('mode-badge').textContent = live ? '● LIVE CPU SIMULATION · L1' : m.recording_kind === 'sonic-mujoco-lockstep' ? 'REPLAY · CPU REHEARSAL · L1' : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : 'REPLAY · L0';
-  const fid = fidelity(m);
+  const fid = fidelity(m), level = fid.level === 'L2-approx' ? 'L2≈' : fid.level;
+  $('mode-badge').textContent = live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? `REPLAY · CPU REHEARSAL · ${level}` : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : 'REPLAY · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;

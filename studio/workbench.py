@@ -23,11 +23,13 @@ DATA_ROOT = Path.home() / 'research-data/g1-deploy-studio/workbench'
 REFERENCE_ROOT = Path('/home/linjiw/code/g1-student-deploy')
 MAX_MAP_POINTS = 20000
 MAX_BOXES = 128
-MAX_JOBS = 128  # bounded metadata history for repeated multi-scene reviews
+MAX_JOBS = 512  # bounded run history (each run is ~10-30 MB on disk)
+MAX_SCENARIOS = 2000
 MAX_OUTPUT_BYTES = 256 * 1024 * 1024
 MAX_ARENAS = 64
 MAX_PRESETS = 16
-MAX_SUITE_RUNS = 12
+MAX_SUITE_RUNS = 48
+MAX_LATENCY_MS = 1000
 MAX_SUITES = 64
 SUITE_ACTIVE = ('queued', 'running', 'cancelling')
 SUITE_TERMINAL = ('completed', 'cancelled', 'interrupted', 'failed')
@@ -248,6 +250,51 @@ def ident(value, name):
     return value
 
 
+# Flow Isaac arena protocol (studio.policy_worker.CRITERIA['arena_reach']), re-evaluated
+# post hoc on the recorded trajectory so every run can be compared on both criteria.
+REACH = {'radius_m': .4, 'speed_m_s': 2.0, 'hold_s': .1, 'contact_n': 5.0, 'fall_height_m': .38, 'fall_tilt_rad': .8}
+
+
+def trajectory_metrics(rows, start, goal, dt=.02):
+    """Derived metrics from recorded 50 Hz simulator-truth rows; never a source-scorer re-run."""
+    if not rows or not goal:
+        return None
+    xy = [(r['qpos'][0], r['qpos'][1]) for r in rows]
+    t = [r['time'] for r in rows]
+    path = sum(math.dist(a, b) for a, b in zip(xy, xy[1:]))
+    straight = math.dist(xy[0], goal)  # from the first recorded pose, not the nominal start
+    dist = [math.dist(p, goal) for p in xy]
+    speed = [0.0] + [math.dist(a, b) / max(1e-9, tb - ta) for a, b, ta, tb in zip(xy, xy[1:], t, t[1:])]
+    def tilt(q):
+        return math.acos(max(-1.0, min(1.0, 1 - 2 * (q[4] ** 2 + q[5] ** 2)))) if len(q) >= 7 else None
+    entry = {r: next((t[i] for i, d in enumerate(dist) if d <= r), None) for r in (.3, .4)}
+    reach_at = blocked = None
+    held = 0
+    for i, row in enumerate(rows):
+        q, contact = row['qpos'], (row.get('health') or {}).get('contact_force_n') or 0.0
+        if contact > REACH['contact_n']:
+            blocked = blocked or ('obstacle_contact', t[i])
+        if (len(q) >= 3 and q[2] < REACH['fall_height_m']) or (tilt(q) or 0) > REACH['fall_tilt_rad']:
+            blocked = blocked or ('fall', t[i])
+        if blocked:
+            break
+        held = held + 1 if dist[i] <= REACH['radius_m'] and speed[i] <= REACH['speed_m_s'] else 0
+        if held * dt >= REACH['hold_s'] - 1e-9:
+            reach_at = t[i]
+            break
+    first_contact = next((t[i] for i, r in enumerate(rows) if ((r.get('health') or {}).get('contact_force_n') or 0) > 0), None)
+    return {'path_length_m': path, 'straight_line_m': straight,
+            'path_efficiency': straight / path if path > 1e-6 else None,
+            'first_entry_s': {'0.3': entry[.3], '0.4': entry[.4]},
+            'closest_m': min(dist), 'final_m': dist[-1],
+            'max_tilt_rad': max((v for v in (tilt(r['qpos']) for r in rows) if v is not None), default=None),
+            'min_height_m': min((r['qpos'][2] for r in rows if len(r['qpos']) >= 3), default=None), 'first_contact_s': first_contact,
+            'reach_post_hoc': {'reached': reach_at is not None, 'time_s': reach_at,
+                               'blocked_by': blocked[0] if blocked and reach_at is None else None,
+                               'criterion': REACH,
+                               'basis': 'Post-hoc on recorded 50 Hz simulator-truth trajectory; finite-difference speed; previous-interval contact. Not the source scorer.'}}
+
+
 def _ms(seconds):
     return seconds * 1000 if isinstance(seconds, (int, float)) and math.isfinite(seconds) else None
 
@@ -342,7 +389,7 @@ class Workbench:
                 self.maps[path.stem] = arena
             except (ValueError, OSError, TypeError):
                 self.map_warnings.append(f'Saved arena {path.stem} failed validation and is hidden')
-        for path in sorted((self.root/'scenarios').glob('scenario-*.json'))[:100]:
+        for path in sorted((self.root/'scenarios').glob('scenario-*.json'))[:MAX_SCENARIOS]:
             try:
                 data = read_json(path, 16384)
                 self.scenarios[path.stem] = data
@@ -465,7 +512,8 @@ class Workbench:
                 'flow_research': catalog['flow_research'],
                 'criteria': self._criteria(),
                 'limits': {'arenas': MAX_ARENAS, 'presets': MAX_PRESETS, 'boxes': MAX_BOXES,
-                           'suite_runs': MAX_SUITE_RUNS, 'jobs': MAX_JOBS},
+                           'suite_runs': MAX_SUITE_RUNS, 'jobs': MAX_JOBS, 'scenarios': MAX_SCENARIOS,
+                           'latency_ms': [0, MAX_LATENCY_MS]},
                 'defaults': {'map_id': 'flat-ground', 'backend_id': 'flow-sonic-cpu',
                 'policy_id': catalog['default_policy_id'],
                 'duration_s': 2, 'start_xy': [0,0], 'goal_xy': [1,0], 'start_yaw_rad': 0, 'seed': 0,
@@ -520,6 +568,7 @@ class Workbench:
                     'seed': integer(request.get('seed', 0), 'seed', 0, 2147483647),
                     'policy_id': profile['id'],
                     'criterion': self._criterion(request.get('criterion', 'arrive_hold')),
+                    'latency': self._latency(request.get('latency'), profile),
                     'planner': {'candidates': integer(planner.get('candidates', 2), 'candidates', 1, max_k),
                                 'ode_steps': integer(planner.get('ode_steps', 4), 'ODE steps', 1, max_ode)}}
         goal, start = point_status(map_data, scenario['goal_xy']), point_status(map_data, scenario['start_xy'])
@@ -542,6 +591,22 @@ class Workbench:
         return scenario
 
     @staticmethod
+    def _latency(value, profile):
+        """Planner latency model: a plan requested at tick t is executed from t + latency."""
+        if value is None:
+            return {'ms': 0, 'anchor': 'measured'}
+        if not isinstance(value, dict):
+            raise ValueError('latency must be an object {ms, anchor}')
+        ms = finite(value.get('ms', 0), 'latency ms', 0, MAX_LATENCY_MS)
+        anchor = value.get('anchor', 'measured')
+        if anchor not in ('measured', 'predict'):
+            raise ValueError("latency anchor must be 'measured' or 'predict'")
+        if anchor == 'predict' and profile.get('loader') == 'flow-callback':
+            raise ValueError('Predictive anchoring is only available for the deploy-bundle lockstep')
+        # Whole 20 ms control ticks: the simulation cannot apply a plan between ticks.
+        return {'ms': int(math.floor(ms / 20 + .5)) * 20, 'anchor': anchor}  # half-up to whole ticks
+
+    @staticmethod
     def _criteria():
         from studio.policy_worker import CRITERIA
         return [{'id': k, **v} for k, v in CRITERIA.items()]
@@ -553,11 +618,23 @@ class Workbench:
             raise ValueError(f'Success criterion must be one of {sorted(CRITERIA)}')
         return value
 
+    @staticmethod
+    def _content_key(scenario):
+        keys = ('label', 'map_id', 'map_sha256', 'policy_id', 'criterion', 'latency', 'duration_s',
+                'start_xy', 'goal_xy', 'start_yaw_rad', 'seed', 'planner', 'backend_id')
+        return hashlib.sha256(json.dumps({k: scenario.get(k) for k in keys}, sort_keys=True).encode()).hexdigest()
+
     def save_scenario(self, request):
         scenario = self.prepare(request)
+        scenario['content_sha256'] = self._content_key(scenario)
         with self.lock:
-            if len(self.scenarios) >= 100:
-                raise ValueError('Scenario storage limit reached (100)')
+            # Identical requests reuse one saved scenario instead of piling up copies.
+            for existing in self.scenarios.values():
+                if existing.get('content_sha256', self._content_key(existing)) == scenario['content_sha256']:
+                    existing = self.prepare(existing) | {'id': existing['id'], 'content_sha256': scenario['content_sha256']}
+                    return {'scenario': existing, 'validation': existing['validation'], 'reused': True}
+            if len(self.scenarios) >= MAX_SCENARIOS:
+                raise ValueError(f'Scenario storage limit reached ({MAX_SCENARIOS})')
             scenario['id'] = 'scenario-' + uuid.uuid4().hex[:12]
             atomic_json(self.root/'scenarios'/f"{scenario['id']}.json", scenario)
             self.scenarios[scenario['id']] = scenario
@@ -597,7 +674,7 @@ class Workbench:
                 os.write(lease_fd, key.encode())
                 self.jobs[key] = job
                 self._persist_job(job)
-                request = {k:v for k,v in scenario.items() if k not in ('validation','label','backend_id','map_id','map_sha256','frame_id','policy_id')}
+                request = {k:v for k,v in scenario.items() if k not in ('validation','label','backend_id','map_id','map_sha256','frame_id','policy_id','content_sha256')}
                 request.update(id=key, map=self.map(scenario['map_id']),
                                policy={'id': profile['id'], 'loader': profile.get('loader'),
                                        'identity_sha256': policy_identity['identity_sha256'],
@@ -982,22 +1059,28 @@ class Workbench:
                                                                 key=lambda s: s.get('created_unix_s', 0), reverse=True)]}
 
     # ----- Runs table: compact, comparable outcomes for every owned job.
-    def _trajectory(self, job, budget=160):
+    @staticmethod
+    def _progress_rows(job):
         path = job['output']/'run/progress.jsonl'
-        points = []
+        rows = []
         try:
             if path.stat().st_size > 32*1024*1024:
-                return None
+                return []
             with path.open() as handle:
                 for line in handle:
                     try:
                         row = json.loads(line)
-                        q = row['qpos']
-                        points.append([round(float(row['time']), 3), round(float(q[0]), 3), round(float(q[1]), 3)])
+                        if len(row['qpos']) >= 2 and math.isfinite(float(row['time'])):
+                            rows.append(row)
                     except (ValueError, KeyError, TypeError, IndexError):
                         continue
         except OSError:
-            return None
+            return []
+        return rows
+
+    def _trajectory(self, job, budget=160, rows=None):
+        rows = self._progress_rows(job) if rows is None else rows
+        points = [[round(float(r['time']), 3), round(float(r['qpos'][0]), 3), round(float(r['qpos'][1]), 3)] for r in rows]
         if not points:
             return None
         step = max(1, math.ceil(len(points)/budget))
@@ -1018,6 +1101,7 @@ class Workbench:
         summary = self._optional_json(output/'run/result.json', 1024*1024) or {}
         report = summary.get('report') or {}
         scenario = snapshot.get('scenario') or {}
+        rows = self._progress_rows({'output': output})
         row = {'id': key, 'status': snapshot['status'], 'started_unix_s': snapshot.get('started_unix_s'),
                'finished_unix_s': snapshot.get('finished_unix_s'), 'suite_id': snapshot.get('suite_id'),
                'policy_id': snapshot.get('policy_id') or scenario.get('policy_id') or DEFAULT_POLICY_ID,
@@ -1041,7 +1125,11 @@ class Workbench:
                            'sonic_p95_ms': (report.get('sonic_inference_ms') or {}).get('p95'),
                            'replans': report.get('replans'), 'wall_time_s': summary.get('wall_time_s'),
                            'selection_rules': report.get('selection_rules')},
-               'trajectory': self._trajectory({'output': output}),
+               'trajectory': self._trajectory({'output': output}, rows=rows),
+               'derived': trajectory_metrics(rows, scenario.get('start_xy'), scenario.get('goal_xy')),
+               'criterion': scenario.get('criterion', 'arrive_hold'),
+               'latency': scenario.get('latency') or {'ms': 0, 'anchor': 'measured'},
+               'torque': report.get('torque'),
                'trajectory_basis': 'Decimated simulator-ground-truth root XY from progress.jsonl (time, x, y)',
                'clock_domain': 'simulation'}
         if terminal:
