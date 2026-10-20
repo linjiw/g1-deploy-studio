@@ -64,10 +64,10 @@ function reportHtml(rows) {
 }
 
 function csv(rows) {
-  const cols = ['id', 'label', 'policy_id', 'map_id', 'criterion', 'latency_ms', 'candidates', 'ode_steps', 'seed', 'start_x', 'start_y', 'start_yaw', 'goal_x', 'goal_y',
+  const cols = ['id', 'label', 'policy_id', 'map_id', 'criterion', 'latency_ms', 'latency_anchor', 'candidates', 'ode_steps', 'seed', 'start_x', 'start_y', 'start_yaw', 'goal_x', 'goal_y',
     'outcome', 'category', 'elapsed_s', 'final_m', 'closest_m', 'reach_post_hoc', 'reach_time_s', 'path_efficiency', 'max_contact_n', 'max_tilt_rad', 'planner_p95_ms', 'torque_saturated_joints'];
   const q = v => v === null || v === undefined ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v);
-  return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.latency?.ms ?? 0, r.planner?.candidates, r.planner?.ode_steps, r.seed,
+  return [cols.join(','), ...rows.map(r => [r.id, r.label, r.policy_id, r.map_id, r.criterion, r.latency?.ms ?? 0, r.latency?.anchor ?? 'measured', r.planner?.candidates, r.planner?.ode_steps, r.seed,
     r.start_xy?.[0], r.start_xy?.[1], r.start_yaw_rad, r.goal_xy?.[0], r.goal_xy?.[1], r.outcome, category(r), r.metrics.elapsed_s, r.metrics.final_goal_distance_m,
     r.derived?.closest_m, r.derived?.reach_post_hoc?.reached, r.derived?.reach_post_hoc?.time_s, r.derived?.path_efficiency, r.metrics.max_contact_n, r.metrics.max_tilt_rad,
     r.metrics.planner_p95_ms, Object.keys(r.torque?.saturated_substeps ?? {}).length].map(q).join(','))].join('\n');
@@ -119,7 +119,7 @@ export function render() {
     <div class="panel-section runs-list">${rows.length ? rows.map(r => `<div class="run-row ${runs.selected.has(r.id) ? 'selected' : ''}">
         <label class="run-check" title="Compare"><input type="checkbox" data-run-select="${escape(r.id)}" ${runs.selected.has(r.id) ? 'checked' : ''} ${r.trajectory ? '' : 'disabled'}><i style="background:${runColor(r)}"></i></label>
         <div class="run-main"><div class="run-title">${outcomeChip(r.outcome, r.status)}<span title="${escape(r.label)}">${escape(shortLabel(r))}</span></div>
-          <div class="run-meta">${escape(r.policy_id)} · K${r.planner?.candidates ?? '—'}/ODE${r.planner?.ode_steps ?? '—'} · s${r.seed ?? '—'} · ${escape(r.criterion === 'arena_reach' ? 'reach' : 'arrive & hold')}${r.latency?.ms ? ` · lat ${r.latency.ms} ms` : ''} · ${escape(ago(r.started_unix_s))}</div>
+          <div class="run-meta">${escape(r.policy_id)} · K${r.planner?.candidates ?? '—'}/ODE${r.planner?.ode_steps ?? '—'} · s${r.seed ?? '—'} · ${escape(r.criterion === 'arena_reach' ? 'reach' : 'arrive & hold')}${r.latency?.ms ? ` · lat ${r.latency.ms} ms${r.latency.anchor === 'predict' ? ' predict' : ''}` : ''} · ${escape(ago(r.started_unix_s))}</div>
           <div class="run-meta">${num(r.metrics.elapsed_s, 2, 's')} · final ${num(r.metrics.final_goal_distance_m, 2, 'm')} · contact ${num(r.metrics.max_contact_n, 0, 'N')} · plan p95 ${num(r.metrics.planner_p95_ms, 0, 'ms')}</div></div>
         ${r.replayable ? `<button class="link-button" data-open-session="${escape(r.id)}">Replay</button>` : ''}</div>`).join('') : '<p class="tiny">No runs match these filters.</p>'}</div>`;
   $('runs-map').addEventListener('change', e => { runs.filters.map = e.target.value; render(); });

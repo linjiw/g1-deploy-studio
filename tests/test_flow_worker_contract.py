@@ -106,6 +106,31 @@ class ValidateRequestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unknown policy bundle id'):
             validate_request(missing)
 
+    def test_latency_anchor_passes_through_for_the_flow_callback(self):
+        self.assertEqual(validate_request(flow_request(latency={'ms': 200, 'anchor': 'predict'}))['latency'],
+                         {'ms': 200, 'anchor': 'predict'})
+        self.assertEqual(validate_request(flow_request())['latency'], {'ms': 0, 'anchor': 'measured'})
+
+    def test_latency_model_description(self):
+        legacy = {'ms': 200, 'anchor': 'measured',
+                  'implementation': 'Studio delayed execution around the Flow callback plan_target',
+                  'basis': ('Each plan is executed from request tick + latency; the previous plan keeps '
+                            'driving SONIC meanwhile (pipelined). The callback still anchors its next '
+                            'replan on the latest computed plan, so this approximates, not reproduces, '
+                            'an asynchronous planner.')}
+        # 'measured' keeps the exact record it had before predictive anchoring existed.
+        self.assertEqual(flow_worker.latency_model({'ms': 200, 'anchor': 'measured'}), legacy)
+        self.assertEqual(flow_worker.latency_model({'ms': 0, 'anchor': 'measured'}),
+                         dict(legacy, ms=0, basis='No latency: synchronous lockstep.'))
+        predict = flow_worker.latency_model({'ms': 200, 'anchor': 'predict'})
+        self.assertEqual((predict['ms'], predict['anchor']), (200, 'predict'))
+        for key in ('implementation', 'basis', 'predicted', 'measured', 'not_predicted', 'prediction_source', 'clock'):
+            self.assertTrue(predict[key], key)
+        self.assertIn('landed', predict['prediction_source'])
+        self.assertIn('Flow code is unchanged', predict['implementation'])
+        self.assertTrue(any('route progress' in m for m in predict['measured']))
+        json.dumps(predict, allow_nan=False)
+
     def test_task_thresholds_for_both_criteria(self):
         expected = {
             'arrive_hold': {'goal_radius_m': .3, 'goal_speed_m_s': .25, 'goal_hold_s': .4, 'fall_height_m': .35,
@@ -153,6 +178,11 @@ class FlowWorkerRejectionTests(unittest.TestCase):
         for bundle_id in ('../x', '../../research-data', 'flow-wx-rf-23326aa-s9', None):
             with self.subTest(bundle_id=bundle_id):
                 self.assert_rejected_without_output(flow_request(bundle_id), 'Unknown policy bundle id')
+
+    def test_rejects_predictive_anchor_without_latency_before_any_output_or_import(self):
+        for latency in ({'ms': 0, 'anchor': 'predict'}, {'ms': 9, 'anchor': 'predict'}):
+            with self.subTest(latency=latency):
+                self.assert_rejected_without_output(flow_request(latency=latency), 'at least one 20 ms tick')
 
     def test_unknown_bundle_fails_verification_before_runtime_import(self):
         output = self.base / 'run'

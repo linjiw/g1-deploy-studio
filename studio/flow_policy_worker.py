@@ -71,10 +71,57 @@ def _quantiles(values):
     return {'p50': float(np.median(values)), 'p95': float(np.quantile(values, .95))} if values else None
 
 
+PREDICT_NEEDS_LATENCY = 'Predictive anchoring needs a planner latency of at least one 20 ms tick'
+
+
+def latency_model(latency):
+    """Recorded description of the latency model (metadata and report)."""
+    ms = latency['ms']
+    if latency['anchor'] != 'predict' or not ms:
+        return {'ms': ms, 'anchor': 'measured',
+                'implementation': 'Studio delayed execution around the Flow callback plan_target',
+                'basis': ('Each plan is executed from request tick + latency; the previous plan keeps '
+                          'driving SONIC meanwhile (pipelined). The callback still anchors its next '
+                          'replan on the latest computed plan, so this approximates, not reproduces, '
+                          'an asynchronous planner.') if ms else 'No latency: synchronous lockstep.'}
+    return {'ms': ms, 'anchor': 'predict',
+            'implementation': ('Studio delayed execution around the Flow callback plan_target, with predicted '
+                               'planner inputs at the FlowPlanner.plan boundary (studio/latency_anchor.py; '
+                               'method of g1-student-deploy g1deploy/latency.py). Flow code is unchanged.'),
+            'basis': ('Each plan is executed from request tick + latency while the landed plan keeps driving SONIC '
+                      '(pipelined on the callback cadence). The planner is given the state predicted at request tick + '
+                      'latency: the landed plan continued past the request tick, re-posed (planar xy + yaw) onto the '
+                      'measured pose at the request tick. The new plan is anchored and timestamped at request tick + '
+                      'latency, so it starts at elapsed 0 when it lands. This approximates, not reproduces, an '
+                      'asynchronous planner.'),
+            'predicted': ['planner history frames after the request tick: root xy and yaw re-posed; root height, '
+                          'roll/pitch and the 29 joint angles taken from the landed plan',
+                          'everything the planner derives from that history: anchor pose, local goal and map frame, '
+                          'encoded velocities, arm start posture, WM-v2 execution-check start state',
+                          'the new plan\'s anchor state, finite-difference joint velocity and anchor tick (request + latency)',
+                          'the previous-plan offset passed as prev (inert for WX-RF: no retrieval, warm start, '
+                          'continuation or execution guide)'],
+            'measured': ['history frames at or before the request tick (none for WX-RF\'s 6-frame history once the '
+                         'latency is 6 ticks or more; the measured pose then enters through the re-posing only)',
+                         'route progress, route refresh and tight / gate-side mode selection (Flow callback code on '
+                         'the measured pose at the request tick)',
+                         'the SONIC reference at every executed tick, which is relative to the measured pelvis',
+                         'physics, contacts, scoring and every recorded state'],
+            'not_predicted': ('Tracking error, contacts and disturbances during the latency window. The prediction '
+                              'assumes SONIC follows the landed plan from the measured pose.'),
+            'prediction_source': ('The landed (executing) plan only. Requests still in flight are never used; on '
+                                  'hardware they would not have arrived (g1-student-deploy inflight > 1 semantics).'),
+            'clock': ('Simulation control ticks of 20 ms. Request tick r is the plans.json tick; the anchor and landing '
+                      'tick is r + latency; plan frame i is the state at tick r + latency + i + 1. Planner wall time '
+                      'is host-measured and does not delay simulated time.')}
+
+
 def execute(request, output):
     req = validate_request(request)
     if req['policy']['loader'] != 'flow-callback':
         raise ValueError('This worker runs only pinned Flow callback bundles')
+    if req['latency']['anchor'] == 'predict' and not req['latency']['ms']:
+        raise ValueError(PREDICT_NEEDS_LATENCY)
     root = bundle_path(req['policy']['bundle_id'])
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -111,6 +158,7 @@ def execute(request, output):
         import sim.episode as episode_module
         from studio.replay import decode_reference, load_session, _plan, _git_provenance
         from studio.pipeline import PipelineRecorder, contract as pipeline_contract, SONIC_SAMPLE_EVERY, jsonable
+        from studio.latency_anchor import DelayedPlans, anchor_error, summarize_errors
         if not Path(motion2scene_flow.__file__).resolve().is_relative_to((root / 'src').resolve()):
             raise RuntimeError(f'motion2scene_flow resolved outside the pinned snapshot: {motion2scene_flow.__file__}')
         for forbidden in ('g1deploy.bundle', 'g1deploy.perception.cloud_memory', 'sim.fastplan', 'isaaclab', 'omni'):
@@ -178,6 +226,13 @@ def execute(request, output):
             + ('' if req['planner'] == manifest['deployed_budget'] else f" differs from the evaluated {manifest['deployed_budget']['candidates']}/{manifest['deployed_budget']['ode_steps']}") + '.',
             f"Success criterion: {CRITERIA[req['criterion']]['label']}.",
             'No simulated LiDAR is generated for this privileged block; perception views are unavailable by design.']
+        predict = req['latency']['anchor'] == 'predict' and bool(req['latency']['ms'])
+        if predict:
+            limitations.append(
+                f"Predictive anchoring (L2≈ predict, {req['latency']['ms']} ms) is a Studio deployment adapter, not Flow code. "
+                'The planner receives the history predicted from the landed plan (g1-student-deploy method), while route '
+                'progress and tight / gate-side decisions stay on the measured pose at the request tick. Flow evaluated '
+                'WX synchronously, so this strategy is untested on the research side.')
         metadata = {'id': req['id'], 'title': f"Fresh {manifest['research_block']}-RF Flow + SONIC CPU rehearsal", 'mode': 'simulation',
                     'recording_kind': 'sonic-mujoco-lockstep', 'backend_id': 'sonic', 'source_backend': BACKEND_ID,
                     'model_path': str(DEPLOY / 'sim/assets/g1_29dof.xml'), 'model_variant': 'G1 29 DoF · rubber hands',
@@ -202,14 +257,10 @@ def execute(request, output):
                                          'command_kind': 'PD position target; source applies clipped PD torques internally'},
                     'calibration_identity': 'Not applicable: privileged block consumes no simulated sensor',
                     'fidelity': 'L2-approx' if req['latency']['ms'] else 'L1',
-                    'latency_model': {'ms': req['latency']['ms'], 'anchor': 'measured',
-                                      'implementation': 'Studio delayed execution around the Flow callback plan_target',
-                                      'basis': ('Each plan is executed from request tick + latency; the previous plan keeps '
-                                                'driving SONIC meanwhile (pipelined). The callback still anchors its next '
-                                                'replan on the latest computed plan, so this approximates, not reproduces, '
-                                                'an asynchronous planner.') if req['latency']['ms'] else 'No latency: synchronous lockstep.'},
+                    'latency_model': latency_model(req['latency']),
                     'pipeline_contract': pipeline_contract(DEPLOY / 'g1deploy/sonic.py', C),
-                    'provenance': {'artifacts': [_hash(root / 'manifest.json'), _hash(root / 'config.json'), _hash(Path(__file__))]
+                    'provenance': {'artifacts': [_hash(root / 'manifest.json'), _hash(root / 'config.json'), _hash(Path(__file__)),
+                                                 _hash(Path(__file__).with_name('latency_anchor.py'))]
                                    + [{k: a[k] for k in ('path', 'sha256', 'bytes')} for a in manifest['artifacts'] + manifest['humanoid_lfh']['files'] + manifest['deploy']['files']],
                                    'model_at_recording': model_identity, 'repositories': [checkout,
                                        {'path': manifest['flow']['repo'], 'head_at_read': manifest['flow']['commit'], 'dirty_at_read': False,
@@ -354,22 +405,26 @@ def execute(request, output):
         original_target, original_make = cbm.plan_target, cbm.make_planner
 
         latency_ticks = int(round(req['latency']['ms'] / 1000 / DT))
-        delayed = {'last': None, 'executing': None, 'pending': []}
+        # Pipelined delayed execution (L2≈). With the predict anchor the planner is also given the
+        # state predicted at request + latency from the landed plan (studio/latency_anchor.py).
+        delayed = DelayedPlans(latency_ticks, req['latency']['anchor'] if predict else 'measured',
+                               fd=cbm.finite_difference_dq)
+        checked_landings = [0]
 
         def target_hook(plan, anchor_q, anchor_dq, elapsed, *rest, **kwargs):
             if latency_ticks:
                 tick = len(frames)
-                if plan is not delayed['last']:  # a newly computed plan (strong ref held, so identity is unique)
-                    delayed['last'] = plan
-                    entry = (plan, np.array(anchor_q, copy=True), np.array(anchor_dq, copy=True), tick - int(elapsed))
-                    if delayed['executing'] is None:
-                        delayed['executing'] = entry  # the first plan starts immediately, as in lockstep
-                    else:
-                        delayed['pending'].append((entry[3] + latency_ticks, entry))
-                while delayed['pending'] and delayed['pending'][0][0] <= tick:
-                    delayed['executing'] = delayed['pending'].pop(0)[1]
-                plan, anchor_q, anchor_dq, request_tick = delayed['executing']
-                elapsed = tick - request_tick
+                plan, anchor_q, anchor_dq, elapsed = delayed.target_args(plan, anchor_q, anchor_dq, elapsed, tick)
+                if predict:
+                    # A predicted plan lands at its anchor tick: compare the predicted anchor (estimated)
+                    # with the measured pre-action state the callback holds at this tick (simulator truth).
+                    for landed_tick, entry in delayed.landings[checked_landings[0]:]:
+                        prediction = entry[4]
+                        if prediction is not None and prediction.get('row') is not None:
+                            prediction['row']['prediction_error'] = dict(
+                                anchor_error(entry[1], rest[0]), tick=landed_tick,
+                                classification='estimated anchor vs simulator-ground-truth pre-action state')
+                    checked_landings[0] = len(delayed.landings)
             tgt, clamped = original_target(plan, anchor_q, anchor_dq, elapsed, *rest, **kwargs)
             projected = np.array(tgt, dtype=np.float64, copy=True)
             projected[:, 58:64] = ncl.project_rotation_6d(projected[:, 58:64])
@@ -382,6 +437,12 @@ def execute(request, output):
 
             def observed_plan(*args, **kwargs):
                 tick = len(frames)
+                prediction = delayed.predict(args[0], tick) if predict else None
+                if prediction is not None:
+                    # Same call, with the history predicted at tick + latency and the landed plan as prev.
+                    args = (prediction['history'],) + tuple(args[1:])
+                    if kwargs.get('prev') is not None:
+                        kwargs['prev'] = prediction['prev']
                 capture_ok = hasattr(planner, 'model')
                 if capture_ok and not getattr(pipeline, '_guarded', False):
                     unguarded = pipeline._forward
@@ -408,6 +469,16 @@ def execute(request, output):
                        'chosen_clearance_m': jsonable(float(result['chosen_clearance_m'])) if result.get('chosen_clearance_m') is not None else None,
                        'plan_xy': qpos[:, :2].tolist(), 'plan_root_z': qpos[:, 2].tolist(), 'waypoint_xy': None,
                        'route_remaining_m': None, 'exec_check': jsonable(result.get('exec_check'))}
+                if prediction is not None:
+                    delayed.bind(result)
+                    row['anchor'] = {'mode': 'predict', 'request_tick': tick, 'anchor_tick': prediction['anchor_tick'],
+                                     'predicted_from_plan_anchor_tick': prediction['source_anchor_tick'],
+                                     'predicted_anchor_qpos': prediction['anchor_q'].tolist(),
+                                     'classification': 'estimated (predicted from the landed plan)'}
+                    prediction['row'] = row
+                elif predict:
+                    row['anchor'] = {'mode': 'measured', 'request_tick': tick, 'anchor_tick': tick,
+                                     'reason': 'first plan: nothing has landed yet, so it is planned from the measured history and starts at once'}
                 current['plan'] = row
                 plans.append(row)
                 if capture_ok:
@@ -466,6 +537,7 @@ def execute(request, output):
         if qpos_error > 1e-4 or reference_error > 1e-4:
             raise ValueError(f'Observed state/reference disagree with native decoder (qpos {qpos_error:.2e}, reference {reference_error:.2e})')
         by_tick = {row.get('tick'): row for row in native_plans}
+        anchors = {row['tick']: row['anchor'] for row in plans if row.get('anchor')}
         active = None
         for i, (frame, decoded) in enumerate(zip(frames[:n], session['frames'][:n])):
             if i in by_tick:
@@ -475,8 +547,21 @@ def execute(request, output):
                 frame['plan'].update(jsonable({'exec_check': active.get('exec_check'), 'tight': active.get('tight'),
                                                'corridor_m': active.get('corridor_m'), 'gate_side_gap_m': active.get('gate_side_gap_m'),
                                                'candidate_clearance_m': active.get('clearance_m'), 'choice': active.get('choice')}))
+                if predict and active.get('tick') in anchors:
+                    anchor = anchors[active['tick']]
+                    frame['plan'].update(anchor_mode=anchor['mode'], anchor_tick=anchor['anchor_tick'])
             frame['health']['planner_latency_ms'] = decoded['health']['planner_latency_ms']
         frames = frames[:n]
+        prediction_report = None
+        if predict:
+            anchor_rows = [dict(row['anchor'], prediction_error=row.get('prediction_error')) for row in plans if row.get('anchor')]
+            _atomic(output / 'latency_anchor.json', {'schema_version': 1, 'latency_ms': req['latency']['ms'],
+                                                     'latency_ticks': latency_ticks, 'plans': jsonable(anchor_rows),
+                                                     'clock_domain': 'simulation', 'tick_s': DT})
+            prediction_report = dict(summarize_errors([row.get('prediction_error') for row in plans]) or {'landed_plans': 0},
+                                     predicted_plans=sum(1 for row in anchor_rows if row['mode'] == 'predict'),
+                                     basis=('Predicted planner anchor at request + latency (estimated) vs the measured '
+                                            'pre-action state at the landing tick (simulator ground truth).'))
         latencies = [row['latency_s'] for row in plans]
         exec_rows = [row.get('exec_check') or {} for row in native_plans]
         report = {'outcome': score.get('outcome') or ('runtime_error' if episode_error else 'unknown'),
@@ -503,14 +588,18 @@ def execute(request, output):
                                        '(float32 storage). Detects tick misalignment and decoder errors; it is not a '
                                        'fidelity comparison against an Isaac episode.')},
                   'worker_wall_to_summary_s': time.monotonic() - started, 'latency_s': req['latency']['ms'] / 1000,
-                  'anchor_mode': 'measured (Studio delayed execution)' if req['latency']['ms'] else 'synchronous lockstep'}
+                  'anchor_mode': ('predict (Studio delayed execution + predicted planner history)' if predict else
+                                  'measured (Studio delayed execution)' if req['latency']['ms'] else 'synchronous lockstep')}
+        if prediction_report is not None:
+            report['anchor_prediction'] = prediction_report
         report['worker_real_time_factor'] = report['elapsed_s'] / max(1e-9, report['worker_wall_to_summary_s'])
         metadata.update(mode='replay', duration_s=frames[-1]['time'], executed_sim_duration_s=report['elapsed_s'],
                         source_samples=len(frames), recording_complete=episode_error is None, test_result=report)
         if episode_error:
             metadata.update(incomplete=True, termination_reason=report['runtime_error'], native_extraction=extraction)
             metadata['limitations'].append('Flow callback raised mid-episode. Only actually executed rows are shown; no motion is synthesised after the error.')
-        metadata['provenance']['artifacts'] += [_hash(output / p) for p in ('task.json', 'boxes.json', 'callback_config.json', 'native/closed_loop.npz', 'native/plans.json', 'physics_observations.npz')]
+        metadata['provenance']['artifacts'] += [_hash(output / p) for p in ('task.json', 'boxes.json', 'callback_config.json', 'native/closed_loop.npz', 'native/plans.json', 'physics_observations.npz')
+                                                + (('latency_anchor.json',) if predict else ())]
         session['frames'] = frames
         session['metadata'] = metadata
         session['pipeline'] = pipeline.data()

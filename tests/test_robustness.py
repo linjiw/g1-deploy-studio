@@ -90,11 +90,26 @@ class LatencyAndReuseTests(unittest.TestCase):
         self.assertEqual(self.w.prepare(self.request())['latency'], {'ms': 0, 'anchor': 'measured'})
         self.assertEqual(self.w.prepare(self.request(latency={'ms': 210}))['latency'], {'ms': 220, 'anchor': 'measured'})
         self.assertEqual(self.w.prepare(self.request(latency={'ms': 200, 'anchor': 'predict'}))['latency']['anchor'], 'predict')
-        for bad in ({'ms': -1}, {'ms': 1001}, {'ms': 100, 'anchor': 'future'}, [], 'x'):
+        for bad in ({'ms': -1}, {'ms': 1001}, {'ms': 100, 'anchor': 'future'}, {'ms': 100, 'anchor': ['predict']}, [], 'x'):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self.w.prepare(self.request(latency=bad))
-        with self.assertRaises(ValueError):  # predictive anchoring needs the lockstep implementation
-            self.w.prepare(self.request(policy_id='flow-wx-rf-abcdef0-s0', latency={'ms': 200, 'anchor': 'predict'}))
+
+    def test_flow_callback_predictive_anchor_rules(self):
+        wx = 'flow-wx-rf-abcdef0-s0'
+        # Studio's latency-aware adapter for the Flow callback (studio/latency_anchor.py).
+        self.assertEqual(self.w.prepare(self.request(policy_id=wx, latency={'ms': 200, 'anchor': 'predict'}))['latency'],
+                         {'ms': 200, 'anchor': 'predict'})
+        self.assertEqual(self.w.prepare(self.request(policy_id=wx, latency={'ms': 15, 'anchor': 'predict'}))['latency'],
+                         {'ms': 20, 'anchor': 'predict'})
+        self.assertEqual(self.w.prepare(self.request(policy_id=wx, latency={'ms': 200}))['latency'], {'ms': 200, 'anchor': 'measured'})
+        for ms in (0, 5, 9.99):  # rounds to 0 ticks: a predictive anchor without latency is refused for WX
+            with self.subTest(ms=ms), self.assertRaisesRegex(ValueError, 'at least one 20 ms tick'):
+                self.w.prepare(self.request(policy_id=wx, latency={'ms': ms, 'anchor': 'predict'}))
+        # The bundle keeps its source behaviour (predict at 0 ms is accepted and ignored by run_episode).
+        self.assertEqual(self.w.prepare(self.request(latency={'ms': 0, 'anchor': 'predict'}))['latency'], {'ms': 0, 'anchor': 'predict'})
+        measured = self.w.save_scenario(self.request(policy_id=wx, latency={'ms': 200, 'anchor': 'measured'}))
+        predicted = self.w.save_scenario(self.request(policy_id=wx, latency={'ms': 200, 'anchor': 'predict'}))
+        self.assertNotEqual(measured['scenario']['id'], predicted['scenario']['id'], 'anchors are distinct scenarios')
 
     def test_identical_scenarios_are_reused(self):
         first = self.w.save_scenario(self.request())

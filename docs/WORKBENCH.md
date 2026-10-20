@@ -36,7 +36,10 @@ Open **Rehearse**, or click **Rehearse →** after saving an arena.
 - **Success criterion:** *Arrive & hold* (Studio deployment check) or *Reach* (Flow Isaac arena protocol); thresholds are in POLICIES.md. The source scorer applies it; completion of the worker process is never treated as policy success.
 - **Planner latency (L2):** 0–500 ms, applied in whole 20 ms ticks. A plan requested at tick t drives SONIC only from t + latency, and physics keeps running meanwhile.
   - Bundle: uses the source lockstep's own model, with *measured* or *predict* (latency-aware) anchoring.
-  - WX: uses a Studio delayed-execution approximation around the Flow callback, labelled **L2≈**. The callback still anchors its next replan on its latest plan.
+  - WX: uses a Studio delayed-execution approximation around the Flow callback, labelled **L2≈**. Two anchors are available:
+    - *measured*: the planner plans from the state at request time.
+    - *predict*, labelled **L2≈ predict**: Studio gives the planner the state predicted at request + latency from the landed plan, using g1-student-deploy's method. Route and tight-mode decisions stay measured. See [POLICIES.md](POLICIES.md#latency-and-torque-checks).
+  - The anchor applies only with latency; at 0 ms every plan is anchored on the measured state.
 - **Run preset** saves the scenario and starts the worker. The live run attaches to the viewport (Follow camera, Health tab) at about 3 Hz. When it finishes, its full recording opens at the same time cursor.
 - **Run suite** runs every preset × seeds, at most 48 runs, one after another through the single owned worker. A running suite reserves the worker: manual runs are refused until it finishes or is cancelled. The suite table fills in outcomes as they arrive. **Cancel** stops the queue and the current run.
 

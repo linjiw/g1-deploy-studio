@@ -632,12 +632,15 @@ class Workbench:
             raise ValueError('latency must be an object {ms, anchor}')
         ms = finite(value.get('ms', 0), 'latency ms', 0, MAX_LATENCY_MS)
         anchor = value.get('anchor', 'measured')
-        if anchor not in ('measured', 'predict'):
+        if not isinstance(anchor, str) or anchor not in ('measured', 'predict'):
             raise ValueError("latency anchor must be 'measured' or 'predict'")
-        if anchor == 'predict' and profile.get('loader') == 'flow-callback':
-            raise ValueError('Predictive anchoring is only available for the deploy-bundle lockstep')
         # Whole 20 ms control ticks: the simulation cannot apply a plan between ticks.
-        return {'ms': int(math.floor(ms / 20 + .5)) * 20, 'anchor': anchor}  # half-up to whole ticks
+        ms = int(math.floor(ms / 20 + .5)) * 20  # half-up to whole ticks
+        # Flow callback: 'predict' is Studio's latency-aware anchoring adapter (studio/latency_anchor.py) and is
+        # meaningless without latency. The bundle keeps accepting it at 0 ms (saved scenarios; the source ignores it).
+        if anchor == 'predict' and not ms and profile.get('loader') == 'flow-callback':
+            raise ValueError('Predictive anchoring needs a planner latency of at least one 20 ms tick')
+        return {'ms': ms, 'anchor': anchor}
 
     @staticmethod
     def _criteria():
