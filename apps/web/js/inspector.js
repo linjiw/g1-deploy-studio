@@ -117,9 +117,13 @@ function updateJoints(state) {
 // Fidelity ladder (review §7.1): what a run proves and what it hides.
 export function fidelity(meta = {}) {
   const latency = meta.latency_model?.ms;
-  if (meta.recording_kind === 'sonic-mujoco-lockstep' && latency > 0) return { level: meta.fidelity ?? 'L2', label: `${meta.fidelity === 'L2-approx' ? 'L2≈' : 'L2'} · lockstep with ${latency} ms planner latency`,
-    proves: `Planner/tracker logic plus the effect of plans arriving ${latency} ms after they are requested (${meta.latency_model.anchor} anchor).`,
-    hides: `DDS/ZMQ transport, C++/TensorRT numerics, real sensors${meta.fidelity === 'L2-approx' ? '; the Flow callback still anchors replans on its latest plan (approximation)' : ''}.` };
+  if (meta.recording_kind === 'sonic-mujoco-lockstep' && latency > 0) {
+    const approx = meta.fidelity === 'L2-approx', predict = approx && meta.latency_model.anchor === 'predict';
+    const short = approx ? (predict ? 'L2≈ predict' : 'L2≈') : 'L2';
+    return { level: meta.fidelity ?? 'L2', short, label: `${short} · lockstep with ${latency} ms planner latency`,
+      proves: `Planner/tracker logic plus the effect of plans arriving ${latency} ms after they are requested (${meta.latency_model.anchor} anchor).`,
+      hides: `DDS/ZMQ transport, C++/TensorRT numerics, real sensors${predict ? '; Studio, not Flow, predicts the planner history from the landed plan (g1-student-deploy method) while route and tight-mode decisions stay on the measured pose (approximation)' : approx ? '; the Flow callback still anchors replans on its latest plan (approximation)' : ''}.` };
+  }
   if (meta.recording_kind === 'sonic-mujoco-lockstep') return { level: 'L1', label: 'L1 · CPU lockstep',
     proves: 'Planner and tracker logic, geometry, scoring.', hides: 'Planner latency (physics waits for each replan), DDS/ZMQ transport, C++/TensorRT numerics, start-up transient, real sensors.' };
   if (meta.recording_kind === 'recorded-wire-transport') return { level: 'L0', label: 'L0 · transport replay',
