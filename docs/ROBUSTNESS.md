@@ -1,5 +1,15 @@
 # Navigation robustness campaign: WX-RF on random goals (2026-10-20)
 
+> **Current summary (read this first; details in the addenda at the end).**
+> - **L1 lockstep:** WX-RF holds every random goal at seed 0, 24/24 across four arenas (Addendum A), on both the source and the current-G1 actuator limits (Addendum D).
+> - **200 ms planner latency:**
+>   - Planning from stale state collapses WX to 1/12; the bundle collapses the same way (Addendum B).
+>   - Predictive anchoring restores 11/12 on the deprecated 88 N·m hip model (Addendum C).
+>   - On the current-G1 limits the policies were trained for (139/139/88), the same setup holds only 7/12: it reaches the goal and does not settle (Addendum D). Addendum E adds more seeds and the 160 ms robot budget.
+> - **Every number below is CPU MuJoCo lockstep from standing starts.** It is not hardware evidence. Results depend on the actuator profile, which every run now records.
+>
+> The original write-up follows unchanged; it used the source actuator model (88/88/88).
+
 **Question.** If we pick random navigation goals, how does the current best Flow policy (WX-RF) behave, and is it robust?
 
 **Short answer.** In synchronous CPU lockstep (L1), WX-RF reached and held **every valid random goal at seed 0 (18/18)**, and **29/30** once seeds 1–2 on the clutter arena are added. On the obstructed goals it beat the frozen LiDAR bundle (6/6 against 2/6). Two weaknesses showed up:

@@ -9,6 +9,8 @@ Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the
 
 **Hardware stays disabled.** Studio has no robot connection, DDS participant or motor-command path. It never publishes `rt/lowcmd`, hand commands or ZMQ `pose`, and never connects to the planner node control port. A simulation result is not hardware readiness.
 
+**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md), and a narrated 7-minute introduction is in `~/research-data/g1-deploy-studio/evidence/video-20261020/`.
+
 ## Open it
 
 The gateway runs as a durable user service on loopback:
