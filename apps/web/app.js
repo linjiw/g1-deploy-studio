@@ -75,6 +75,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     inspector.jointsSession = null;
     resetSensors();
     scene.setArenaPreview(null);
+    setPreviewing(false);
     const m = session.metadata;
     $('session-title').textContent = m.title ?? id; $('session-title').title = m.source_path ?? '';
     $('footer-source').textContent = m.source_path ?? '';
@@ -374,8 +375,16 @@ on('rehearse:finished', async job => {
   if (runs.table.length) refreshRuns().catch(() => {});
 });
 on('rehearse:suite-finished', () => { refreshRuns().catch(() => {}); refreshSessionList(); });
+// While Rehearse previews a not-yet-run preset, the inspector, lanes and HUD still describe the
+// last opened recording: mark them as such instead of letting them read as the preview's data.
+function setPreviewing(on) {
+  document.body.classList.toggle('previewing', on);
+  $('preview-note').hidden = !on;
+  if (on) $('preview-note').textContent = `Inspector, timeline and HUD show the last opened recording (${state.session?.metadata?.title ?? state.sessionId ?? 'none'}), not this preview.`;
+}
 on('rehearse:preview', markers => {
   if (state.workspace !== 'rehearse' || rh.attached) return;
+  setPreviewing(true);
   scene.setArenaPreview(markers.map, { start: markers.start, yaw: markers.yaw, goal: markers.goal });
   scene.fitScene(scene.sceneBounds([markers.start, markers.goal]));
   $('session-title').textContent = `Preview · ${markers.map?.label ?? 'arena'}`;
@@ -435,6 +444,7 @@ async function setWorkspace(name) {
   document.body.classList.toggle('no-inspector', ['arena', 'runs', 'system'].includes(name));
   if (previous === 'runs' && name !== 'runs') scene.setComparison([]);
   if (previous === 'arena' && name !== 'arena' && arena.preview3d) { arena.preview3d = false; scene.setArenaPreview(null); }
+  if (name !== 'rehearse') setPreviewing(false);
   if (name !== 'rehearse' && name !== 'arena' && !rh.attached && scene.view.arenaGroup.visible) {
     scene.setArenaPreview(null);
     if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }

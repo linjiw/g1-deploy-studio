@@ -255,6 +255,8 @@ def catalog(research=None):
         block = profile.get('research_block')
         row['matches_adopted'] = bool(block and research.get('adopted_block') == block)
         rows.append(row)
-    return {'schema_version': 1, 'default_policy_id': DEFAULT_POLICY, 'policies': rows,
+    # The UI preselects the available profile of the adopted research block; otherwise the bundle.
+    adopted = next((r['id'] for r in rows if r['matches_adopted'] and r['available']), None)
+    return {'schema_version': 1, 'default_policy_id': adopted or DEFAULT_POLICY, 'policies': rows,
             'flow_research': research,
             'note': 'Profiles are simulation rehearsal configurations. Research adoption and CPU-lockstep success are not hardware qualification.'}

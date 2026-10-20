@@ -2,18 +2,36 @@
 // Configured edges are never animated; only observed/recorded edges carry data.
 import { escape, num, chip, fact, finite, tiny } from './util.js';
 
+// Three-row layout (viewBox 1200 × 490): planning chain on top, tracking chain in the middle,
+// sensing and physics on the bottom with the state feedback along the bottom edge. Every edge is
+// routed orthogonally around nodes and every label has a hand-placed slot (see ROUTES).
 const NODES = [
-  { id: 'lidar', x: 70, y: 70, label: 'MID-360 LiDAR', sub: 'torso mount · inverted' },
-  { id: 'state', x: 70, y: 250, label: 'IMU + 29 joints', sub: 'rt/lowstate · secondary IMU' },
-  { id: 'perception', x: 230, y: 70, label: 'Perception', sub: 'deskew · self-filter · CloudMemory' },
-  { id: 'route', x: 380, y: 70, label: 'Route A*', sub: 'waypoint ≈1.5 m ahead' },
-  { id: 'flow', x: 530, y: 70, label: 'Flow planner', sub: 'K candidates × ODE · select' },
-  { id: 'feed', x: 530, y: 250, label: 'Reference feed', sub: '10 rows × 67 · 0–0.9 s' },
-  { id: 'sonic', x: 700, y: 250, label: 'SONIC tracker', sub: 'obs 1570 → action 29' },
-  { id: 'pd', x: 860, y: 250, label: 'PD / motors', sub: 'q* = default + scale·a' },
-  { id: 'robot', x: 860, y: 70, label: 'Robot / physics', sub: 'G1 29-DoF' },
-  { id: 'studio', x: 700, y: 400, label: 'Studio (read-only)', sub: 'recorder · gateway · browser' },
+  { id: 'lidar', x: 95, y: 80, label: 'MID-360 LiDAR', sub: 'torso mount · inverted' },
+  { id: 'perception', x: 295, y: 80, label: 'Perception', sub: 'deskew · filter · CloudMemory' },
+  { id: 'route', x: 495, y: 80, label: 'Route A*', sub: 'waypoint ≈1.5 m ahead' },
+  { id: 'flow', x: 695, y: 80, label: 'Flow planner', sub: 'K candidates × ODE · select' },
+  { id: 'studio', x: 895, y: 80, label: 'Studio (read-only)', sub: 'recorder · gateway · browser' },
+  { id: 'feed', x: 695, y: 255, label: 'Reference feed', sub: '10 rows × 67 · 0–0.9 s' },
+  { id: 'sonic', x: 895, y: 255, label: 'SONIC tracker', sub: 'obs 1570 → action 29' },
+  { id: 'pd', x: 1095, y: 255, label: 'PD / motors', sub: 'q* = default + scale·a' },
+  { id: 'state', x: 95, y: 430, label: 'IMU + 29 joints', sub: 'rt/lowstate · secondary IMU' },
+  { id: 'robot', x: 1095, y: 430, label: 'Robot / physics', sub: 'G1 29-DoF' },
 ];
+// Polyline waypoints and label slot [x, y, anchor, max characters] per edge, in viewBox units.
+const ROUTES = {
+  'lidar-perception': { pts: [[181, 80], [209, 80]], label: [195, 34, 'middle'] },
+  'perception-route': { pts: [[381, 80], [409, 80]], label: [395, 34, 'middle'] },
+  'route-flow': { pts: [[581, 80], [609, 80]], label: [595, 34, 'middle'] },
+  'state-perception': { pts: [[75, 395], [75, 150], [275, 150], [275, 115]], label: [175, 144, 'middle'] },
+  'state-flow': { pts: [[105, 395], [105, 185], [655, 185], [655, 115]], label: [380, 179, 'middle'] },
+  'state-sonic': { pts: [[135, 395], [135, 330], [870, 330], [870, 290]], label: [500, 324, 'middle'] },
+  'flow-feed': { pts: [[695, 115], [695, 220]], label: [705, 166, 'start', 26] },
+  'feed-sonic': { pts: [[781, 255], [809, 255]], label: [795, 211, 'middle', 24] },
+  'sonic-pd': { pts: [[981, 255], [1009, 255]], label: [995, 211, 'middle', 24] },
+  'pd-robot': { pts: [[1095, 290], [1095, 395]], label: [1085, 346, 'end', 28] },
+  'robot-state': { pts: [[1009, 430], [181, 430]], label: [595, 422, 'middle'] },
+  'sonic-studio': { pts: [[895, 220], [895, 115]], label: [905, 166, 'start', 26] },
+};
 
 // transport: dds | zmq | inproc | http | ros2 ; deploy = real-time path; lockstep = Studio CPU worker
 const EDGES = [
@@ -77,35 +95,26 @@ function nodeBadge(id, session) {
 
 export function renderSystemMap(container, session, { selected = null, onSelect = null, compact = false, showDeploy = false } = {}) {
   const kind = showDeploy ? 'reference' : sessionKind(session);
-  const W = 960, H = compact ? 450 : 470;
-  const pos = Object.fromEntries(NODES.map(n => [n.id, n]));
+  const W = 1200, H = 490, nodeW = 172, nodeH = 70;
   const edges = EDGES.map(e => ({ ...e, ...edgeEvidence(e, kind, session) }));
-  const nodeW = 132, nodeH = 52;
-  const anchor = (n, toward) => {
-    const dx = toward.x - n.x, dy = toward.y - n.y;
-    const sx = Math.abs(dx) * nodeH > Math.abs(dy) * nodeW ? Math.sign(dx) * nodeW / 2 : dx * (nodeH / 2) / Math.max(1e-6, Math.abs(dy));
-    const sy = Math.abs(dx) * nodeH > Math.abs(dy) * nodeW ? dy * (nodeW / 2) / Math.max(1e-6, Math.abs(dx)) : Math.sign(dy) * nodeH / 2;
-    return [n.x + sx, n.y + sy];
-  };
+  const short = (text, max = 30) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
   const edgeSvg = edges.map(e => {
-    const a = pos[e.from], b = pos[e.to];
-    const [x1, y1] = anchor(a, b), [x2, y2] = anchor(b, a);
-    const t = TRANSPORT[e.transport] ?? TRANSPORT.inproc;
+    const route = ROUTES[e.id], t = TRANSPORT[e.transport] ?? TRANSPORT.inproc;
     const dash = e.evidence === 'configured' ? '7 5' : e.evidence === 'unavailable' ? '2 5' : '';
     const opacity = e.evidence === 'unavailable' ? 0.35 : 1;
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const [lx, ly, anchor, max] = route.label;
     return `<g class="sys-edge" data-edge="${e.id}" opacity="${opacity}"><title>${escape(`${t.label} · ${e.topic}\n${e.basis}`)}</title>
-      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${t.color}" stroke-width="${e.evidence === 'observed' ? 2.4 : 1.6}" stroke-dasharray="${dash}" marker-end="url(#arrow-${e.transport})"/>
-      ${compact ? '' : `<text x="${mx}" y="${my - 5}" class="sys-edge-label" text-anchor="middle">${escape(e.topic.length > 34 ? e.topic.slice(0, 33) + '…' : e.topic)}</text>`}</g>`;
+      <polyline points="${route.pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="${t.color}" stroke-width="${e.evidence === 'observed' ? 2.4 : 1.6}" stroke-dasharray="${dash}" stroke-linejoin="round" marker-end="url(#arrow-${e.transport})"/>
+      ${compact ? '' : `<text x="${lx}" y="${ly}" class="sys-edge-label" text-anchor="${anchor}">${escape(short(e.topic, max))}</text>`}</g>`;
   }).join('');
   const markers = Object.entries(TRANSPORT).map(([k, t]) => `<marker id="arrow-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${t.color}"/></marker>`).join('');
   const nodeSvg = NODES.map(n => {
     const badge = nodeBadge(n.id, session);
     return `<g class="sys-node ${selected === n.id ? 'selected' : ''}" data-node="${n.id}" tabindex="0" role="button" aria-label="${escape(n.label)}">
-      <rect x="${n.x - nodeW / 2}" y="${n.y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="9"/>
-      <text x="${n.x}" y="${n.y - 6}" text-anchor="middle" class="sys-node-label">${escape(n.label)}</text>
-      <text x="${n.x}" y="${n.y + 10}" text-anchor="middle" class="sys-node-sub">${escape(n.sub)}</text>
-      ${badge ? `<text x="${n.x}" y="${n.y + nodeH / 2 + 14}" text-anchor="middle" class="sys-node-badge">${escape(badge)}</text>` : ''}</g>`;
+      <rect x="${n.x - nodeW / 2}" y="${n.y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="10"/>
+      <text x="${n.x}" y="${n.y - (badge ? 12 : 4)}" text-anchor="middle" class="sys-node-label">${escape(n.label)}</text>
+      <text x="${n.x}" y="${n.y + (badge ? 6 : 14)}" text-anchor="middle" class="sys-node-sub">${escape(n.sub)}</text>
+      ${badge ? `<text x="${n.x}" y="${n.y + 24}" text-anchor="middle" class="sys-node-badge">${escape(badge)}</text>` : ''}</g>`;
   }).join('');
   const legend = Object.entries(TRANSPORT).filter(([k]) => k !== 'ros2').map(([, t]) => `<span><i style="background:${t.color}"></i>${escape(t.label)}</span>`).join('');
   container.innerHTML = `<div class="sys-legend">${legend}<span class="sys-style"><b class="solid"></b>observed / recorded</span><span class="sys-style"><b class="dashed"></b>configured from source</span><span class="sys-style"><b class="dotted"></b>not in this source</span></div>

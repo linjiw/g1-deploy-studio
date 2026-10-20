@@ -195,13 +195,19 @@ class CatalogTests(CacheIsolation):
         with patch.object(policies, 'PROFILE_BUILDERS', builders):
             return policies.catalog(research)
 
+    def test_default_falls_back_to_bundle_without_an_available_adopted_profile(self):
+        builders = [lambda: self.profile('flow-bundle-20261008', None),
+                    lambda: [self.profile('flow-wx-rf-abcdef0-s0', 'WX', available=False)]]
+        self.assertEqual(self.catalog(builders, {'available': True, 'adopted_block': 'WX'})['default_policy_id'], 'flow-bundle-20261008')
+        self.assertEqual(self.catalog(builders[:1], {'available': False})['default_policy_id'], 'flow-bundle-20261008')
+
     def test_catalog_shape_and_adopted_block_matching(self):
         builders = [lambda: self.profile('flow-bundle-20261008', None),
                     lambda: [self.profile('flow-wx-rf-abcdef0-s0', 'WX'), self.profile('flow-gas-0000000-s0', 'GAS')]]
         research = {'available': True, 'adopted_block': 'WX'}
         result = self.catalog(builders, research)
         self.assertEqual(result['schema_version'], 1)
-        self.assertEqual(result['default_policy_id'], 'flow-bundle-20261008')
+        self.assertEqual(result['default_policy_id'], 'flow-wx-rf-abcdef0-s0', 'the adopted block is preselected')
         self.assertIs(result['flow_research'], research)
         self.assertIn('not hardware qualification', result['note'])
         rows = {row['id']: row for row in result['policies']}
