@@ -236,3 +236,79 @@ python3 tools/campaign/campaign.py --evidence <dir> --determinism <scenario-id>
 .venv/bin/python tools/campaign/analyze.py --evidence <dir>   # Step 3: tables, summary, determinism (numpy for NPZ parity)
 node tools/campaign/screens.mjs <spec.json> <dir>/screens     # Runs-workspace captures
 ```
+
+## Addendum A: open-floor WX rerun after the flat-map fix (release 15959b7)
+
+The six open-floor scenarios that hit the tool error in P1 were rerun unchanged (same scenario ids, seed 0, K8/ODE6, arrive & hold, 10 s) after the fix was released, in suite `suite-b6554fbb3295`.
+
+| Preset | Job | Outcome | Time s | Post-hoc reach s | Final m | Path eff. |
+|---|---|---|---:|---:|---:|---:|
+| Random 1 | `job-dbefd0b32140` | goal | 5.18 | 3.68 | 0.291 | 0.88 |
+| Random 2 | `job-5bb64060f87b` | goal | 2.96 | 1.88 | 0.210 | 0.89 |
+| Random 3 | `job-d6789bf3b8cd` | goal | 3.62 | 2.88 | 0.170 | 0.97 |
+| Random 4 | `job-eed7d4b0259d` | goal | 2.92 | 2.04 | 0.157 | 0.95 |
+| Random 5 | `job-6a42594ccddc` | goal | 3.70 | 2.42 | 0.172 | 0.87 |
+| Random 6 | `job-bd17a288acbf` | goal | 2.90 | 2.04 | 0.155 | 0.95 |
+
+None of the six runs had contact or leg-torque clamping.
+
+**Updated headline:**
+- WX-RF at seed 0 (P1 + Addendum A): **24/24** arrive & hold across all four arenas [Wilson 86–100%].
+- Including seeds 1–2 on clutter: **35/36**.
+- The frozen bundle on the same 24 scenarios: 19/24.
+
+## Addendum B: is the WX latency collapse a property of the policy or of the wrapper?
+
+P3 left an open question. Was WX's collapse at 200 ms (1/12) caused by the policy, or by Studio's L2≈ delayed-execution wrapper? To find out, two suites were added on the same 12 clutter and doorway scenarios: seed 0, arrive & hold, 10 s, release 15959b7. Script: `tools/campaign/latency_followup.py`.
+
+- **F1** `suite-13340a7a3c3e`: frozen bundle, K4/ODE6, 200 ms, **measured** anchoring. This uses g1-student-deploy's own `run_episode(latency_s, anchor_mode='measured')`, not a Studio wrapper. Each plan is anchored on the state at request time and starts 200 ms later, which is the same staleness the WX wrapper produces.
+- **F2** `suite-ff93f4e2407e`: WX-RF, K8/ODE6, **100 ms**, using the L2≈ wrapper as in P3.
+
+| Preset | WX 0 (P1) | WX 100 (F2) | WX 200 (P3) | Bundle 0 (P2) | Bundle 200 measured (F1) | Bundle 200 predict (P6) |
+|---|---|---|---|---|---|---|
+| clutter #0 | G 3.0 | G 3.3 | T 0.23 r τ | G 3.6 | T 0.36 r τ | G 3.1 τ |
+| clutter #1 | G 5.1 | G 6.5 | T 0.46 r τ | G 6.2 τ | G 6.7 τ | C @2.0 |
+| clutter #2 | G 3.1 | G 3.1 | T 0.48 r τ | G 2.8 | T 0.48 r τ | G 2.6 |
+| clutter #3 | G 3.5 | G 3.5 | T 1.39 r τ | G 4.0 | T 0.31 r τ | G 3.3 |
+| clutter #4 | G 9.8 τ | G 6.5 | T 0.53 r τ | T 1.49 τ | C @5.8 τ | T 0.98 τ |
+| clutter #5 | G 3.5 | G 3.9 | T 2.75 r τ | G 3.6 | G 4.2 τ | G 3.2 |
+| doorway #0 | G 4.0 | G 4.4 | F @3.5 r τ | G 4.0 | T 0.36 r τ | G 4.1 τ |
+| doorway #1 | G 3.9 | T 0.38 r τ | T 0.44 r τ | C @4.5 r τ | T 0.58 r τ | G 3.9 |
+| doorway #2 | G 3.6 | G 3.9 | T 0.18 r τ | G 4.2 | G 3.7 | G 3.8 |
+| doorway #3 | G 3.6 | G 4.7 τ | T 0.95 r τ | G 4.7 | G 4.6 τ | G 3.6 |
+| doorway #4 | G 6.4 τ | G 6.6 | G 7.4 τ | T 1.53 τ | C @2.9 τ | G 9.9 τ |
+| doorway #5 | G 5.8 | G 6.0 | C @2.9 | T 2.29 | C @3.2 τ | T 0.08 |
+| **Arrive & hold** | **12/12** [76–100] | **11/12** [65–99] | **1/12** [1–35] | **8/12** [39–86] | **4/12** [14–61] | **9/12** [47–91] |
+| Post-hoc reach | 12/12 | 12/12 | 11/12 | 9/12 | 9/12 | 9/12 |
+| Leg torque clamped | 2/12 | 2/12 | 11/12 | 4/12 | **11/12** | 4/12 |
+| Falls / collisions | 0 / 0 | 0 / 0 | 1 / 1 | 0 / 1 | 0 / 3 | 0 / 1 |
+
+Legend:
+- G t = goal at t s;
+- T d = timeout at final distance d m;
+- C / F @t = collision / fall at t s;
+- r = post-hoc Flow reach on a run that failed arrive & hold;
+- τ = leg torque clamped at the MuJoCo limit in at least one substep.
+
+F1 jobs, in preset order: `job-8ff7acf6e278`, `job-8f4ca8575120`, `job-6fde82f356a0`, `job-4a0c458feda6`, `job-e5817a69e9b1`, `job-b0bdb7bcaed6`, `job-0570ad6cfbe7`, `job-c9d1f7ea2700`, `job-10eed76a0502`, `job-b7a6c698974b`, `job-81e013b354bd`, `job-a4bd292f4a82`.
+
+F2 jobs, in preset order: `job-73ce186b20af`, `job-a8e951a7f4fc`, `job-530f775cf9d8`, `job-123fd33c85bf`, `job-8cb8e5f4ccf3`, `job-c3589aa312d0`, `job-b15722d6671f`, `job-be2a3d1be462`, `job-25206b067d83`, `job-421a7f699866`, `job-41e8c12d1f42`, `job-2bae8004b3e3`.
+
+Rows: `runs-addenda.json`.
+
+**Reading.** n = 12 per column, one seed, one budget, CPU lockstep. Treat these as indications, not rates.
+
+1. **The 200 ms collapse is not specific to WX or to Studio's wrapper.**
+   - The bundle under the source's own measured-anchor latency model shows the same signature: 8/12 → 4/12 arrive & hold (4 losses, 0 wins), leg torque clamped in 11/12 runs instead of 4/12, and 3 collisions.
+   - WX shows the same pattern: 11/12 clamped, with oscillation near the goal and holds that never settle.
+   - Post-hoc reach barely moves for either policy (WX 11/12, bundle 9/12). The robots still get to the goal; they cannot stop and hold there.
+   - The common cause is a plan anchored 200 ms in the past. When SONIC switches to such a plan, the reference jumps back, and the legs saturate trying to follow it.
+2. **Predictive anchoring removes most of it for the bundle:** 9/12 with predict vs 4/12 with measured, and torque clamping back at 4/12. Flow's callback has no predictive anchoring, so this fix cannot be tested for WX without a Flow-side change. Studio does not make that change; it is a research decision.
+3. **WX tolerates 100 ms:** 11/12 arrive & hold (one loss, doorway #1, 0.38 m at timeout), 12/12 post-hoc reach, no extra torque clamping. Median time to goal rose from 3.9 s to 4.4 s. The breakdown lies between 100 and 200 ms; 140 and 160 ms were not measured.
+4. **Deployment consequence.** In lockstep, WX's CPU replan (p50 about 0.64 s at K8/ODE6) is hidden because physics waits for it. On the robot, the replan budget is about 160 ms (8 ticks), which is inside the measured breakdown band. A real-time WX deployment therefore needs one of two things:
+   - planner latency comfortably below about 100 ms on the target compute, measured, not assumed; or
+   - latency-aware anchoring in the Flow callback.
+
+   Neither can be established in this CPU rehearsal. L3 remains blocked on the runner's hard-coded DDS domain 0.
+
+Remaining latency follow-ups: 140 and 160 ms on WX, more seeds per cell, and a predictive-anchor variant of the WX callback once the Flow side provides one.
