@@ -243,6 +243,7 @@ function syncLayers() {
   for (const name of Object.keys(scene.view.layers)) { const input = $(`layer-${name}`); if (input) scene.view.layers[name] = input.checked && !input.disabled; }
   if (scene.view.layers.perception) scene.setMapSample(perceptionAt(state.session, state.time));
   scene.applyLayers(state);
+  if (state.session && state.frame) updateHud(perceptionAt(state.session, state.time));
 }
 function setRobotView(enabled) {
   scene.setRobotView(enabled);
