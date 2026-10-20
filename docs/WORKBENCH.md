@@ -48,6 +48,13 @@ Open **Rehearse**, or click **Rehearse →** after saving an arena.
 
 Cancel signals only this gateway's own process group. It is a simulation control, not an emergency stop. Closing the browser does not cancel a run.
 
+**Gateway restarts.** A worker can outlive its gateway, for example after a gateway-only crash. Stopping the systemd unit stops the worker too.
+
+- When the gateway comes back, the run shows **DETACHED**.
+- The new gateway reads the run's files but never signals the process, so the run cannot be cancelled from the page.
+- Rehearse keeps following the files and opens the recording when the completion receipt appears.
+- A run that ended without a recording (cancelled at start, or killed) stays in the list. Its replay request answers *no replayable recording* rather than a file error.
+
 ## 3. Runs
 
 **Robustness report.** For the runs in view, grouped by policy · criterion · latency · budget:
