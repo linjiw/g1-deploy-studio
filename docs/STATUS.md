@@ -5,7 +5,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 
 - **Service:** http://127.0.0.1:8790/ (systemd user unit `g1-deploy-studio`, see [SERVICE.md](SERVICE.md)). The served commit is shown in the status bar and at `/api/version`.
 - **Remote:** `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open http://localhost:8790/.
-- **Video introduction:** `~/research-data/g1-deploy-studio/evidence/video-20261020/` (7:12, narrated, subtitles; rebuild with [tools/video](../tools/video/README.md)).
+- **Video introduction:** `~/research-data/g1-deploy-studio/evidence/video-20261020/` (7:17, narrated, subtitles; rebuild with [tools/video](../tools/video/README.md)).
 
 ## Capabilities
 
@@ -30,7 +30,7 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | Does WX-RF reach and hold random goals? | Yes in lockstep: 24/24 at seed 0 across 4 arenas, 35/36 with seeds; it beats the bundle behind obstacles (6/6 vs 2/6) |
 | Does it stop well? | It is the weak point. It overshoots and loops back, and holds often complete 1–4 s after arrival |
 | Is it robust to planner latency? | Not with stale anchoring: 1/12 at 200 ms. With predictive anchoring on the current-G1 limits: **12/12 at the robot's 160 ms budget**, but 21/36 at 200 ms over three seeds (4–10/12 per seed). The cliff is between 160 and 200 ms |
-| Does the hardware revision matter? | Yes. WX routinely commands more than 88 N·m at the hip pitch, so a rev_1_0 robot (mode_machine 4–6, 13, 14) would clamp it. Under latency every run reaches a torque limit, most often the 50 N·m ankle clip |
+| Does the hardware revision matter? | Yes. WX routinely commands more than 88 N·m at the hip pitch, so a rev_1_0 robot (mode_machine 4–6, 13, 14) would clamp it. Under latency most runs drive a leg joint to its torque limit (9/12 at 160 ms, 34/36 at 200 ms), most often the 50 N·m ankle clip |
 
 ## Open issues
 
@@ -57,7 +57,8 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 2026-10-20 | L3 isolation: owner-approved network namespace (domain 0 cannot leave a loopback-only namespace) instead of an upstream domain change first |
 | 2026-10-20 | The 7 `.pyc` files a probe agent wrote into the g1-student-deploy venv were removed |
 | 2026-10-20 | Independent review session (3 high, 8 medium, 14 low, 12 nits; `evidence/review-20261020/REVIEW.md`). Then an independent verification (`evidence/verify-20261020/VERIFY.md`): 22 fixed and 3 partial; it also found one regression from a fix (following a detached run after a reload). The partial items, the regression and the remaining nits were fixed afterwards. One label stays by design: the HUD's "Speed (fd)" on recordings without a velocity field is a finite difference |
-| 2026-10-20 | Torque is counted at the effective limit (source clip or model clamp); scenario identity includes the actuator profile; saved scenarios keep `source`; under latency the shown plan is the executing one, live and recorded |
+| 2026-10-20 | Torque is counted at the effective limit (source clip or model clamp); scenario identity includes the actuator profile; saved scenarios keep `source`; under latency the shown plan is the executing one, live and recorded, for both the WX and the bundle worker |
+| 2026-10-20 | A second verification (`evidence/verify2-20261020/VERIFY2.md`): 19 items fixed and 1 by design; it found that the bundle worker still showed the in-flight plan (N8). A third verification (`evidence/verify3-20261020/VERIFY3.md`) confirmed the N8 fix and found N9 (a race in the single-load fix) and N10 (the leg-torque count included arm joints; Addendum D/E counts corrected). Both are fixed. The whole review session is in [REVIEW-20261020](REVIEW-20261020.md) |
 
 ## Verify
 

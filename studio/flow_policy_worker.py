@@ -227,7 +227,7 @@ def execute(request, output):
         # The bundle manifest's lockstep caveat ("physics waits for each replan") is false under a latency model.
         caveats = [c for c in manifest['caveats'] if not (req['latency']['ms'] and 'physics waits' in c.lower())]
         if req['latency']['ms']:
-            caveats.append(f"Planner latency is modelled: each plan starts {req['latency']['ms']} ms after it is requested while "
+            caveats.append(f"Planner latency is modelled: each replan starts {req['latency']['ms']} ms after it is requested while "
                            'physics keeps running (Studio delayed-execution wrapper, L2≈).')
         limitations = caveats + [
             'Fresh in-process CPU MuJoCo + SONIC ONNX execution of the Flow callback; not a C++/DDS or real-time deployment validation.',
@@ -401,7 +401,7 @@ def execute(request, output):
                                      'root_linear_velocity_w': post['root_linear_velocity_w'].tolist(), 'contact': interval,
                                      'classification': 'simulator-ground-truth'},
                      'perception_index': None,
-                     'health': {'state_age_ms': 0, 'reference_age_ms': 0, 'planner_latency_ms': plan['latency_ms'] if plan else None,
+                     'health': {'state_age_ms': 0, 'reference_age_ms': 0, 'planner_latency_ms': current['plan']['latency_s'] * 1000 if current['plan'] else None,
                                 'tracking_rmse_rad': float(np.sqrt(np.mean((q[7:] - tgt[0, :29]) ** 2))),
                                 'command_tracking_rmse_rad': float(np.sqrt(np.mean((q[7:] - np.asarray(target)) ** 2))),
                                 'sonic_inference_ms': current['inference_ms'], 'control_step_wall_ms': step_ms,
@@ -569,7 +569,7 @@ def execute(request, output):
                 source = session['frames'][request_tick]['plan'] if request_tick is not None and request_tick < n else None
                 active = by_tick.get(request_tick)
                 frame['plan'] = None if source is None else dict(
-                    source, age_s=(i - start_tick) * DT, requested_at_s=request_tick * DT, executing_since_s=start_tick * DT,
+                    source, time=start_tick * DT, age_s=(i - start_tick) * DT, requested_at_s=request_tick * DT, executing_since_s=start_tick * DT,
                     attribution=f"executing plan: requested at {request_tick * DT:.2f} s, driving SONIC since {start_tick * DT:.2f} s")
             else:
                 if i in by_tick:

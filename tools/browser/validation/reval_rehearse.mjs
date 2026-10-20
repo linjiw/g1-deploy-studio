@@ -122,7 +122,7 @@ await R.check('4.6', 'Latency select + anchor enabling rules (anchor disabled wi
   await policy(BUNDLE); await page.selectOption('#rh-latency', '0'); await sleep(150);
   const a = await page.locator('#rh-anchor').isDisabled();
   await page.selectOption('#rh-latency', '200'); await sleep(150);
-  const b = await page.locator('#rh-anchor').isDisabled(), l2 = /L2: each plan starts 200 ms/.test(await page.locator('#rehearse-panel').textContent());
+  const b = await page.locator('#rh-anchor').isDisabled(), l2 = /L2: each replan starts 200 ms/.test(await page.locator('#rehearse-panel').textContent());
   await page.selectOption('#rh-anchor', 'predict');
   await policy(WX); await sleep(150);
   const c = await page.locator('#rh-anchor').isDisabled(), wxText = /Studio delayed-execution approximation/.test(await page.locator('#rehearse-panel').textContent());

@@ -143,7 +143,7 @@
    "kind": "deck",
    "slide": "validation",
    "min_s": 12,
-   "say": "Every claim here has evidence: two hundred sixty-five unit tests, fifteen browser acceptance checks run directly and through an S S H tunnel, an independent re-validation of one hundred eighteen checks, and a separate review whose findings were all fixed and re-verified. The gateway binds [loopback](/lˈupbˌæk/) only, checks the host, the origin and a per-process token, and is reached remotely through S S H."
+   "say": "Every claim here has evidence: two hundred sixty-six unit tests, fifteen browser acceptance checks run directly and through an S S H tunnel, an independent re-validation of one hundred eighteen checks, and a separate review followed by two independent verifications, with every finding fixed. The gateway binds [loopback](/lˈupbˌæk/) only, checks the host, the origin and a per-process token, and is reached remotely through S S H."
   },
   {
    "id": "roadmap",

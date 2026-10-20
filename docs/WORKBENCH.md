@@ -66,7 +66,7 @@ Cancel signals only this gateway's own process group. It is a simulation control
 - the outcome chip, scenario, policy, budget, seed, criterion, latency and actuator profile;
 - simulated duration, final goal distance, peak contact and planner p95.
 
-Filter by arena (identical names get an id suffix), policy or outcome. Tick up to 64 runs, or *Select all in view*, to overlay their simulator-ground-truth root paths on the arena, colored by outcome or by policy. **Replay** opens any run. **↓ CSV / ↓ JSON** export the rows.
+Filter by arena (identical names get an id suffix), policy or outcome. Tick up to 64 runs, or *Select all in view*, to overlay their simulator-ground-truth root paths on the arena, colored by outcome or by policy. **Replay** opens any run. **↓ CSV / ↓ JSON** export the rows. In the CSV, `torque_at_limit_joints` lists the joints that reached their effective limit, reads `none` when torque was recorded and no joint did, and is empty for runs recorded before torque tracking. `anchor_xy_error_p50_m` is empty unless the run recorded an anchor prediction (WX predict runs; bundle predict runs record none).
 
 "Outcomes in view" pools every condition in view per policy, so it is a count, not a rate.
 
@@ -75,7 +75,7 @@ Filter by arena (identical names get an id suffix), policy or outcome. Tick up t
 - **post-hoc Flow reach**: the arena protocol (0.4 m, ≤ 2 m/s for 0.1 s, contact ≤ 5 N, no fall) re-evaluated on each run's recorded 50 Hz trajectory, so arrive-and-hold runs are also judged by Flow's criterion;
 - failure categories (timeout ≤ 0.5 m vs > 0.5 m, collision, fall, error);
 - medians over the source-scorer goals: time to goal, path efficiency (progress per metre walked, in [0, 1]);
-- median time to post-hoc reach, contact count, and runs whose leg torque reached the limit (source clip or model clamp).
+- median time to post-hoc reach, contact count, and runs whose leg torque (hip, knee, ankle) reached the limit (source clip or model clamp); when arm or waist joints add more runs, the any-joint count follows.
 
 ## Live and recorded data
 

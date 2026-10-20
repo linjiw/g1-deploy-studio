@@ -81,9 +81,6 @@ class FlowWorkerIntegrationTests(unittest.TestCase):
         self.assertIn('injected test failure', session['metadata']['termination_reason'])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 @unittest.skipUnless(ENABLED, 'set STUDIO_INTEGRATION=1 (needs the deploy interpreter and the frozen bundle)')
 class BundleWorkerLatencyIntegrationTests(unittest.TestCase):
@@ -120,3 +117,7 @@ class BundleWorkerLatencyIntegrationTests(unittest.TestCase):
         # Some frames fall inside a latency window, where the newest request is not the executing plan.
         newest = lambda i: max(r for r in requests if r <= i)
         self.assertTrue(any(newest(i) * 0.02 != f['plan']['requested_at_s'] for i, f in enumerate(session['frames'])))
+
+
+if __name__ == '__main__':
+    unittest.main()

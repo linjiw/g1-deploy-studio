@@ -43,8 +43,9 @@ function sessionOption(s) {
   const policy = s.policy_id && s.policy_id !== 'flow-bundle-20261008' ? ` · ${s.policy_id.replace('flow-', '').replace(/-s\d$/, '')}` : '';
   return `<option value="${escape(s.id)}" ${s.available ? '' : 'disabled'}>${mark ? mark + ' ' : ''}${escape(s.label ?? s.id)}${policy}${s.id.startsWith('job-') ? ` · #${escape(s.id.slice(-6))}` : ''}</option>`;
 }
-async function refreshSessionList(selected = state.sessionId) {
+async function refreshSessionList(selected) {
   const { sessions } = await request('/api/sessions');
+  selected ??= state.sessionId;  // read after the request: a recording may have opened meanwhile
   state.sessions = sessions;
   const groups = new Map();
   const ordered = [...sessions].sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0));
@@ -364,7 +365,7 @@ function appendLiveFrame(latest) {
 on('rehearse:job', job => { if (state.workspace === 'rehearse' || rh.attached === job.id) attachLive(job).catch(e => showError(e.message)); });
 on('rehearse:started', () => { rh.attached = null; $('workbench-error').hidden = true; });
 on('rehearse:finished', async job => {
-  await refreshSessionList(state.sessionId);
+  await refreshSessionList();
   const viewing = (rh.attached === job.id && state.sessionId === job.id) || rh.followDetached === job.id;
   if (rh.followDetached === job.id) { rh.followDetached = null; emit('workbench:clear', `Following ${job.id}, which a previous gateway started; its recording opens when it finishes.`); }
   const opened = rh.recordingOpened === job.id;  // attachLive already started loading this recording
@@ -373,7 +374,7 @@ on('rehearse:finished', async job => {
     const keepTime = state.time;
     await loadSession(job.result_session_id, { keepCamera: true });
     seek(keepTime);
-  } else if (viewing) {
+  } else if (viewing && !opened) {
     // Cancelled or killed without a recording: keep the partial live samples, clearly terminal.
     state.liveStatus = job.status;
     Object.assign(state.session.metadata, { mode: 'partial-live', termination_reason: job.error ?? `Run ${job.status}` });
@@ -384,6 +385,7 @@ on('rehearse:finished', async job => {
     $('recording-warning').textContent = `RUN ${String(job.status).toUpperCase()} · ${job.error ?? 'No recording was saved.'} Showing only the live samples received; nothing after them is inferred.`;
   }
   if (rh.attached === job.id) rh.attached = null;
+  if (opened && state.sessionId === job.result_session_id) $('session-picker').value = job.result_session_id;
   if (runs.table.length) refreshRuns().catch(() => {});
 });
 on('rehearse:suite-finished', () => { refreshRuns().catch(() => {}); refreshSessionList(); });

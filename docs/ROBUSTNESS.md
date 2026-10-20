@@ -7,7 +7,7 @@
 >   - Predictive anchoring restores 11/12 on the deprecated 88 N·m hip model (Addendum C).
 >   - On the current-G1 limits the policies were trained for (139/139/88), the same setup holds 21/36 over three seeds (4–10/12 per seed). Failures mostly reach the goal and do not settle (Addenda D–E).
 > - **160 ms, the robot's replan budget:** with predictive anchoring on the current-G1 limits, WX holds **12/12** (Addendum E). The cliff lies between 160 and 200 ms.
-> - **Torque:** every run under latency reaches a torque limit, most often the 50 N·m ankle clip. Corrected after the review (Addendum E).
+> - **Torque:** most runs under latency drive a leg joint to its torque limit (9/12 at 160 ms, 34/36 at 200 ms), most often the 50 N·m ankle clip. Corrected after the review and re-counted by leg joint after the third verification (Addendum E).
 > - **Every number below is CPU MuJoCo lockstep from standing starts.** It is not hardware evidence. Results depend on the actuator profile, which every run now records.
 >
 > The original write-up follows, with dated correction notes. It used the source actuator model (88/88/88) and the earlier path-efficiency definition (straight distance / path length; now progress / path, bounded by 1).
@@ -422,7 +422,7 @@ Three suites repeated the 12 P3 scenarios on the release service (89fa56c) with 
 | doorway #5 | G 5.8 | G 7.8 τ | G 9.1 | `job-9fb5b9233fc7` |
 | **Arrive & hold** | **12/12** [76–100] | **11/12** [65–99] | **7/12** [32–81] | |
 | Post-hoc reach | 12/12 | 11/12 | 10/12 | |
-| Runs with leg torque at the limit (source clip or model clamp; re-derived, see Addendum E) | 4/12 | 12/12 | 12/12 | |
+| Runs with leg torque at the limit (source clip or model clamp; re-derived, see Addendum E) | 4/12 | 11/12 (12/12 with arm joints) | 10/12 (12/12 with arm joints) | |
 | Runs above the rev_1_0 hip-pitch limit (88 N·m) | 2/12 | 11/12 | 11/12 | |
 | Median time to goal | 3.76 s | 5.76 s | 6.10 s | |
 | Falls / collisions | 0 / 0 | 1 / 0 | 0 / 0 | |
@@ -433,9 +433,9 @@ Legend as in Addendum B.
 
 1. **In lockstep the actuator model does not matter.** WX holds 12/12 with the trained-for 139/139/88 limits (F4), as it did on the 88/88/88 source model (P1), with the same median time (3.76 s).
 2. **At 200 ms with predictive anchoring it does.**
-   - With the hip pitch clamped at 88 N·m, WX holds 11/12: F5 on rev_1_0 limits, and Addendum C on the source model. F5 has one fall, and torque was at the limit in every run.
+   - With the hip pitch clamped at 88 N·m, WX holds 11/12: F5 on rev_1_0 limits, and Addendum C on the source model. F5 has one fall. A leg joint was at its torque limit in 11/12 runs; the twelfth reached only an arm limit.
    - With the full 139 N·m it holds 7/12 (F3), with no contact and no fall. Four of its five failures are timeouts within 0.5 m of the goal, so it gets there and does not settle into a hold.
-   - *Correction (review H1).* An earlier version said F3 had no clamping. In fact the source PD clips at the training effort (139 N·m at hips and knees, 50 N·m at the ankles) before MuJoCo, and the tracker did not count that clip. Re-derived from the recorded peaks, every F3 run reached a limit: the hips in 7 runs, the knees in 6, the ankles in 10.
+   - *Correction (review H1).* An earlier version said F3 had no clamping. In fact the source PD clips at the training effort (139 N·m at hips and knees, 50 N·m at the ankles) before MuJoCo, and the tracker did not count that clip. Re-derived from the recorded peaks, 10 of 12 F3 runs drove a leg joint to its limit: the hips in 7 runs, the knees in 6, the ankles in 10. The other two reached only arm limits (right shoulder pitch, elbow, wrist pitch).
    - All five scenarios that differ between F3 and F5 favour the clamped model (sign test p ≈ 0.13 at this n). This is suggestive, not established.
 3. **The earlier "predict fixes latency" result is therefore conditional on the actuator model.** Addendum C's 11/12 used the deprecated model. On the robot the policies were trained for (current G1, 139 N·m), the predicted-anchor deployment at 200 ms is borderline.
    - A plausible mechanism is that the 88 N·m hip clamp damps the motion. It is not established: the sign test above is p ≈ 0.13, and Addendum E shows strong seed variance at 200 ms.
@@ -457,22 +457,22 @@ Three suites ran on the release service (df19f85) on the same 12 P3 scenarios: W
 - G2 `suite-8a4545859da7`: 200 ms, seed 1.
 - G3 `suite-b56d6b491b64`: 200 ms, seed 2.
 
-| Condition (WX-RF · predict · g1-current) | Arrive & hold | Post-hoc reach | Failures | Runs at a torque limit (hip / knee / ankle) |
-|---|---|---|---|---|
-| 0 ms, seed 0 (F4, Addendum D) | **12/12** [76–100] | 12/12 | — | 4/12 (2 / 1 / 3) |
-| **160 ms, seed 0 (G1)** | **12/12** [76–100] | 12/12 | — | 9/12 (1 / 4 / 8) |
-| 200 ms, seed 0 (F3) | 7/12 [32–81] | 10/12 | 4 timeouts ≤ 0.5 m, 1 > 0.5 m | 12/12 (7 / 6 / 10) |
-| 200 ms, seed 1 (G2) | 4/12 [14–61] | 8/12 | 3 timeouts ≤ 0.5 m, 3 > 0.5 m, 2 collisions | 12/12 (9 / 11 / 12) |
-| 200 ms, seed 2 (G3) | 10/12 [55–95] | 11/12 | 1 timeout ≤ 0.5 m, 1 collision | 12/12 (7 / 6 / 12) |
-| **200 ms, seeds 0–2 pooled** | **21/36** [42–73] | 29/36 | | 36/36 |
-| 200 ms, `g1-rev1`, seed 0 (F5) | 11/12 [65–99] | 11/12 | 1 fall | 12/12 (11 / 5 / 10) |
+| Condition (WX-RF · predict · g1-current) | Arrive & hold | Post-hoc reach | Failures | Runs with a leg joint at its limit (hip / knee / ankle) | Any joint |
+|---|---|---|---|---|---|
+| 0 ms, seed 0 (F4, Addendum D) | **12/12** [76–100] | 12/12 | — | 4/12 (2 / 1 / 3) | 4/12 |
+| **160 ms, seed 0 (G1)** | **12/12** [76–100] | 12/12 | — | 9/12 (1 / 4 / 8) | 9/12 |
+| 200 ms, seed 0 (F3) | 7/12 [32–81] | 10/12 | 4 timeouts ≤ 0.5 m, 1 > 0.5 m | 10/12 (7 / 6 / 10) | 12/12 |
+| 200 ms, seed 1 (G2) | 4/12 [14–61] | 8/12 | 3 timeouts ≤ 0.5 m, 3 > 0.5 m, 2 collisions | 12/12 (9 / 11 / 12) | 12/12 |
+| 200 ms, seed 2 (G3) | 10/12 [55–95] | 11/12 | 1 timeout ≤ 0.5 m, 1 collision | 12/12 (7 / 6 / 12) | 12/12 |
+| **200 ms, seeds 0–2 pooled** | **21/36** [42–73] | 29/36 | | 34/36 | 36/36 |
+| 200 ms, `g1-rev1`, seed 0 (F5) | 11/12 [65–99] | 11/12 | 1 fall | 11/12 (11 / 5 / 10) | 12/12 |
 
-The torque columns are re-derived from the recorded per-joint peaks (`studio.workbench.torque_at_limit`): a joint counts when its peak reached min(training clip, model clamp). New runs count this per substep. For comparison, the source-model campaign gives 4/24 runs at a limit for P1 (0 ms) and 12/12 for P3 (200 ms measured).
+The torque columns are re-derived from the recorded per-joint peaks (`studio.workbench.torque_at_limit`): a joint counts when its peak reached min(training clip, model clamp). New runs count this per substep. *Correction (verify3 N10):* the first version of this table counted any joint under a hip/knee/ankle heading. Three 200 ms runs reach only arm limits (right shoulder pitch 25 N·m, elbow, wrist pitch 5 N·m: `job-b361c90cd3db`, `job-e8b3d50327ec` in F3, `job-7b7f05f10672` in F5), so the leg counts are now separate from the any-joint counts. For comparison, the source-model campaign gives 4/24 runs at a limit for P1 (0 ms) and 12/12 for P3 (200 ms measured).
 
 **Reading.** CPU lockstep, one budget. Seeds vary planner sampling only.
 
 1. **At the robot's 160 ms budget, predictive anchoring holds 12/12 on the trained-for hardware limits.** Median time to goal is 4.94 s, against 3.76 s in lockstep. If the deployed planner meets its 160 ms budget, the 200 ms collapse is not the operating point.
-2. **200 ms is past a cliff.** Arrive & hold varies from 4/12 to 10/12 across seeds and pools to 21/36. Collisions appear (3/36), and every run reaches a torque limit, mostly at the ankles (50 N·m) and hips (139 N·m).
+2. **200 ms is past a cliff.** Arrive & hold varies from 4/12 to 10/12 across seeds and pools to 21/36. Collisions appear (3/36). 34/36 runs drive a leg joint to its limit (every run counting arm joints), mostly the ankles (50 N·m) and the hips.
 3. **The single-seed comparison in Addendum D (rev_1_0 11/12 vs current 7/12) is within this seed variance.** Do not read it as an actuator effect without more seeds of F5.
 4. **Torque limits are reached in lockstep too** (4/12 at 0 ms, mostly ankles), and far more often under latency. A 35 N·m ankle limit (newest Unitree URDF; not settled, see ROBOT_CONTRACT) would bind harder.
 

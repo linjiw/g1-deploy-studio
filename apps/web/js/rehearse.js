@@ -31,13 +31,14 @@ export async function initRehearse(catalog) {
 export async function selectMap(id, rerender = true) {
   if (!id) throw new Error('Select a saved arena first.');
   rh.mapId = id;
-  const token = rh.mapToken = (rh.mapToken ?? 0) + 1;
+  const token = rh.mapToken = (rh.mapToken ?? 0) + 1, durationBefore = rh.settings.duration_s;
   const map = await request(`/api/map?id=${encodeURIComponent(id)}`);
   if (token !== rh.mapToken) return;  // a newer selection won; never pair its presets with old geometry
   rh.map = map;
   rh.presetIndex = 0;
   const suggested = rh.map.suggested_scenario;
-  if (suggested && !rh.map.presets?.length) rh.settings.duration_s = suggested.duration_s ?? rh.settings.duration_s;
+  // A Duration the operator entered while the arena was loading wins over the arena's suggestion.
+  if (suggested && !rh.map.presets?.length && rh.settings.duration_s === durationBefore) rh.settings.duration_s = suggested.duration_s ?? rh.settings.duration_s;
   if (rerender) render();
   emit('rehearse:preview', previewMarkers());
 }
@@ -93,7 +94,7 @@ export function render() {
       <div class="field-row compact budget-buttons">${BUDGETS.map(([n, k, o]) => `<button data-budget="${k},${o}" class="${rh.settings.candidates === k && rh.settings.ode_steps === o ? 'active' : ''}">${n} ${k}/${o}</button>`).join('')}${deployed ? `<button data-budget="${deployed.candidates},${deployed.ode_steps}" class="${rh.settings.candidates === deployed.candidates && rh.settings.ode_steps === deployed.ode_steps ? 'active' : ''}" title="${pol?.loader === 'flow-callback' ? 'The budget this block was evaluated at (Isaac)' : 'The profile\'s deployed planner budget'}">Deployed ${deployed.candidates}/${deployed.ode_steps}</button>` : ''}</div>
       <div class="grid-fields"><label>Planner latency<select id="rh-latency">${[0, 100, 160, 200, 300, 500].map(v => `<option value="${v}" ${v === rh.settings.latency_ms ? 'selected' : ''}>${v ? `${v} ms` : 'none (L1)'}</option>`).join('')}</select></label>
         <label>Anchor<select id="rh-anchor" ${!rh.settings.latency_ms ? 'disabled' : ''}><option value="measured" ${rh.settings.anchor === 'measured' ? 'selected' : ''}>measured</option><option value="predict" ${rh.settings.anchor === 'predict' ? 'selected' : ''}>predict (latency-aware)</option></select></label><span></span></div>
-      <p class="tiny">${rh.settings.latency_ms ? `L2: each plan starts ${rh.settings.latency_ms} ms after it is requested while physics keeps running${pol?.loader === 'flow-callback' ? ` (Studio delayed-execution approximation for the Flow callback, L2≈${rh.settings.anchor === 'predict' ? ' predict: Studio gives the planner the state predicted at request + latency from the landed plan, the g1-student-deploy method; route and tight-mode decisions stay measured' : ''})` : ' (source lockstep latency model)'}.` : 'L1: physics waits for every replan, hiding planner latency.'}</p>
+      <p class="tiny">${rh.settings.latency_ms ? `L2: each replan starts ${rh.settings.latency_ms} ms after it is requested while physics keeps running${pol?.loader === 'flow-callback' ? ` (Studio delayed-execution approximation for the Flow callback, L2≈${rh.settings.anchor === 'predict' ? ' predict: Studio gives the planner the state predicted at request + latency from the landed plan, the g1-student-deploy method; route and tight-mode decisions stay measured' : ''})` : ' (source lockstep latency model)'}.` : 'L1: physics waits for every replan, hiding planner latency.'}</p>
       <label class="field" title="${escape((rh.catalog.actuators ?? []).find(a => a.id === rh.settings.actuators)?.hardware ?? '')}">Actuator limits (hip pitch / roll / yaw)<select id="rh-actuators">${(rh.catalog.actuators ?? []).map(a => `<option value="${escape(a.id)}" ${a.id === rh.settings.actuators ? 'selected' : ''} title="${escape(a.description)}">${escape(a.label)}</option>`).join('')}</select></label>
       <label class="field">Success criterion<select id="rh-criterion">${(rh.catalog.criteria ?? [{ id: 'arrive_hold', label: 'Arrive and hold' }]).map(c => `<option value="${escape(c.id)}" ${c.id === rh.settings.criterion ? 'selected' : ''} title="${escape(`radius ${c.goal_radius_m} m · speed ≤ ${c.goal_speed_m_s} m/s for ${c.goal_hold_s} s · collision > ${c.obstacle_contact_threshold_n} N`)}">${escape(c.label)}</option>`).join('')}</select></label>
       <p class="tiny">CPU lockstep pauses physics while planning, so larger budgets cost wall time, not simulated time. Wall limit for this profile: ${pol?.limits?.wall_s ?? 180} s.</p></div>
@@ -177,7 +178,7 @@ async function runSuite() {
   for (const q of presets()) for (let s = 0; s < rh.seeds; s++) ids.push((await saveScenario(q, rh.settings.seed + s)).id);
   // The previous run is not part of this suite: stop following it (pollSuite attaches the suite's runs).
   clearTimeout(rh.timer); rh.job = null; rh.attached = null; rh.lastPerception = -Infinity; renderJob();
-  const suffix = ` · ${policy()?.short_label ?? rh.policyId} · ${ids.length} runs`;
+  const suffix = ` · ${policy()?.short_label ?? rh.policyId} · ${ids.length} run${ids.length === 1 ? '' : 's'}`;
   rh.suite = await request('/api/suites', { label: `${rh.map.label.slice(0, 100 - suffix.length)}${suffix}`, scenario_ids: ids });
   pollSuite();
 }

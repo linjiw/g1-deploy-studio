@@ -93,7 +93,7 @@ window.DECK_DATA = {
       <div class="footer"><span>04 · RESULTS</span><span>G1 DEPLOY STUDIO</span></div>` },
   ],
   validation: [
-    { v: 265, unit: '', cap: 'unit tests, plus opt-in real-worker integration tests', color: '#56d9d0' },
+    { v: 266, unit: '', cap: 'unit tests, plus opt-in real-worker integration tests', color: '#56d9d0' },
     { v: 15, unit: '/15', cap: 'browser acceptance checks, direct and through a forwarded SSH port', color: '#5fd39b' },
     { v: 118, unit: '', cap: 'independent re-validation checks across every workspace', color: '#efbb70' },
     { v: 246, unit: '', cap: 'scored CPU rehearsals on the release, each with its policy identity hash', color: '#e6dfcf' },
