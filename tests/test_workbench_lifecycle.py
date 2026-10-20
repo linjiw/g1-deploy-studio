@@ -14,6 +14,7 @@ from studio.workbench import Workbench, atomic_json
 class Catalog:
     def __init__(self):
         self.entries = {}
+        self.providers = {}
 
     def session(self, key):
         raise KeyError(key)
@@ -136,6 +137,39 @@ class LifecycleTests(unittest.TestCase):
             self.assertIn('job-failed-replay', catalog.entries)
             self.assertEqual(reopened.session_data('job-failed-replay'), session)
             kill.assert_not_called()
+
+    def test_cancel_after_complete_receipt_keeps_the_run_completed(self):
+        # The worker commits session.json, then result.json (last), then is slow to exit.
+        # A cancel landing in that window interrupts only the exit, not the episode.
+        def lingering_popen(args, **kwargs):
+            run = args[args.index('--output')+1]
+            program = ('import pathlib,time,json; p=pathlib.Path(__import__("sys").argv[1]); p.mkdir(); '
+                       '(p/"session.json").write_text(json.dumps({"schema_version":1,"frames":[{"time":0}]})); '
+                       '(p/"result.json").write_text(json.dumps({"status":"completed","report":{"outcome":"goal_completion"}})); '
+                       'time.sleep(10)')
+            child = self.real_popen([sys.executable, '-c', program, run], **kwargs)
+            self.children.append(child)
+            return child
+        with patch.object(self.w, 'capabilities', return_value={'available': True}), patch('studio.workbench.subprocess.Popen', side_effect=lingering_popen):
+            job = self.w.start_job(self.scenario)
+        receipt = self.root/'jobs'/job['id']/'run/result.json'
+        deadline = time.monotonic()+5
+        while not receipt.is_file() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.w.cancel_job(job['id'])
+        final = self.wait_terminal(job['id'])
+        self.assertEqual(final['status'], 'completed')
+        self.assertEqual(final['result_session_id'], job['id'])
+        self.assertIn('Cancel arrived after the worker committed', final['teardown_warning'])
+        self.assertNotEqual(final['exit_code'], 0)
+
+    def test_cancel_before_receipt_is_cancelled(self):
+        with patch.object(self.w, 'capabilities', return_value={'available': True}), patch('studio.workbench.subprocess.Popen', side_effect=self.stub_popen):
+            job = self.w.start_job(self.scenario)
+        self.w.cancel_job(job['id'])
+        final = self.wait_terminal(job['id'])
+        self.assertEqual(final['status'], 'cancelled')
+        self.assertIsNone(final.get('result_session_id'))
 
     def test_termination_race_ignores_already_exited_owned_process(self):
         process = Mock(pid=123)

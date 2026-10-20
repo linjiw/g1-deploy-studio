@@ -334,7 +334,7 @@ function appendLiveFrame(latest) {
 }
 
 on('rehearse:job', job => { if (state.workspace === 'rehearse' || rh.attached === job.id) attachLive(job).catch(e => showError(e.message)); });
-on('rehearse:started', () => { rh.attached = null; });
+on('rehearse:started', () => { rh.attached = null; $('workbench-error').hidden = true; });
 on('rehearse:finished', async job => {
   await refreshSessionList(state.sessionId);
   const viewing = rh.attached === job.id && state.sessionId === job.id;
@@ -374,6 +374,7 @@ on('arena:preview3d', enabled => {
 on('arena:changed', () => { if (arena.preview3d) { const q = activePreset(); scene.setArenaPreview(arenaDocument(), { start: q?.start_xy, yaw: q?.start_yaw_rad, goal: q?.goal_xy }); } });
 on('catalog:refreshed', catalog => { state.catalog = catalog; arena.catalog = catalog; if (runs.canvas) runs.catalogMaps = catalog.maps; });
 on('arena:saved', async () => {
+  $('workbench-error').hidden = true;  // an earlier "Fix before saving" no longer applies
   // New arenas must appear in every consumer; never reuse a pre-save catalog.
   state.catalog = null;
   try { emit('catalog:refreshed', await ensureCatalog()); } catch (error) { emit('workbench:error', error.message); }

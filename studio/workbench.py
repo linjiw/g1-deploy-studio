@@ -786,7 +786,12 @@ class Workbench:
                 complete = (output/'session.json').is_file() and receipt and receipt.get('status') == 'completed'
                 if job['status'] == 'cancelling' and not complete:
                     job['status'] = 'cancelled'
-                elif complete and (process.returncode == 0 or job.get('teardown_warning')):
+                elif complete and (process.returncode == 0 or job.get('teardown_warning') or job['status'] == 'cancelling'):
+                    if process.returncode != 0 and not job.get('teardown_warning'):
+                        # The worker writes result.json last: the episode and recording were
+                        # complete before the cancel signal interrupted only its exit.
+                        job['teardown_warning'] = ('Cancel arrived after the worker committed a complete receipt and '
+                                                   'recording; only its exit was interrupted.')
                     job['status'] = 'completed'
                     job['result_session_id'] = key
                     job['error'] = None
