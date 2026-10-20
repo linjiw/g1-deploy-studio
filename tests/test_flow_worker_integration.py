@@ -38,6 +38,36 @@ class FlowWorkerIntegrationTests(unittest.TestCase):
         self.assertEqual(len(session['frames']), 100)  # 2 s at 50 Hz
         self.assertTrue(session['metadata']['privileged_map'])
 
+    def test_predictive_anchor_episode_records_its_anchors(self):
+        # 2 s, 200 ms latency, predict: each predicted plan is anchored at request + 10 ticks and its landing is checked.
+        out = Path(self.tmp.name) / 'predict'
+        request = {'schema_version': 1, 'id': 'wx-predict', 'goal_xy': [2.0, 0.0], 'start_xy': [0, 0], 'start_yaw_rad': 0,
+                   'duration_s': 2, 'seed': 0, 'planner': {'candidates': 2, 'ode_steps': 2}, 'criterion': 'arrive_hold',
+                   'latency': {'ms': 200, 'anchor': 'predict'},
+                   'policy': {'id': 'flow-wx-rf-23326aa-s0', 'loader': 'flow-callback', 'bundle_id': 'flow-wx-rf-23326aa-s0'},
+                   'map': {'id': 'flat', 'label': 'Flat', 'kind': 'boxes', 'frame_id': 'world', 'boxes': []}}
+        path = Path(self.tmp.name) / 'request.json'
+        path.write_text(json.dumps(request))
+        env = dict(os.environ, PYTHONPATH=str(ROOT), CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2', PYTHONDONTWRITEBYTECODE='1')
+        done = subprocess.run([str(DEPLOY_PYTHON), '-B', str(ROOT / 'studio/flow_policy_worker.py'), '--request', str(path),
+                               '--output', str(out)], capture_output=True, text=True, timeout=300, env=env, cwd=ROOT)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        result = json.loads((out / 'result.json').read_text())
+        self.assertEqual(result['status'], 'completed')
+        report = result['report']
+        self.assertEqual(report['latency_model']['anchor'], 'predict')
+        self.assertTrue(report['anchor_mode'].startswith('predict'))
+        plans = json.loads((out / 'latency_anchor.json').read_text())['plans']
+        self.assertEqual(plans[0]['mode'], 'measured')  # the first plan: nothing has landed yet
+        predicted = [p for p in plans[1:] if p['mode'] == 'predict']
+        self.assertEqual(len(predicted), len(plans) - 1)
+        self.assertTrue(all(p['anchor_tick'] == p['request_tick'] + 10 for p in predicted))
+        self.assertTrue(all(p['prediction_error'] for p in predicted if p['anchor_tick'] < 100))
+        self.assertEqual(report['anchor_prediction']['predicted_plans'], len(predicted))
+        session = json.loads((out / 'session.json').read_text())
+        self.assertEqual(session['metadata']['fidelity'], 'L2-approx')
+        self.assertTrue(any((f.get('plan') or {}).get('anchor_mode') == 'predict' for f in session['frames']))
+
     def test_mid_episode_failure_keeps_real_error_and_executed_replay(self):
         out = Path(self.tmp.name) / 'fail'
         self.assertIn('injected test failure at tick 10', run_driver(out, 10)['raised'])
