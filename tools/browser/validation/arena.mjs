@@ -24,6 +24,9 @@ const tool = t => page.click(`[data-arena-tool="${t}"]`);
 async function template(key) { await preview2d(); await page.selectOption('#arena-base', `tpl:${key}`); await page.waitForTimeout(150); }
 async function setField(id, v) { await page.fill(`#${id}`, String(v)); await page.locator(`#${id}`).dispatchEvent('change'); }
 const statusText = () => page.locator('#arena-status').textContent();
+// v0.3: the name field re-renders the panel on 'change' (blur), which swallows the next panel click
+// (see REVALIDATION N1). Blur it explicitly so the checks below measure what they intend.
+async function setLabel(v) { await page.fill('#arena-label', v); await page.locator('#arena-label').dispatchEvent('input'); await page.locator('#arena-label').dispatchEvent('change'); await sleep(150); }
 const blur = () => page.evaluate(() => document.activeElement?.blur());
 async function preview2d() { if (await page.locator('#arena-preview3d').getAttribute('aria-pressed') === 'true') await page.click('#arena-preview3d'); }
 
@@ -265,7 +268,7 @@ await R.check('3.11', 'Random goals: count/min/max/seed/heading, same seed repro
   assert(a.presets.length === 12, `append → ${a.presets.length}`);
   appendKept = await page.locator('#rg-append').isChecked();
   await page.check('#rg-append'); await page.click('#rg-generate'); a = await arena(); assert(a.presets.length === 16, `append caps at 16 → ${a.presets.length}`);
-  assert(/Random presets: seed 5/.test(a.description), `description ${a.description}`);
+  assert(/Random presets: seed 5|\[random: seed 5;/.test(a.description), `description ${a.description}`); // v0.2 or v0.3 note format
   return { first: firstGen.map(q => [q.start_xy, q.goal_xy, q.start_yaw_rad]), shot: await R.shot('random-goals') };
 });
 
@@ -291,7 +294,7 @@ await R.check('3.11b', 'Random goals: description keeps one provenance note acro
   if (await page.locator('.random-goals').getAttribute('open') === null) await page.click('.random-goals summary');
   for (const [k, v] of Object.entries({ count: 4, min: 2, max: 4, seed: 9 })) await page.fill(`#rg-${k}`, String(v));
   await page.click('#rg-generate'); await page.click('#rg-generate'); await page.click('#rg-generate');
-  const d = (await arena()).description; const n = (d.match(/Random presets:/g) ?? []).length;
+  const d = (await arena()).description; const n = (d.match(/Random presets:|\[random:/g) ?? []).length; // v0.2 or v0.3 note format
   assert(n === 1, `description has ${n} random-preset notes: "${d}"`);
   return { description: d };
 });
@@ -328,7 +331,7 @@ await R.check('3.12', 'Preflight: goal inside a wall shows ✕ and Save refuses'
 let saved1, saved2;
 await R.check('3.13', 'Save arena is immutable: edit + save creates a new id; the old map is unchanged', async () => {
   await page.fill('#preset-gy', '0'); await page.locator('#preset-gy').dispatchEvent('change');
-  await page.fill('#arena-label', 'Validation arena A'); await page.locator('#arena-label').dispatchEvent('input');
+  await setLabel('Validation arena A');
   await page.click('#arena-save');
   await page.waitForFunction(() => window.__studio.arena.savedId, null, { timeout: 15000 });
   saved1 = (await arena()).savedId;
@@ -374,13 +377,23 @@ await R.check('3.16', 'JSON import of 129 boxes: limit message and Save refuses;
   const boxes = []; for (let i = 0; i < 129; i++) boxes.push({ center_xy: [-2 + (i % 13) * 0.5, 4 + Math.floor(i / 13) * 0.5], half_xy: [0.1, 0.1], yaw: 0, z_bottom: 0, z_top: 1 });
   const file = path.join(EVIDENCE, 'arena-129-boxes.json');
   await writeFile(file, JSON.stringify({ kind: 'boxes', frame_id: 'world', units: 'm', label: '129 boxes', boxes, presets: [{ label: 'p', start_xy: [0, 0], start_yaw_rad: 0, goal_xy: [2, 0] }] }));
+  const n0 = (await arena()).boxes.length;
   await page.setInputFiles('#arena-import', file); await sleep(300);
   const a = await arena(); const status = await statusText();
-  assert(a.boxes.length === 129 && /more than 128 boxes/.test(status), `status ${status}`);
-  await page.click('#arena-save'); await sleep(300);
-  const err = await page.locator('#workbench-error').textContent();
-  assert(/Fix before saving: .*more than 128 boxes/.test(err) && !(await arena()).savedId, `save ${err}`);
-  await page.evaluate(() => window.__studio.arena.boxes.splice(128));
+  let err = await page.locator('#workbench-error').isVisible() ? await page.locator('#workbench-error').textContent() : '';
+  if (a.boxes.length === 129) {  // v0.2 behaviour: imported, flagged by preflight, Save refused
+    assert(/more than 128 boxes/.test(status), `status ${status}`);
+    await page.click('#arena-save'); await sleep(300);
+    err = await page.locator('#workbench-error').textContent();
+    assert(/Fix before saving: .*more than 128 boxes/.test(err) && !(await arena()).savedId, `save ${err}`);
+    await page.evaluate(() => window.__studio.arena.boxes.splice(128));
+  } else {  // v0.3 behaviour: the import itself is refused with the limit, arena unchanged
+    assert(a.boxes.length === n0 && /≤128 entries/.test(err), `129-box import: boxes ${n0} → ${a.boxes.length}, message "${err}"`);
+    const f128 = path.join(EVIDENCE, 'arena-128-boxes.json');
+    await writeFile(f128, JSON.stringify({ kind: 'boxes', frame_id: 'world', units: 'm', label: '128 boxes', boxes: boxes.slice(0, 128), presets: [{ label: 'p', start_xy: [0, 0], start_yaw_rad: 0, goal_xy: [2, 0] }] }));
+    await page.setInputFiles('#arena-import', f128); await sleep(300);
+    assert((await arena()).boxes.length === 128, `128-box import ${(await arena()).boxes.length}`);
+  }
   await page.click('#arena-fit'); await tool('pillar'); await click([0, -1.5]);
   const err2 = await page.locator('#workbench-error').textContent();
   assert((await arena()).boxes.length === 128 && /at most 128 boxes/.test(err2), `cap ${err2}`);
@@ -393,7 +406,7 @@ await R.check('3.17', 'Wall drawn right-to-left (yaw = 180°) can be saved', asy
   await tool('wall'); await drag([3, 1.5], [1, 1.5]);
   const b = (await arena()).boxes[0];
   await page.keyboard.press('Escape');
-  await page.fill('#arena-label', 'Validation yaw 180'); await page.locator('#arena-label').dispatchEvent('input');
+  await setLabel('Validation yaw 180');
   await page.click('#arena-save'); await sleep(1500);
   const id = (await arena()).savedId, err = await page.locator('#workbench-error').isVisible() ? await page.locator('#workbench-error').textContent() : '';
   assert(id, `Save failed for a wall with yaw ${b.yaw} (exported ${Number(b.yaw.toFixed(6))}): ${err}`);
@@ -403,7 +416,7 @@ await R.check('3.17', 'Wall drawn right-to-left (yaw = 180°) can be saved', asy
 await R.check('3.18', 'Box yaw field 180° can be saved', async () => {
   await template('corridor'); await tool('select'); await page.click('#arena-fit'); await click([2.5, 0.6]);
   await setField('box-yaw', 180); await page.keyboard.press('Escape');
-  await page.fill('#arena-label', 'Validation yaw field 180'); await page.locator('#arena-label').dispatchEvent('input');
+  await setLabel('Validation yaw field 180');
   await page.click('#arena-save'); await sleep(1500);
   const id = (await arena()).savedId, err = await page.locator('#workbench-error').isVisible() ? await page.locator('#workbench-error').textContent() : '';
   assert(id, `Save failed: ${err}`);

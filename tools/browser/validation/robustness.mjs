@@ -143,7 +143,7 @@ await R.check('8.3', 'UI through a Host-preserving TCP tunnel (localhost:<other 
     await p2.goto(`${url}/?session=sonic-lockstep`); await ready(p2, 'sonic-lockstep');
     const build = await p2.locator('#build-info').textContent();
     await p2.click('#workspace-arena'); await p2.waitForSelector('#arena-base');
-    await p2.selectOption('#arena-base', 'tpl:doorway'); await p2.fill('#arena-label', 'Validation via tunnel'); await p2.locator('#arena-label').dispatchEvent('input');
+    await p2.selectOption('#arena-base', 'tpl:doorway'); await p2.fill('#arena-label', 'Validation via tunnel'); await p2.locator('#arena-label').dispatchEvent('input'); await p2.locator('#arena-label').dispatchEvent('change'); await sleep(200); // blur first (v0.3 N1)
     await p2.click('#arena-save'); await p2.waitForFunction(() => window.__studio.arena.savedId, null, { timeout: 15000 });
     const foreign = await p2.request.get(`${url}/api/version`, { headers: { Host: 'evil.example:80' } });
     await p2.screenshot({ path: path.join(EVIDENCE, 'robustness-tunnel.png') });

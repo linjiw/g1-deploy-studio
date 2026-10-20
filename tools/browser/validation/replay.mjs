@@ -50,7 +50,7 @@ await R.check('1.2', 'Open each configured recording and a job recording', async
   for (const id of ['sonic-lockstep', 'sonic-dds-tutorial', 'wire-local', ...(bundleJob ? [bundleJob] : []), ...(wxJob ? [wxJob] : [])]) {
     const t0 = Date.now(); await open(page, id);
     const title = await page.locator('#session-title').textContent(), dur = await page.locator('#duration-time').textContent(), ticks = await page.locator('#frame-counter').textContent();
-    assert(title && title !== 'Opening…' && dur !== '—' && /tick \d+ \/ \d+/.test(ticks), `${id}: ${title} ${dur} ${ticks}`);
+    assert(title && title !== 'Opening…' && dur !== '—' && /(tick|sample) \d+ \/ \d+/.test(ticks), `${id}: ${title} ${dur} ${ticks}`);
     out[id] = { title, dur, ticks, ms: Date.now() - t0, shot: await R.shot(`open-${id.replace(/[^a-z0-9-]/gi, '')}`) };
   }
   if (!bundleJob) return R.blocked('no job recording available', out);
@@ -258,7 +258,7 @@ await R.check('1.12', 'HUD values sane and consistent with the inspector', async
   near(dHud, dIntent, 0.006, 'goal distance HUD vs Intent');
   const meta = await page.evaluate(() => { const f = window.__studio.state.measuredFrame, g = window.__studio.state.session.metadata.goal_xy; return Math.hypot(f.position[0] - g[0], f.position[1] - g[1]); });
   near(dIntent, meta, 0.0006, 'Intent vs frame truth');
-  const speed = parseFloat(hud.Speed), tilt = parseFloat(hud.Tilt);
+  const speed = parseFloat(hud.Speed ?? hud['Speed (fd)']), tilt = parseFloat(hud.Tilt); // v0.3 labels finite-difference speed 'Speed (fd)'
   assert(speed >= 0 && speed < 3 && tilt >= 0 && tilt < 1.6, `speed ${speed} tilt ${tilt}`);
   await page.click('#tab-health'); await sleep(200);
   const health = await page.locator('#health-content').textContent();

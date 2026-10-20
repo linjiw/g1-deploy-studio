@@ -17,13 +17,22 @@ const rowIds = () => page.locator('[data-run-select]').evaluateAll(x => x.map(i 
 
 // Independent re-implementation of the robustness grouping (runs.js report) for cross-checking.
 const wilson = (k, n, z = 1.96) => { if (!n) return [null, null]; const p = k / n, d = 1 + z * z / n, c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d; return [Math.max(0, c - h), Math.min(1, c + h)]; };
+// v0.3 semantics (runs.js report): one trial per scenario id (latest start wins); error runs
+// (runtime_error outcome or failed status without a scorer outcome) are listed, not counted.
+const isError = r => !['goal_completion', 'timeout', 'obstacle_collision', 'fall'].includes(r.outcome) && (r.outcome === 'runtime_error' || r.status === 'failed');
 function groups(rows) {
   const g = new Map();
   for (const r of rows.filter(x => x.outcome || x.status === 'failed')) {
     const key = `${r.policy_id} · ${r.criterion ?? 'arrive_hold'} · lat ${r.latency?.ms ?? 0}${r.latency?.anchor === 'predict' ? 'p' : ''} · K${r.planner?.candidates}/ODE${r.planner?.ode_steps}`;
     if (!g.has(key)) g.set(key, []); g.get(key).push(r);
   }
-  return [...g.entries()].map(([key, list]) => ({ key, n: list.length, goals: list.filter(r => r.outcome === 'goal_completion').length, reach: list.filter(r => r.derived?.reach_post_hoc?.reached).length, contact: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length }));
+  return [...g.entries()].map(([key, all]) => {
+    const byScenario = {};
+    for (const r of [...all].sort((a, b) => (a.started_unix_s ?? 0) - (b.started_unix_s ?? 0))) byScenario[r.scenario_id ?? r.id] = r;
+    const unique = Object.values(byScenario), list = unique.filter(r => !isError(r));
+    return { key, n: list.length, repeats: all.length - unique.length, errors: unique.length - list.length, errorIds: unique.filter(isError).map(r => r.id),
+      goals: list.filter(r => r.outcome === 'goal_completion').length, reach: list.filter(r => r.derived?.reach_post_hoc?.reached).length, contact: list.filter(r => (r.metrics.max_contact_n ?? 0) > 0).length };
+  });
 }
 
 await R.check('5.1', 'Runs list matches /api/runs', async () => {
@@ -103,8 +112,13 @@ await R.check('5.6', 'Robustness report numbers match a hand recomputation from 
     assert(k === g.goals && n === g.n && rk === g.reach, `${g.key}: shown ${k}/${n} reach ${rk} vs ${g.goals}/${g.n} reach ${g.reach}`);
     const ci = wilson(g.goals, g.n), txt = s.main[0];
     if (ci[0] !== null) assert(txt.includes(`[${Math.round(100 * ci[0])}–${Math.round(100 * ci[1])}%]`), `CI ${txt} vs ${ci}`);
-    assert(s.meta[1].startsWith(`${g.contact} run`), `contact runs ${s.meta[1]} vs ${g.contact}`);
-    out.push({ key: g.key, shown: s.main, mine: g });
+    const contactMeta = s.meta.find(m => /with obstacle contact/.test(m)) ?? '';
+    assert(contactMeta.startsWith(`${g.contact} run`), `contact runs ${contactMeta} vs ${g.contact}`);
+    const flags = s.meta.join(' | ');
+    if (g.errors) assert(flags.includes(`${g.errors} error run${g.errors > 1 ? 's' : ''} excluded from rates`), `${g.key}: errors ${g.errors} not listed: ${flags}`);
+    if (g.repeats) assert(flags.includes(`${g.repeats} identical re-run${g.repeats > 1 ? 's' : ''} counted once`), `${g.key}: repeats ${g.repeats} not listed: ${flags}`);
+    if (!g.errors) assert(!/excluded from rates/.test(flags), `${g.key}: unexpected error note ${flags}`);
+    out.push({ key: g.key, shown: s.main, flags, mine: g });
   }
   // Cancelled runs are excluded from n; failed runs count as errors.
   return { groups: out, excluded: table.filter(r => !(r.outcome || r.status === 'failed')).map(r => [r.id, r.status]) };
@@ -124,9 +138,13 @@ await R.check('5.7', 'CSV and JSON export download and contain the rows in view'
 });
 
 await R.check('5.8', 'Replay button opens the run in Replay (Health tab)', async () => {
-  const run = table.find(r => r.replayable);
+  // Pick a row that is not already open, so the wait below observes the new load (not the current session).
+  const current = await page.evaluate(() => window.__studio.state.sessionId);
+  const run = table.find(r => r.replayable && r.id !== current) ?? table.find(r => r.replayable);
+  const gen = await page.evaluate(() => window.__studio.state.loadGeneration);
   await page.click(`.run-row:has([data-run-select="${run.id}"]) [data-open-session]`);
-  await page.waitForFunction(id => window.__studio.state.sessionId === id && document.querySelector('#loading-overlay').hidden, run.id, { timeout: 60000 });
+  await page.waitForFunction(([id, gen]) => window.__studio.state.sessionId === id && window.__studio.state.loadGeneration > gen && !window.__studio.state.loading && document.querySelector('#loading-overlay').hidden, [run.id, gen], { timeout: 60000 });
+  await sleep(300);
   const ws = await page.evaluate(() => window.__studio.state.workspace), tab = await page.locator('[role=tab][aria-selected=true]').getAttribute('data-tab');
   assert(ws === 'replay' && tab === 'health', `ws ${ws} tab ${tab}`);
   return { run: run.id, shot: await R.shot('replay-from-runs') };
@@ -139,6 +157,52 @@ await R.check('5.9', '3D comparison overlay is cleared after leaving Runs', asyn
   const m = await page.evaluate(async () => (await import('/js/scene.js')).view.compareGroup.children.length);
   assert(m === 0, `compare overlay left in the 3D scene after leaving Runs: ${m}`);
   return { inRuns: n, afterLeave: m };
+});
+
+await R.check('5.10', 'Robustness report: an error run is listed as excluded (not counted as a failure)', async () => {
+  await page.click('#workspace-runs'); await page.waitForSelector('#runs-map'); await sleep(500);
+  const mine = groups(table).filter(g => g.errors);
+  if (!mine.length) return R.blocked('no error run in the table');
+  const shown = await page.locator('.report-group').evaluateAll(gs => gs.map(g => ({ key: g.querySelector('.report-key').textContent, text: g.textContent })));
+  const out = [];
+  for (const g of mine) {
+    const s = shown.find(x => x.key === g.key); assert(s, `group ${g.key} missing`);
+    assert(new RegExp(`${g.errors} error runs? excluded from rates`).test(s.text) && !/\berror \d/.test(s.text.split('excluded from rates')[1] ?? ''), `${g.key}: ${s.text.slice(0, 400)}`);
+    out.push({ key: g.key, errors: g.errors, errorIds: g.errorIds, n: g.n });
+  }
+  return { groups: out, shot: await R.shot('report-errors') };
+});
+
+await R.check('5.11', 'Robustness report: identical re-runs of one scenario count once', async () => {
+  const counts = {}; for (const r of table.filter(x => x.outcome || x.status === 'failed')) counts[r.scenario_id] = (counts[r.scenario_id] ?? 0) + 1;
+  const repeated = Object.entries(counts).filter(([, n]) => n > 1);
+  if (!repeated.length) return R.blocked('no repeated scenario in the table');
+  const g = groups(table).filter(x => x.repeats);
+  const shown = await page.locator('.report-group').evaluateAll(gs => gs.map(g => ({ key: g.querySelector('.report-key').textContent, text: g.textContent, n: g.querySelector('.report-main strong').textContent })));
+  for (const x of g) { const s = shown.find(y => y.key === x.key); assert(s && s.n.endsWith(`/${x.n}`) && new RegExp(`${x.repeats} identical re-runs? counted once`).test(s.text), `${x.key}: shown ${s?.n} vs n=${x.n}, repeats ${x.repeats}: ${s?.text.slice(0, 300)}`); }
+  return { repeated: repeated.map(([sid, n]) => ({ sid, n, runs: table.filter(r => r.scenario_id === sid).map(r => [r.id, r.status, r.outcome]) })), groups: g.map(x => ({ key: x.key, n: x.n, repeats: x.repeats })) };
+});
+
+await R.check('5.12', "Run rows show '<arena> · <preset name>' (full label in the tooltip)", async () => {
+  const maps = (await api(page, '/api/workbench')).body.maps;
+  const rows = await page.locator('.run-row').evaluateAll(rs => rs.map(r => ({ id: r.querySelector('[data-run-select]').dataset.runSelect, text: r.querySelector('.run-title span[title]')?.textContent, title: r.querySelector('.run-title span[title]')?.getAttribute('title') })));
+  const bad = [];
+  for (const r of rows) { const t = table.find(x => x.id === r.id); if (!t?.preset_label) continue; const want = `${maps.find(m => m.id === t.map_id)?.label ?? t.map_id} · ${t.preset_label}`; if (r.text !== want || r.title !== t.label) bad.push({ id: r.id, text: r.text, want, title: r.title }); }
+  const withPreset = table.filter(r => r.preset_label).length;
+  assert(withPreset > 0 && !bad.length, `rows with preset ${withPreset}; mismatches ${JSON.stringify(bad.slice(0, 4))}`);
+  return { withPreset, sample: rows.slice(0, 4) };
+});
+
+await R.check('5.13', 'Report dedupe when the latest identical re-run is an error (synthetic rows through runs.js report())', async () => {
+  const res = await page.evaluate(async () => {
+    const { report } = await import('/js/runs.js');
+    const base = { policy_id: 'p', criterion: 'arrive_hold', latency: { ms: 0, anchor: 'measured' }, planner: { candidates: 2, ode_steps: 4 }, metrics: {}, derived: {} };
+    const rows = [{ ...base, id: 'a', scenario_id: 's1', status: 'completed', outcome: 'goal_completion', started_unix_s: 1 },
+                  { ...base, id: 'b', scenario_id: 's1', status: 'failed', outcome: null, started_unix_s: 2 },
+                  { ...base, id: 'c', scenario_id: 's2', status: 'completed', outcome: 'timeout', started_unix_s: 3 }];
+    const g = report(rows)[0]; return { n: g.n, goals: g.goals, errors: g.errors, repeats: g.repeats };
+  });
+  return { ...res, note: 'A scenario whose latest identical re-run hit a worker error contributes 0 trials: its earlier scored run is dropped (runs.js report: latest-by-start dedupe happens before error exclusion).' };
 });
 
 await R.save({ runs: table.length });
