@@ -1,0 +1,30 @@
+{
+ "schema_version": 1,
+ "sessions": [
+  {
+   "id": "sonic-lockstep",
+   "label": "SONIC \u00b7 recorded lockstep rehearsal",
+   "description": "Real MuJoCo / SONIC ONNX execution; full 10-frame reference windows, 29-DoF rubber-hand G1. In-process lockstep, not DDS.",
+   "path": "/home/linjiw/code/g1-student-deploy/runs/smoke/__start_stand_",
+   "environment_path": "/home/linjiw/code/g1-student-deploy/runs/rt/replay-beams2-101/boxes.json"
+  },
+  {
+   "id": "sonic-dds-tutorial",
+   "label": "SONIC \u00b7 recorded C++ / DDS tutorial",
+   "description": "Existing separated-process rehearsal, Dex3 G1. Robot motion and plan timing recorded; references and lowcmd not recorded.",
+   "path": "/home/linjiw/code/g1-student-deploy/runs/video/A_quickstart"
+  },
+  {
+   "id": "wire-local",
+   "label": "ZMQ \u00b7 observed transport diagnostics",
+   "description": "Actual local capture of reserialized recorded references, receive rate, stale and disconnect events. No controller execution or robot state in this capture.",
+   "path": "/home/linjiw/research-data/g1-deploy-studio/evidence/wire-20261015/wire_capture.jsonl"
+  },
+  {
+   "id": "perf-large-job",
+   "label": "Validation \u00b7 large owned job (read-only reference to main workbench job-bfc2868af973)",
+   "description": "Read-only reference to a 10 s owned rehearsal recording used only to time session open.",
+   "path": "/home/linjiw/research-data/g1-deploy-studio/workbench/jobs/job-bfc2868af973/run/session.json"
+  }
+ ]
+}

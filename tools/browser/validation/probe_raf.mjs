@@ -1,0 +1,12 @@
+import { chromium } from '@playwright/test';
+const browser = await chromium.launch({ executablePath: '/opt/google/chrome/chrome', headless: true, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+const page = await (await browser.newContext({ viewport: { width: 1600, height: 1000 } })).newPage();
+const rate = async label => { const n = await page.evaluate(() => new Promise(r => { let k = 0; const t0 = performance.now(); const f = () => { k++; if (performance.now() - t0 < 2000) requestAnimationFrame(f); else r(k / 2); }; requestAnimationFrame(f); })); console.log(label, n, 'Hz'); };
+await page.goto('about:blank'); await rate('blank page rAF');
+await page.goto('http://127.0.0.1:8792/?session=perf-large-job');
+await page.waitForFunction(() => window.__studio?.robot && document.querySelector('#loading-overlay').hidden, null, { timeout: 120000 });
+await page.waitForTimeout(1000); await rate('studio paused rAF');
+await page.evaluate(() => window.__studio.setPlaying(true)); await rate('studio playing rAF'); await page.evaluate(() => window.__studio.setPlaying(false));
+await page.setViewportSize({ width: 800, height: 600 }); await page.waitForTimeout(800);
+await page.evaluate(() => window.__studio.setPlaying(true)); await rate('studio playing rAF @800x600'); await page.evaluate(() => window.__studio.setPlaying(false));
+await browser.close();
