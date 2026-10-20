@@ -80,6 +80,9 @@ def apply(model, joint_names, profile_id):
             limit = hips[kind]
             model.jnt_actfrcrange[jid] = (-limit, limit)
             changed[name] = {'before_nm': hi, 'after_nm': limit}
+        elif hips is not None:
+            # No force limit on this joint in the model: nothing to patch, and the receipt says so.
+            changed[name] = {'before_nm': None, 'after_nm': None, 'unpatched': 'joint has no actuator force limit in the model'}
         else:
             changed[name] = {'before_nm': hi, 'after_nm': hi}
     return {'profile': profile_id, **{k: PROFILES[profile_id][k] for k in ('label', 'hardware', 'description')},

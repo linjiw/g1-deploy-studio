@@ -7158,6 +7158,8 @@
   {
    "id": "hip_effort_limit",
    "severity": "high",
+   "status": "resolved",
+   "resolution": "Limit follows LowState.mode_machine (unitree_ros per-mode table; NVIDIA GR00T #174). Studio rehearses with actuator profiles (g1-current 139/139/88 default, g1-rev1 88/139/88, source 88/88/88). Remaining: read mode_machine passively on the real robot.",
    "summary": "hip_pitch/hip_roll effort: 139 N*m in training (effort_limit_sim) and contract.py (7520_22); 88 N*m in the deployment MJCFs (student rubber-hand, lucid Dex3) and in gear_sonic_sim's explicit torque clip; the rev_1_0 MJCF says hip_pitch 88 / hip_roll 139. Simulators saturate both hip joints at 88 N*m while the policy was trained with 139 N*m. The physical limit depends on the motor revision ('old is 7520_14 new is 7520_22') and is not in the inspected sources. Resolved by research (2026-10-20): the limit follows LowState.mode_machine (unitree_ros per-mode model table; NVIDIA GR00T #174): 88/88/88 deprecated modes 1-3, 88/139/88 rev_1_0 modes 4-6/13/14, 139/139/88 modes 10-12/15/16/18 (the robot SONIC was trained for). Studio rehearses with actuator profiles (g1-current default, g1-rev1, source) and reports substeps over each reference; read mode_machine passively before hardware.",
    "source": [
     {"path": "/home/linjiw/groot-wbc-sonic-sim-trackb/gear_sonic/envs/manager_env/robots/g1.py", "line": 253, "match": "\".*_hip_pitch_joint\": 139.0,"},
@@ -7260,6 +7262,8 @@
   {
    "id": "domain_zero_everywhere",
    "severity": "high",
+   "status": "mitigated",
+   "resolution": "Mitigated for rehearsals: the L3 chain runs inside a loopback-only user+net+pid namespace (tools/l3_rehearsal.sh), so domain 0 cannot reach the robot. An upstream --dds-domain remains optional defence in depth.",
    "summary": "runner (hard-coded), Dex3 helper (hard-coded), simulator yaml, node default, LIO bridge (hard-coded via DdsState default) all use DDS domain 0 = the robot's domain.",
    "source": [
     {"path": "/home/linjiw/lucid-sonic/lucid-g1-deploy/runner/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp", "line": 2185, "match": "ChannelFactory::Instance()->Init(0, networkInterface);"},

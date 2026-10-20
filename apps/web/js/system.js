@@ -90,7 +90,7 @@ function nodeBadge(id, session) {
   if (id === 'sonic' && r.sonic_inference_ms) return `p50 ${num(r.sonic_inference_ms.p50, 1)} · p95 ${num(r.sonic_inference_ms.p95, 1)} ms`;
   if (id === 'perception' && session?.perception?.frames?.length) return `${session.perception.frames.length} map snapshots`;
   if ((id === 'perception' || id === 'lidar') && sessionKind(session) === 'privileged') return 'not used (privileged)';
-  if (id === 'robot' && ['worker', 'privileged'].includes(sessionKind(session))) {
+  if (id === 'robot' && (['worker', 'privileged'].includes(sessionKind(session)) || session?.metadata?.fidelity === 'L3')) {
     const hips = session?.metadata?.actuators?.hips;
     const nm = side => hips?.[`left_hip_${side}_joint`]?.after_nm;
     return hips ? `hips ${num(nm('pitch'), 0)}/${num(nm('roll'), 0)}/${num(nm('yaw'), 0)} N·m` : 'hips 88/88/88 (source model)';
@@ -188,13 +188,17 @@ export function renderRobotContract(container, robot) {
   const rows = robot.joints.map(j => `<tr><td title="${escape(j.name)}">${escape(j.name.replace('_joint', ''))}</td><td>${j.unitree_motor_index}</td><td>${j.mujoco_index}</td><td>${j.isaaclab_index}</td>
     ${quantity(j.default_angle_rad)}${quantity(j.kp_nm_per_rad, 2)}${quantity(j.kd_nm_s_per_rad, 3)}${quantity(j.action_scale_rad, 3)}${quantity(j.effort_limit_nm, 0)}${quantity(j.position_limit_rad)}</tr>`).join('');
   const sevRank = { high: 0, medium: 1, low: 2 };
-  const discrepancies = [...(robot.discrepancies ?? [])].sort((a, b) => (sevRank[a.severity] ?? 3) - (sevRank[b.severity] ?? 3));
+  // Open items first (by severity), then mitigated, then resolved.
+  const stRank = { open: 0, mitigated: 1, resolved: 2 };
+  const discrepancies = [...(robot.discrepancies ?? [])].sort((a, b) => (stRank[a.status ?? 'open'] - stRank[b.status ?? 'open']) || ((sevRank[a.severity] ?? 3) - (sevRank[b.severity] ?? 3)));
+  const openCount = discrepancies.filter(d => (d.status ?? 'open') === 'open').length;
   const topics = (robot.dds?.topics ?? []).map(t => `<tr><td><code>${escape(t.name)}</code></td><td>${escape((t.type ?? '').split('::').pop())}</td><td>${escape(t.kind ?? '')}</td>
     <td>${(t.publishers ?? []).map(x => `${escape(x.component)}${finite(x.rate_hz_configured) ? ` · ${x.rate_hz_configured} Hz` : ''}`).join('<br>')}</td><td>${(t.subscribers ?? []).map(x => escape(x.component)).join('<br>')}</td></tr>`).join('');
   const thresholds = (robot.safety_thresholds ?? []).map(t => `<tr><td>${escape(t.id)}</td><td>${escape(t.value)} ${escape(t.unit ?? '')}</td><td>${escape(t.owner ?? '—')}</td><td>${escape(t.effect ?? '—')}</td><td><code>${escape(where(t.source))}</code></td></tr>`).join('');
   container.innerHTML = `<div class="contract-head"><div><span class="eyebrow">UNITREE G1 CONTRACT · ${escape((robot.verification?.status ?? 'source_inspected').replaceAll('_', ' ').toUpperCase())}</span><h3>${escape(robot.title ?? robot.robot_id)}</h3></div>${chip('configured', robot.verification?.statement ?? '')}</div>
     <p class="tiny">${escape(robot.verification?.statement ?? '')} Joints are matched by name. Motor index = LowCmd/LowState slot; MuJoCo order = simulator and recordings; IsaacLab order = ZMQ pose wire and policy tensors.</p>
-    ${discrepancies.length ? `<h4>Source discrepancies to resolve before hardware (${discrepancies.length})</h4><div class="discrepancies">${discrepancies.map(d => `<div class="discrepancy sev-${escape(d.severity)}"><span class="sev">${escape(d.severity)}</span><div><strong>${escape(d.id.replaceAll('_', ' '))}</strong><p>${escape(d.summary)}</p></div></div>`).join('')}</div>` : ''}
+    ${discrepancies.length ? `<h4>Source discrepancies (${openCount} open of ${discrepancies.length})</h4><div class="discrepancies">${discrepancies.map(d => { const st = d.status ?? 'open';
+      return `<div class="discrepancy sev-${escape(d.severity)} st-${escape(st)}"><span class="sev">${escape(st === 'open' ? d.severity : st)}</span><div><strong>${escape(d.id.replaceAll('_', ' '))}</strong>${d.resolution ? `<p class="resolution">${escape(d.resolution)}</p>` : ''}<p>${escape(d.summary)}</p></div></div>`; }).join('')}</div>` : ''}
     <h4>Joint table</h4><div class="table-scroll"><table class="contract-table"><thead><tr><th>Joint</th><th>Motor</th><th>MJ</th><th>Isaac</th><th>Default rad</th><th>kp</th><th>kd</th><th>Action scale</th><th>Effort N·m</th><th>Limits rad</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${topics ? `<h4>Unitree DDS topics (source-configured)</h4><div class="table-scroll"><table class="contract-table"><thead><tr><th>Topic</th><th>Type</th><th>Kind</th><th>Publishers</th><th>Subscribers</th></tr></thead><tbody>${topics}</tbody></table></div>` : ''}
     ${robot.dds?.isolation_assessment ? `<div class="callout warning"><strong>Domain isolation.</strong> ${escape(typeof robot.dds.isolation_assessment === 'string' ? robot.dds.isolation_assessment : robot.dds.isolation_assessment.summary ?? JSON.stringify(robot.dds.isolation_assessment))}</div>` : ''}

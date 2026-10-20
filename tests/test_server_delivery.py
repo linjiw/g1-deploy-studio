@@ -392,6 +392,15 @@ class L3DiscoveryTests(unittest.TestCase):
         self.assertNotIn('Historical simulator configuration', ' '.join(m['limitations']))
         self.assertIn('other', m['limitations'])
 
+    def test_mark_l3_exposes_the_simulator_actuator_limits(self):
+        prov = self.l3 / 'l3-clutter-r1-a/l3_provenance.json'
+        prov.write_text(json.dumps({'dds_domain': 0, 'actuator_limits': {'hip_pitch_nm': 88, 'hip_roll_nm': 88, 'hip_yaw_nm': 88, 'source': 'yaml'}}))
+        data = {'metadata': {'limitations': []}}
+        server_module.mark_l3(data, prov)
+        acts = data['metadata']['actuators']
+        self.assertEqual(acts['profile'], 'source')
+        self.assertEqual(acts['hips']['left_hip_roll_joint']['after_nm'], 88)
+
 
 class EmptyCatalogTests(GatewayCase):
     def attach(self):

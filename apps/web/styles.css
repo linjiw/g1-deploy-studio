@@ -210,7 +210,8 @@ body.stage-2d .vp-toolbar, body.stage-2d .vp-hud, body.stage-2d .viewport-meta, 
 .time-readout strong { font-size: 15px; color: var(--text); }
 .frame-counter { color: var(--dim); margin-left: 6px; }
 .badge { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; padding: 4px 7px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
-.previewing .inspector .inspector-content, .previewing .dock, .previewing #hud, .previewing .viewport-meta { opacity: .32; filter: grayscale(.7); transition: opacity .2s; }
+.previewing .inspector .inspector-content, .previewing .dock, .previewing #hud, .previewing .viewport-meta,
+.previewing #session-picker, .previewing #policy-chip, .previewing #run-outcome, .previewing #mode-badge { opacity: .32; filter: grayscale(.7); transition: opacity .2s; }
 .preview-note { position: absolute; left: 14px; bottom: 44px; z-index: 4; max-width: min(720px, calc(100% - 28px)); font-size: 12px; color: var(--c-amber);
   background: rgba(11, 15, 21, .86); border: 1px solid #6a5232; border-radius: 6px; padding: 7px 10px; pointer-events: none; }
 .preview-note[hidden] { display: none; }
@@ -422,3 +423,8 @@ body.arena-preview .vp-hud, body.arena-preview .viewport-meta { display: none; }
 .random-goals summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .torque-details { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .torque-details summary { cursor: pointer; }
+.discrepancy.st-resolved, .discrepancy.st-mitigated { opacity: .78; }
+.discrepancy.st-resolved .sev { color: var(--c-green); border-color: currentColor; }
+.discrepancy.st-mitigated .sev { color: var(--c-blue); border-color: currentColor; }
+.discrepancy .resolution { color: var(--c-green); }
+

@@ -204,7 +204,7 @@ function renderHealth(state) {
     ${outcomeCard(state)}${anchorCard(state)}${goalCard}${timing}${pipelineHealthLink(state)}${contact}${streams}${runtime}
     ${card('Events up to cursor', recent.length ? `<ol class="event-list">${recent.map(e => `<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>` : '<p class="unavailable">No event before this cursor.</p>', { evidence: 'recorded' })}
     ${diag}${unavailableList(missing)}
-    <div class="card card-flat">${fact(hasPose(m) ? 'State source time' : 'Event source time', num(m?.source_time, 6, 's'))}${fact('Source clock', m?.source_clock_domain)}${fact('Receipt time', num(m?.receipt_time, 6, 's'))}${fact('Sequence', m?.sequence)}</div>`;
+    <div class="card card-flat">${fact(hasPose(m) ? 'State source time' : 'Event source time', num(m?.source_time, 6, 's'))}${fact('Source clock', m?.source_clock_domain)}${fact('Receipt time (host monotonic)', num(m?.receipt_time, 6, 's'))}${fact('Sequence', m?.sequence)}</div>`;
   $('freeze-state')?.addEventListener('change', e => { state.freeze(e.target.checked); });
 }
 

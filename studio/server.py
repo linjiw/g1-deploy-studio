@@ -103,6 +103,14 @@ def mark_l3(data, provenance_path):
             'processes inside a user+net+pid namespace with only a private loopback (DDS domain 0 cannot leave it). '
             'Timing ran on a shared GPU under contention. Not hardware evidence.')
     m['limitations'] = [note] + [x for x in m.get('limitations', []) if 'Historical simulator configuration' not in x]
+    limits = (provenance or {}).get('actuator_limits')
+    if limits:
+        # The L3 simulator clips the hips itself; expose it like a rehearsal's actuator profile so an
+        # L3 vs L1/L2 comparison is made against the matching (`source`) profile.
+        hips = {f'{side}_hip_{j}_joint': {'before_nm': limits[f'hip_{j}_nm'], 'after_nm': limits[f'hip_{j}_nm']}
+                for side in ('left', 'right') for j in ('pitch', 'roll', 'yaw')}
+        m['actuators'] = {'profile': 'source', 'label': f"L3 simulator clip · {limits['hip_pitch_nm']}/{limits['hip_roll_nm']}/{limits['hip_yaw_nm']}",
+                          'hips': hips, 'basis': limits.get('source')}
 
 
 class NoRecording(LookupError):

@@ -126,7 +126,7 @@ function updateModeBadge() {
   }
   const fid = fidelity(m), level = fid.short ?? (fid.level === 'L2-approx' ? 'L2≈' : fid.level);
   const detached = live && state.liveStatus === 'detached';
-  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? `REPLAY · CPU REHEARSAL · ${level}` : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : m.fidelity === 'L3' ? 'REPLAY · REAL-TIME CHAIN · L3' : 'REPLAY · L0';
+  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\./.test(m.provenance?.adapter ?? '') ? `REPLAY · CPU REHEARSAL · ${level}` : `REPLAY · RECORDED LOCKSTEP · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : m.fidelity === 'L3' ? 'REPLAY · REAL-TIME CHAIN · L3' : 'REPLAY · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;

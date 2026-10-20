@@ -168,7 +168,7 @@ export function draw() {
     ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.stroke();
     if (arena.view.scale > 45) {
       const [cx, cy] = toPx(box.center_xy); ctx.fillStyle = '#d7d1e6'; ctx.font = '10px Inter, system-ui'; ctx.textAlign = 'center';
-      ctx.fillText(kind === 'beam' ? `beam ${box.z_bottom.toFixed(2)}–${box.z_top.toFixed(2)} m` : `${box.z_top.toFixed(2)} m`, cx, cy + 3);
+      ctx.fillText(kind === 'beam' ? `beam ${box.z_bottom.toFixed(2)}–${box.z_top.toFixed(2)} m` : `top ${box.z_top.toFixed(2)} m`, cx, cy + 3);
     }
     if (selected) for (const h of handles(box)) { const [hx, hy] = toPx(h.pt); ctx.fillStyle = h.kind === 'rotate' ? '#efbb70' : '#56d9d0'; ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 7); ctx.fill(); }
   });
@@ -374,8 +374,8 @@ function presetIssues() {
   const doc = mapDoc(), out = [];
   arena.presets.forEach(q => {
     const s = pointStatus(doc, q.start_xy), g = pointStatus(doc, q.goal_xy);
-    if (s.status !== 'configured_free') out.push(`${q.label}: start ${s.reason.toLowerCase()}`);
-    if (g.status !== 'configured_free') out.push(`${q.label}: goal ${g.reason.toLowerCase()}`);
+    if (s.status !== 'configured_free') out.push(`${q.label}: start — ${s.reason.toLowerCase()}`);
+    if (g.status !== 'configured_free') out.push(`${q.label}: goal — ${g.reason.toLowerCase()}`);
     if (Math.hypot(q.goal_xy[0] - q.start_xy[0], q.goal_xy[1] - q.start_xy[1]) < 0.2) out.push(`${q.label}: start and goal closer than 0.2 m`);
   });
   if (arena.boxes.length > 128) out.push('more than 128 boxes');
