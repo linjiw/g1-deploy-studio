@@ -2,6 +2,20 @@
 
 ## Implemented local slice
 
+**v0.2 (2026-10-20).**
+
+| Area | Implementation |
+|---|---|
+| Policy profiles | `studio.policies` registers pinned policy profiles and parses the Flow adoption heading. |
+| WX worker | `studio.policy_bundle` and `tools/build_policy_bundle.py` pin the adopted Flow WX-RF block. `studio.flow_policy_worker` runs Flow's own closed-loop callback on MuJoCo + SONIC ONNX through a minimal fake Isaac environment. |
+| Workbench | Adds immutable arenas with presets, bounded sequential suites, the runs table and light live polling. |
+| Robot contract | `studio.robot_profile` with `config/robots/g1_29dof.json` is a source-verified Unitree G1 contract with per-source values, citations and recorded discrepancies. |
+| Gateway | Caches gzip and ETag bodies, serves content-addressed immutable meshes shared by every session, keeps a byte-bounded single-flight session cache, makes sensor masks opt-in, sends in chunks for slow tunnels, and reports the served build at `/api/version`. |
+| Browser | `apps/web/js/` is split into modules: `scene`, `timeline`, `inspector`, `arena`, `rehearse`, `runs`, `sensors`, `system`, `util`. |
+| Service | Runs as a systemd user service from a release worktree ([SERVICE.md](SERVICE.md)). |
+
+**Earlier slice.**
+
 The simulation workbench adds `studio.workbench` (bounded map/scenario storage and owned-process lifecycle), `studio.policy_worker` (actual frozen Flow + SONIC ONNX + MuJoCo CPU execution), and `studio.sensors` (causal sensor inventory and views). The HTTP process does not import policy runtimes or middleware. Its worker uses the existing reference environment read-only and produces atomic live snapshots plus complete replay sessions outside Git. Simulation-only POST operations require a same-origin token; no hardware control endpoint exists. See `docs/WORKBENCH.md` for runnable workflow and exact boundaries.
 
 `studio.pipeline` observes actual model boundaries in this owned CPU worker: the first Flow forward per replan, SONIC inputs/outputs at 10 Hz, named action-to-target conversion and completed simulated PD intervals. Frames reference bounded sample arrays; live snapshots carry only the latest samples. Effective route configuration, source/model hashes and scorer distance/speed/hold samples are recorded. The browser Pipeline inspector preserves the simulation cursor and treats source model defaults separately from observed map coverage. It does not expose hidden ONNX activations or add inference calls during execution. Read-only recorded-input ONNX parity is an optional audit step. See [model pipeline](MODEL_PIPELINE.md) for conventions, timing and limits.

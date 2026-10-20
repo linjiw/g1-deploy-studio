@@ -1,12 +1,17 @@
 {
   "name": "g1-deploy-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test:browser": "node tools/browser_acceptance.mjs",
-    "test:browser:forwarded": "node tools/forwarded_browser_acceptance.mjs"
+    "test:browser": "node tools/browser/ui_acceptance.mjs",
+    "test:browser:forwarded": "node tools/browser/forwarded.mjs",
+    "test:rehearsal": "node tools/browser/rehearsal_flow.mjs"
   },
-  "dependencies": {"three": "0.180.0"},
-  "devDependencies": {"@playwright/test": "1.61.1"}
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
 }
