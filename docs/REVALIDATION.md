@@ -2,7 +2,7 @@
 
 Scope: every FAIL in [VALIDATION.md](VALIDATION.md) (run against `3f3dfa5`), every fix listed in commits `1e80684` and `6dbb261`, and a regression pass over the core flows. The product code under test is the working tree at **`15959b7`**. This re-validation added scripts under `tools/browser/validation/` and this document. It changed no product code.
 
-**111 PASS · 7 FAIL · 0 BLOCKED** across 118 checks, plus 221 unit tests OK (2 skipped). The 7 FAILs come from 5 distinct defects. Two FAILs are side effects of N3: 4.13 and 8.5 (unexpected errors). The lead reports that 4 of the defects (N1–N4, covering 6 FAIL rows) are **fixed in `codex/v0.3-fixes`** (commits `5fa0bb9`, `e2d4e6f`) and **verified by the lead against the fix build**. This document records the original results on `15959b7`. The fix build was not re-verified here. One defect (N5) is open.
+**111 PASS · 7 FAIL · 0 BLOCKED** across 118 checks, plus 221 unit tests OK (2 skipped). The 7 FAILs come from 5 distinct defects. Two FAILs are side effects of N3: 4.13 and 8.5 (unexpected errors). The lead reports that 4 of the defects (N1–N4, covering 6 FAIL rows) are **fixed in `codex/v0.3-fixes`** (commits `101d7b0`, `15491e0` after rebase) and **verified by the lead against the fix build**. This document records the original results on `15959b7`. The fix build was not re-verified here. N5 was open at the time of this report; it was fixed afterwards in `6065846`. The re-run of the fixed build is under **Fix verification** at the end.
 
 This is a simulation and UI validation, not hardware verification. No robot, DDS or ZMQ connection was made.
 
@@ -79,7 +79,7 @@ Each repro is on `15959b7` (gateway on 8795, own data root). N1–N4 are fixed i
 - **Actual:** all presets start at `[0, 0]`, and the description records `start fixed (0, 0)`. Moving the start or switching arena never changes the base again in that page. On an arena where `[0, 0]` is blocked or out of bounds, this gives a misleading `Only 0 of N fit`. `reval-arena-extra-stale-base.png`
 - **Cause (lead):** a sticky `rg.baseStart`, introduced by the F13 fix.
 
-### N5 · Low · Report drops a scored trial when its latest identical re-run is an error (5.13) · **open**
+### N5 · Low · Report drops a scored trial when its latest identical re-run is an error (5.13) · fixed in `6065846`
 - **Repro:** shipped `report()` from `/js/runs.js`, rows: scenario s1 `goal_completion` at t=1, the same s1 `failed` (worker error) at t=2, and s2 `timeout` at t=3.
 - **Expected:** s1 counts once, from its scored run: n = 2, goals = 1, 1 error listed.
 - **Actual:** n = 1, goals = 0, errors = 1, repeats = 1. The goal disappears from the report, and the row is reported as "1 error run excluded" rather than a repeat of a scored scenario. Demonstrated on synthetic rows through the real function; no live repro was spent on it.
@@ -160,3 +160,37 @@ These are not product findings.
 
 - `~/research-data/g1-deploy-studio/validation-workbench-2/` (103 MB): 14 jobs, 4 suites, 14 arenas, 12 scenarios. It is separate from the user's workbench and can be deleted.
 - The 8795 gateway is stopped and no worker remains. No reference repository, service, environment, network setting or product file was modified. New and changed files: `docs/REVALIDATION.md` and `tools/browser/validation/` (`reval_*.mjs`, `probe_label_click.mjs`, and backward-compatible edits to `arena.mjs`, `replay.mjs`, `runs.mjs`, `robustness.mjs`). Nothing is committed.
+
+## Fix verification (lead, merged build `974b469`)
+
+The lead fixed every N-defect and three observations, then re-ran the instruments above unchanged, apart from two additions:
+- `runs.mjs` 5.13 now asserts the corrected counts;
+- `reval_report.mjs` no longer hard-codes 5.13 as FAIL.
+
+The gateway ran on port 8796 with a fresh data root (`validation-workbench-3`) and 13 owned CPU runs (bundle K2/ODE4 and WX-RF, 2–3 s). Evidence is in `~/research-data/g1-deploy-studio/evidence/revalidation-fixes-20261020/`; the re-run of two scripts is in its `rerun/` folder.
+
+| Fix | Commit | Instrument | Result |
+|---|---|---|---|
+| N1 · panel text fields no longer re-render on `change`; Save and Rehearse follow the saved state | `101d7b0` | 3.20, plus 3.13/3.17/3.18 | PASS |
+| N2 · random goals use the active preset's start; the previous base is reused only while the presets are unchanged since the last generation | `101d7b0`, `6065846` | 3.11g, 3.11d | PASS (3.11d had regressed on the first fix and was corrected in `6065846`) |
+| N3 · a suite start stops following the previous run; Cancel polls the suite; a run without a recording returns 404 *no replayable recording*, with no server path | `101d7b0`, `15491e0` | N3, 4.13, 8.5 | PASS; no unexpected page errors or HTTP failures in the whole pass |
+| N4 · Rehearse follows a `detached` run read-only, labels it DETACHED and opens the recording when the receipt appears | `15491e0` | 8.1c, 8.1d, 8.1e | PASS |
+| N5 · error runs are set aside before the latest-per-scenario dedupe | `6065846` | 5.13 (now asserting n 2, goals 1, errors 1, repeats 0) | PASS |
+| O2 · lost-poll callout clears on recovery; a successful save or run start hides an earlier error | `15491e0`, `974b469` | 8.1e (no `Failed to fetch` left) | PASS |
+| O3 · a cancel that lands after the completion receipt (written last by both workers) leaves the run completed, with a teardown warning | `974b469` | unit test `test_cancel_after_complete_receipt_keeps_the_run_completed` (deterministic window); browser races 4.10c-race-* still pass but do not hit the window | PASS |
+| O4 · `studio_service.sh restart` / `stop` refuse while runs or suites are active (`FORCE=1` overrides) | `6609cdf` | script logic; B.release-guard | PASS |
+| O6 · privileged (WX) runs report the MID-360 IMU as unavailable by design | `6065846` | unit test; replay 6.5 now passes without being superseded | PASS |
+| CSP · `script-src` allows the hashed importmap instead of `'unsafe-inline'` | `101d7b0` | unit test; `ui_acceptance.mjs` 15/15 under the new header | PASS |
+
+**Result.**
+- First pass: **115 PASS · 3 FAIL · 0 BLOCKED** across 118 checks, with 226 unit tests OK (2 skipped). Zero unexpected page errors and zero unexpected HTTP failures.
+- 6.3 and B.suite-refuses passed when their scripts were re-run, so both failures were timing:
+  - B.suite-refuses polled across the short gap between suite runs and sent no POST in that window. On the re-run, the stale tab was refused with *A simulation job is already active*, and six POSTs were refused (one with the suite-specific message). No job leaked.
+  - 6.3 samples the dock after 1.5 s of software-rendered playback.
+- **1.5 still fails (open, environment-limited).** The 2×/1× playback-rate ratio was 2.45 and then 2.54, against a bound of 1.6–2.4. 1× ran at 0.73–0.76× real time.
+  - The playback step is linear in speed, `dt = min(wall dt, 0.5 s) × speed`.
+  - The ratio leaves 2 only when SwiftShader frames take longer than the 0.5 s cap, which happened on this host at load average about 20, caused by other users' CPU jobs.
+  - This is O1. Hardware-accelerated rendering should not hit the cap, but that was not measured here, and the UI still does not show render-limited playback.
+
+This remains a simulation and UI validation. It is not hardware verification.
+

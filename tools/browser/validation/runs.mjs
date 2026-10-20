@@ -202,7 +202,9 @@ await R.check('5.13', 'Report dedupe when the latest identical re-run is an erro
                   { ...base, id: 'c', scenario_id: 's2', status: 'completed', outcome: 'timeout', started_unix_s: 3 }];
     const g = report(rows)[0]; return { n: g.n, goals: g.goals, errors: g.errors, repeats: g.repeats };
   });
-  return { ...res, note: 'A scenario whose latest identical re-run hit a worker error contributes 0 trials: its earlier scored run is dropped (runs.js report: latest-by-start dedupe happens before error exclusion).' };
+  // N5: errors are set aside before the latest-per-scenario dedupe, so s1 keeps its scored goal.
+  assert(res.n === 2 && res.goals === 1 && res.errors === 1 && res.repeats === 0, `report ${JSON.stringify(res)} (expected n 2, goals 1, errors 1, repeats 0)`);
+  return res;
 });
 
 await R.save({ runs: table.length });

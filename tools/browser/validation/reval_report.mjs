@@ -8,8 +8,11 @@ import { EVIDENCE } from './harness.mjs';
 const order = ['arena', 'reval-arena-extra', 'replay', 'reval-rehearse', 'reval-race', 'reval-restart', 'reval-restart-b', 'reval-stale-cancel', 'robustness-b', 'runs'];
 // replay.mjs 6.5 also matches the MID-360 IMU card; the targeted 6.5 in reval_rehearse.mjs covers the five perception channels.
 const superseded = { replay: new Set(['6.5']) };
-// Findings recorded as notes by the harness that are judged FAIL here (see REVALIDATION.md).
-const judged = { '5.13': { status: 'FAIL', note: 'N5: a scored trial is dropped when its latest identical re-run is an error (synthetic rows through runs.js report()).' } };
+// Findings recorded as notes by the harness that are judged here (see REVALIDATION.md).
+// 5.13 (N5) is now asserted by runs.mjs itself: n = 2, goals = 1, errors = 1 after the fix.
+const judged = process.env.JUDGE_N5 === '1'
+  ? { '5.13': { status: 'FAIL', note: 'N5: a scored trial is dropped when its latest identical re-run is an error (synthetic rows through runs.js report()).' } }
+  : {};
 const merged = new Map(), errors = [], http = [], sources = {};
 for (const name of order) {
   let d; try { d = JSON.parse(await readFile(path.join(EVIDENCE, `results-${name}.json`), 'utf8')); } catch { continue; }
