@@ -72,7 +72,19 @@ navigation: {
 }
 ```
 
-Frames keep the replay frame format. A real-robot frame without measured joints has `joints: null`; missing data is never filled with zeros.
+Real robot only (the robot link adds):
+
+```text
+  goal: {..., source: "node status", verification: verified | unverified | external, detail, status: fresh | stale}
+  goal_warning: string | null                 (red: do not press g)
+  pending_stand: string | null                (inferred: ARRIVED / STOPPED with the node's standing false)
+  memory: {origin_xy, half_extent_m: 6, basis: "ASSUMED: ..."}   (the planner memory's square, drawn on the map)
+  ready: [{id, label, status, detail}], ready_ok   (node_status, odometry, frame, still, goal_verified, goal_range, stand)
+  can_reasons: {goal, go, stand, end}         (why an action is not possible now)
+  still, frame_check, limits, walks, arrived, motion_s, phase_status
+```
+
+Frames keep the replay frame format and carry `navigation: {phase, walk, goal_xy}`. A real-robot frame without measured joints has `joints: null` and `qpos: null` (the robot is drawn as a LIO pose marker); its velocity is `linear_velocity_w`. Missing data is never filled with zeros.
 
 ## 4. Commands
 

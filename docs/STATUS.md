@@ -52,6 +52,7 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 10 | Software-WebGL playback is render-limited | Environment | Flagged in the UI (RENDER-LIMITED), and real time is kept; GPU browsers are unaffected |
 | 11 | node.py defers its stand next to obstacles 0.8–1.35 m tall: `CloudMemory` files their top edge as a low ceiling. When the plan runs out the robot holds its last pose (simulation: leaned on a pillar at 107 N, drifted 1 m in 70 s) | Deploy repo owner | Decide the fallback (stand after the plan ends, or ignore ceilings attached to a solid obstacle). Studio blocks goals there and explains the deferral ([NAVIGATE](NAVIGATE.md) §5) |
 | 12 | Robot link against the real node.py (L3 first, then the robot) | Operator | Run L3 (issue 1) and connect Navigate to it with `config/robot_link.json`; then the M5 safety review |
+| 14 | Robot link thresholds not measured on hardware: a standing G1 must read below 0.05 m/s and 0.05 rad/s on LIO for 0.5 s, and the node's position must match LIO within 0.1 m, before a goal is sent | Operator | Measure on the first M5 session; `limits.still_*` in `config/robot_link.json` |
 | 13 | Proposals U1–U3 for g1-student-deploy: absolute odom goals, a telemetry stream with the planner's live map, loopback-only binds | Deploy repo owner | Proposed in [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §7; Studio works without them |
 
 ## Decisions
