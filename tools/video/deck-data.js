@@ -42,7 +42,7 @@ window.DECK_DATA = {
            ['2', 'Studio shows it', 'floor · obstacles · overhead · unseen stays empty', '#7fb4ff'],
            ['3', 'Click a goal', "checked on the robot's map with node.py's rules", '#efbb70'],
            ['4', 'Stage it', 'only while standing · read back ≤ 5 cm', '#e6dfcf'],
-           ['5', 'Operator: Go', 'console g or remote F1 · never Studio', '#f08c85'],
+           ['5', 'Operator: Go', 'console g · never Studio', '#f08c85'],
            ['6', 'Watch, review', 'plan · path · health · replay · twin', '#5fd39b']]
           .map(([n, t, sub, c], i) => { const x = (i % 3) * 560, y = Math.floor(i / 3) * 270, t0 = 0.7 + i * 0.55;
             return `<g data-in="${t0}" data-a="rise"><rect x="${x}" y="${y}" width="510" height="220" rx="18" fill="#121821" stroke="${c}" stroke-width="2.4"/>

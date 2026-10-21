@@ -22,7 +22,7 @@ Advanced settings: planner budget (quick is about real time on an idle host and 
 3. Studio shows the LIO pose (labelled LIO ESTIMATE), the LiDAR and its reconstruction of the map within the planner's 12 × 12 m memory, the plan reference and every stream's age. Without the runner's joint stream the robot is drawn as a pose marker.
 4. **The node's goal** is always shown with where it came from: *verified by Studio*, *unverified* (a readback that did not match, or a console `n`) or *not from Studio* (the launch `--goal`). Anything but verified is a red warning: do not press g.
 5. Click a goal and **Send goal**. The gateway checks it on the map and refuses it if the check cannot run or blocks (fail closed). The robot link converts it to the node's *ahead, left* command only while the robot has been still for 0.5 s, the node's position matches LIO within 0.1 m, and nothing is in flight; then it reads the goal back from the node's status. A readback off by more than 5 cm is marked unverified: node.py has already applied it and has no command to clear it, so stage a new goal.
-6. **Before g on the console** lists what must hold: fresh status and odometry, frames that match, the robot still, the goal verified, inside the memory and the distance limit, no deferred stand. **The operator starts the walk on the console (`g`) or the remote (F1)**; Studio never sends Go. **Stand** asks the node to settle; the remote's D-up and Select, the gantry and the physical E-stop stay with people. A deferred stand (a low ceiling near the robot in the node's map) is shown in red.
+6. **Before g on the console** lists what must hold: fresh status and odometry, frames that match, the robot still, the goal verified, inside the memory and the distance limit, no deferred stand. **The operator starts the walk with `g` on the node console**; Studio never sends Go. (The remote's F1 only hands the SONIC runner to the node's stream: the console starts node.py with `--wait-go`, so the node walks only after `g`.) **Stand** asks the node to settle; the remote's D-up and Select, the gantry and the physical E-stop stay with people. A deferred stand (a low ceiling near the robot in the node's map) is shown in red.
 7. **End session** stops Studio's link only. The robot session opens in Replay. A link that a previous gateway started is shown as detached and End still stops it.
 
 **Course on a real floor without the link (Phase 0):** in Arena, pick a saved arena and preset, click **Build sheet**, build the course from the sheet, and run the console command it prints.
@@ -34,7 +34,7 @@ Advanced settings: planner budget (quick is about real time on an idle host and 
 | Process | `studio/nav_worker.py`, owned by the gateway: MuJoCo + SONIC ONNX + the frozen bundle planner on CPU, with the node's state machine | `studio/robot_link.py`, owned by the gateway: subscribes to the deploy PC's loopback streams and talks to `node.py`'s control socket |
 | World frame | `world` (simulator), the robot's estimate is labelled | `odom` (LIO): floor z = 0, yaw 0 = start heading |
 | Map | The planner's own `CloudMemory` | Studio's reconstruction from the LIO cloud until the node publishes its memory (U2) |
-| Go | The Go button | Never from Studio: `g` on the console or F1 on the remote |
+| Go | The Go button | Never from Studio: `g` on the node console |
 
 The gateway treats both the same way: a session directory with a live snapshot, a command inbox, a memory file and, at the end, a recording.
 

@@ -34,7 +34,7 @@ Four facts shape the design:
 | 3. See | Studio shows the robot, its LiDAR and the planner's map, live | New, Phase 1 |
 | 4. Pick | Click a goal on that map; Studio checks it before anything is sent | New, Phase 2 |
 | 5. Stage | Studio sends the goal to the node while the robot stands, then reads it back | New, Phase 2, needs approval |
-| 6. Go | The operator presses `g` on the console or F1 on the remote | Exists |
+| 6. Go | The operator presses `g` on the node console (the remote's F1 only hands the runner to the node's stream; the node waits for `g`) | Exists |
 | 7. Watch | Plan, path, distance to goal and stream health, live. Overrides stay physical (remote D-up, Select) | New, Phase 1 |
 | 8. Review | The run opens in replay next to its simulated rehearsal of the same course | New, Phase 0 |
 
@@ -141,7 +141,7 @@ Studio sends nothing to the robot in this phase. The build sheet removes guesswo
 - Studio then reads the goal back from the node's status and refuses it if it differs from the click by more than 5 cm.
 - U1 adds an absolute goal in `odom`, which removes this conversion.
 
-**Go.** In Phase 2, starting a walk stays the operator's action: `g` on the console or F1 on the remote. Studio shows "goal staged, waiting for the operator".
+**Go.** In Phase 2, starting a walk stays the operator's action: `g` on the node console. Studio shows "goal staged, waiting for the operator".
 
 ### 6.3 Later
 

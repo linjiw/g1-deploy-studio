@@ -111,7 +111,7 @@ function resolvePending() {
   else if (reply.cmd === 'stand' && navState()?.pending_stand) {
     nav.notice = { kind: 'warning', text: 'Stand requested; the node defers it here (see above).' };
   } else {
-    nav.notice = { kind: 'ok', text: { goal: isReal(nav.job) ? 'Goal staged on the node and read back. The operator starts the walk with g on the console or F1 on the remote.' : 'Goal staged. Press Go to walk there.', go: 'Walking.', stand: 'Settling to a stand.', takeover: 'Taken over: standing now.', end: 'Ending the session…', clear: 'Goal cleared.' }[reply.cmd] ?? 'Done.' };
+    nav.notice = { kind: 'ok', text: { goal: isReal(nav.job) ? 'Goal staged on the node and read back. The operator starts the walk with g on the node console.' : 'Goal staged. Press Go to walk there.', go: 'Walking.', stand: 'Settling to a stand.', takeover: 'Taken over: standing now.', end: 'Ending the session…', clear: 'Goal cleared.' }[reply.cmd] ?? 'Done.' };
     if (reply.cmd === 'goal') nav.pick = null;
   }
   emit('navigate:overlay');
@@ -264,7 +264,7 @@ function realRobotCard() {
   const configured = link?.configured;
   return `<section class="panel-section">
     <h4>Real robot</h4>
-    <p class="tiny">Studio runs on the deploy PC next to <code>node.py</code>, the SONIC runner and the LIO bridge, and reads their loopback streams. It can stage a goal and ask for a stand. <strong>It never starts a walk</strong>: Go stays with the operator (<code>g</code> on the console or F1 on the remote), and the remote and the physical E-stop stay in hand.</p>
+    <p class="tiny">Studio runs on the deploy PC next to <code>node.py</code>, the SONIC runner and the LIO bridge, and reads their loopback streams. It can stage a goal and ask for a stand. <strong>It never starts a walk</strong>: Go stays with the operator (<code>g</code> on the node console), and the remote and the physical E-stop stay in hand.</p>
     ${link === null ? '<p class="tiny">Checking the robot link configuration…</p>' : configured
       ? `<div class="nav-endpoints">${(link.endpoints ?? []).map(e => `<div><span>${escape(e.id)}</span><code>${escape(e.endpoint)}</code></div>`).join('')}</div>
          ${nav.notice ? `<div class="callout warning">${escape(nav.notice.text)}</div>` : ''}
@@ -276,7 +276,7 @@ function realRobotCard() {
   <section class="panel-section nav-steps"><h4>On the robot day</h4><ol class="tiny">
     <li>Calibrate the LiDAR mount and run <code>./g1 check</code>.</li>
     <li>Start the runner and the node with the console using LIO odometry (<code>./g1 robot … --odom zmq</code>) and the bridge with <code>--forward-cloud</code>, so the node and Studio share one frame and Studio sees the LiDAR. Then connect here.</li>
-    <li>Click a goal on the live map, send it, and press <code>g</code> / F1 when the area is clear.</li>
+    <li>Click a goal on the live map, send it, and press <code>g</code> on the console when the area is clear.</li>
     <li>Watch the plan and health. Remote D-up or Select at any surprise.</li></ol></section>`;
 }
 
@@ -335,7 +335,7 @@ function readyList(n) {
     stand: 'stand deferred' };
   const blocks = items.filter(r => r.status === 'block').map(r => FAILS[r.id] ?? r.label);
   return `<section class="panel-section nav-ready"><h4>Before g on the console</h4>
-    <div class="callout ${n.ready_ok ? 'ok' : 'danger'}">${n.ready_ok ? 'Ready: the operator may press g (or F1) once the area is clear.' : `Not ready, do not press g: ${escape(blocks.join('; ') || 'see below')}.`}</div>
+    <div class="callout ${n.ready_ok ? 'ok' : 'danger'}">${n.ready_ok ? 'Ready: the operator may press g on the console once the area is clear.' : `Not ready, do not press g: ${escape(blocks.join('; ') || 'see below')}.`}</div>
     <ul class="nav-checks">${items.map(r => `<li class="${r.status}" title="${escape(r.detail ?? '')}"><i>${CHECK_ICON[r.status] ?? '?'}</i><span><strong>${escape(r.label)}</strong>${r.detail ? `<small>${escape(r.detail)}</small>` : ''}</span></li>`).join('')}</ul></section>`;
 }
 
@@ -393,7 +393,7 @@ export function renderLive() {
         ${real ? '' : `<button id="nav-go" class="primary-action" ${can.go && !nav.busy ? '' : 'disabled'}>▶ Go</button>`}
         <button id="nav-stand" ${can.stand && !nav.busy ? '' : 'disabled'} title="Settle to a stand (not an emergency stop)">■ Stand</button>
       </div>
-      ${real ? `<div class="callout">${escape(n?.go_note ?? 'Start the walk with g on the console or F1 on the remote. Studio never sends Go to the robot.')}</div>` : ''}
+      ${real ? `<div class="callout">${escape(n?.go_note ?? 'Start the walk with g on the node console. Studio never sends Go to the robot.')}</div>` : ''}
       ${nav.notice ? `<div class="callout ${nav.notice.kind === 'ok' ? 'ok' : 'warning'}">${escape(nav.notice.text)}</div>` : ''}
     </section>
     ${real ? readyList(n) : ''}

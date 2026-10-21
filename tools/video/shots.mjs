@@ -332,7 +332,7 @@ export const SHOTS = {
       await h.caption('Navigate · before g on the console', 'Status, LIO, frames, a still robot, a verified goal in range, no deferred stand');
       await h.spot('.nav-ready', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
       await new Promise(resolve => spawn(py, [`${root}tools/fake_node.py`, '--press', 'go', '--control-connect', ep(F.control)], { cwd: root, stdio: 'ignore' }).on('exit', resolve));
-      await h.caption('Navigate · the operator pressed Go', 'Console g or remote F1 · Studio watches the plan, the LIO pose and every stream');
+      await h.caption('Navigate · the operator pressed Go', 'Console g · Studio watches the plan, the LIO pose and every stream');
       await timelapse(page, h, () => ['ARRIVED', 'STOPPED'].includes(window.__studio.navigate.job?.latest?.navigation?.phase), { maxFrames: 90, wallMs: 100 });
       await h.settle(400);
       await h.caption('Navigate · arrived', 'The walk is logged against the verified goal; Stand (not an emergency stop) settles a walk early');

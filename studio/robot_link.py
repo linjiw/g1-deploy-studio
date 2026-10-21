@@ -9,7 +9,7 @@ A separate process the gateway spawns; the HTTP server never imports ZMQ. On the
   a producer;
 * talks to node.py's control socket (REQ, lazy pirate: receive timeout, LINGER 0, a fresh socket after every
   timeout) with exactly three requests: `status` (2 Hz), `goal` and `stand`. It never sends `go` or `quit`, and it
-  has no motor, DDS or hand-command path. Go stays with the operator (console `g`, remote F1);
+  has no motor, DDS or hand-command path. Go stays with the operator (console `g`; the remote's F1 only hands the runner to the node's stream);
 * keeps the session directory of NAVIGATE.md §2: `latest.json` (10 Hz), `memory.npz` (Studio's display map from
   the LIO cloud, node dump format), commands from `inbox/NNNNNN.json` in sequence order, and on `end` or SIGTERM
   `session.json` (a replayable recording) and, last, `result.json`.
@@ -58,7 +58,7 @@ from .protocols import (ISAAC_JOINTS, MAX_PACKET_BYTES, MJ_JOINTS, ProtocolError
 from .recorder import BoundedRecorder, validate_endpoint
 
 ADAPTER = "studio.robot_link.v1"
-GO_NOTE = "Start the walk with g on the console or F1 on the remote. Studio never sends Go to the robot."
+GO_NOTE = "Start the walk with g on the node console. Studio never sends Go to the robot."
 MAP_LABEL = "Studio reconstruction from the LIO cloud · the planner does not use this map"
 # The only requests this process may put on the node's control socket. Checked before every send.
 NODE_COMMANDS = frozenset({"status", "goal", "stand"})
@@ -1632,7 +1632,7 @@ class RobotLink:
             "or noise thresholds). The planner does not use it.",
             "Phase, goal, standing and legs come from the node's status, polled at "
             f"{1 / self.limits['status_period_s']:.0f} Hz: transitions are observed up to one poll late.",
-            "Studio sent only status, goal and stand to the node. Go stayed with the operator (console g, remote F1).",
+            "Studio sent only status, goal and stand to the node. Go stayed with the operator (console g).",
             "Stream stamps carry no clock-domain tag; ages are receipt ages on this host, not end-to-end latency.",
         ]
         if self.fixture:
