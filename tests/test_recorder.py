@@ -23,6 +23,16 @@ class EndpointTests(unittest.TestCase):
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
                 validate_endpoint(endpoint)
 
+    def test_whitespace_and_scheme_case_are_refused(self):
+        # urlsplit would accept these (it lowercases the scheme and drops tabs/newlines); ZMQ would not connect.
+        for endpoint in ("tcp://127.0.0.1:5562\n", "tcp://127.0.0.1:5562\t", " tcp://127.0.0.1:5562",
+                         "tcp://127.0.0.1:5562 ", "tcp://127.0.0.1: 5562", "tcp://127.0.\n0.1:5562",
+                         "TCP://127.0.0.1:5562", "Tcp://127.0.0.1:5562", "tcp://127.0.0.1:5562\x00",
+                         "tcp://127.0.0.1:5562 ", "tcp://[::1]:5562\r", None, b"tcp://127.0.0.1:5562"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                validate_endpoint(endpoint)
+        self.assertEqual(validate_endpoint("tcp://127.0.0.1:5562"), "tcp://127.0.0.1:5562")
+
 
 class HealthTests(unittest.TestCase):
     def test_sequence_loss_restart_and_stale_disconnect_distinguished(self):
