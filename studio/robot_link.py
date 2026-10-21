@@ -21,6 +21,18 @@ refuses the whole config (exit 2, result.json says why).
 Labels: the pose is the LIO estimate (`estimated`, frame `odom`); joints are `measured` (g1_debug) or null; the
 reference is `commanded`; phase, goal and standing are what the node reports. Stale or missing data is shown as
 stale or unavailable, never as a healthy default.
+
+A goal is sent only when all of these hold (fail closed; the reason is recorded otherwise):
+  * the gateway checked it on a map (`check.ok is True`);
+  * it is within `max_goal_distance_m` of the robot and inside the node's memory as Studio assumes it
+    (`memory_half_extent_m` around the first odometry pose, minus `memory_edge_margin_m`);
+  * node status and odometry are fresh, the robot stands (WAIT, or ARRIVED/STOPPED with standing = true);
+  * the node's status `xy` matches the LIO pose (the node runs on the bridge's odometry, `--odom zmq`);
+  * the robot is still (speed and yaw rate below the limits for `still_for_s`, `phase_dwell_s` after a phase change);
+  * no other command is in flight.
+What the node then holds is tracked as `navigation.goal.verification`: verified (Studio's readback), unverified, or
+external (Studio staged nothing on this node). `navigation.ready` is the pre-Go checklist the operator reads before
+pressing g on the console.
 """
 from __future__ import annotations
 
@@ -72,22 +84,48 @@ LIMITS = {
     "readback_tolerance_m": (0.05, 0.001, 0.5),
     "publish_period_s": (0.1, 0.05, 0.2),
     "map_period_s": (0.5, 0.1, 5.0),
-    "map_half_extent_m": (12.0, 2.0, 50.0),
+    # The display map defaults to the planner memory's extent: node.py's CloudMemory is Flow sensor_map's
+    # SensorMapMemory, half_extent_m = 6.0 (12 x 12 m) around the node's first pose.
+    "map_half_extent_m": (6.0, 2.0, 30.0),
     "map_res_m": (0.05, 0.02, 0.5),
     "map_range_m": (4.0, 0.5, 30.0),
+    "memory_half_extent_m": (6.0, 2.0, 30.0),
+    "memory_edge_margin_m": (0.5, 0.0, 2.0),
+    "max_goal_distance_m": (3.0, 0.5, 12.0),  # the robot ladder's first walks are 2-3 m
+    "frame_tolerance_m": (0.10, 0.02, 1.0),  # |node status xy - LIO pose|
+    "still_speed_mps": (0.05, 0.01, 0.5),
+    "still_yaw_rate_rad_s": (0.05, 0.01, 0.5),
+    "still_for_s": (0.5, 0.1, 5.0),
+    "phase_dwell_s": (1.0, 0.0, 10.0),
     "cloud_points": (5000, 100, 20000),
     "map_points": (5000, 100, 50000),
     "frame_rate_hz": (50.0, 1.0, 50.0),
     "snapshot_period_s": (0.5, 0.1, 10.0),
     "max_frames": (20000, 100, 200000),  # reaching it halves the recorded rate, so a recording stays bounded
-    "max_snapshots": (300, 10, 5000),
+    "max_snapshots": (200, 10, 5000),
     "max_duration_s": (4 * 3600.0, 1.0, 24 * 3600.0),
 }
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_INBOX_BYTES = 64 * 1024
+# The gateway stops a job whose output exceeds 256 MiB: capture (<= 128 MiB, default 64) + recording (60) + the rest.
 MAX_SESSION_BYTES = 60 * 1024 * 1024
-DISPLAY_MODEL = Path("/home/linjiw/code/g1-student-deploy/sim/assets/g1_29dof.xml")
+CAPTURE_DEFAULT_BYTES = 64 * 1024 * 1024
+CAPTURE_MAX_BYTES = 128 * 1024 * 1024
+MAX_MAP_SIDE = 1201  # studio.goal_check.MAX_SIDE: the gateway's goal check loads at most this many cells per side
+# finalize: the gateway sends SIGKILL 3 s after SIGTERM (workbench._terminate). Threads get FINALIZE_JOIN_S together;
+# the capture writer drains in parallel with the recording until FINALIZE_CAPTURE_BY_S after the stop.
+FINALIZE_JOIN_S = 1.0
+FINALIZE_CAPTURE_BY_S = 2.5
+DEPLOY_ROOT = Path(os.environ.get("G1_STUDENT_DEPLOY") or "/home/linjiw/code/g1-student-deploy")
+DISPLAY_MODEL = DEPLOY_ROOT / "sim/assets/g1_29dof.xml"
 ISAAC_TO_MJ_INDEX = [ISAAC_JOINTS.index(name) for name in MJ_JOINTS]
+PENDING_STAND_NOTE = "inferred from node status: the node is deferring its stand (a low ceiling near the robot)"
+MEMORY_BASIS = ("ASSUMED: node.py centres its 12 x 12 m memory on its own first odometry pose; Studio assumes that is "
+                "the pose where it first received odometry (or where it saw the node restart). True when the node and "
+                "the LIO bridge started together with the robot still; the node does not publish its memory centre "
+                "yet (U2 would).")
+STILL_BASIS = ("max of the wire lin_w/ang_w and a finite difference of the odom pose over >= 0.2 s (the LIO bridge "
+               "sends ang_w = 0, so the yaw rate comes from the quaternion)")
 # Constant per-frame labels: on every live frame, once in a recording's metadata (frame_conventions).
 FRAME_LABELS = {
     "sequence_basis": "odometry receive order (no wire sequence)",
@@ -149,9 +187,10 @@ def load_config(document):
         if not _finite(value) or isinstance(value, bool) or not low <= value <= high:
             raise ConfigError(f"limit {name} must be a number in [{low}, {high}]")
         values[name] = float(value)
-    cells = (2 * values["map_half_extent_m"] / values["map_res_m"] + 1) ** 2
-    if cells > 4_000_000:
-        raise ConfigError("display map exceeds 4 million cells; use a coarser resolution or a smaller extent")
+    side = int(round(2 * values["map_half_extent_m"] / values["map_res_m"])) + 1
+    if side > MAX_MAP_SIDE:
+        raise ConfigError(f"display map would be {side} cells per side; the gateway's goal check loads at most "
+                          f"{MAX_MAP_SIDE}: use a coarser resolution or a smaller extent")
     label = document.get("label")
     if label is not None and (not isinstance(label, str) or len(label) > 120):
         raise ConfigError("label must be a string of at most 120 characters")
@@ -166,9 +205,10 @@ def load_config(document):
         if (not isinstance(topics, list) or not topics
                 or any(t not in ("odom", "cloud", "pose", "g1_debug") for t in topics)):
             raise ConfigError("capture topics must be a non-empty subset of odom, cloud, pose, g1_debug")
-        max_bytes = capture.get("max_bytes", 256 * 1024 * 1024)
-        if type(max_bytes) is not int or not 1024 <= max_bytes <= 1024 ** 3:
-            raise ConfigError("capture max_bytes must be an integer in [1 KiB, 1 GiB]")
+        max_bytes = capture.get("max_bytes", CAPTURE_DEFAULT_BYTES)
+        if type(max_bytes) is not int or not 1024 <= max_bytes <= CAPTURE_MAX_BYTES:
+            raise ConfigError("capture max_bytes must be an integer in [1 KiB, 128 MiB] (the gateway stops a job "
+                              "whose output exceeds 256 MiB)")
         capture = {"topics": list(dict.fromkeys(topics)), "max_bytes": max_bytes}
     return {"endpoints": clean, "limits": values, "label": label, "capture": capture, "session_id": session_id}
 
@@ -205,6 +245,23 @@ def _xy(value):
                                                                      for v in value)):
         return [float(value[0]), float(value[1])]
     return None
+
+
+def _wrap(angle):
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def _vec3(fields, name):
+    """A finite 3-vector from a decoded packed message, or None when absent or malformed (never zero-filled)."""
+    value = fields.get(name)
+    if value is None or getattr(value, "shape", None) != (3,):
+        return None
+    out = [float(v) for v in value]
+    return out if all(math.isfinite(v) for v in out) else None
+
+
+def _fmt_xy(xy):
+    return f"({xy[0]:.2f}, {xy[1]:.2f})"
 
 
 def atomic_write(path, text):
@@ -249,8 +306,8 @@ class DisplayMap:
     RULES = ("ground z < 0.05 m -> support 0; any return below 0.8 m in a cell -> support = max z of the cell; "
              "only returns in [0.8, 2.2) m -> ceiling = min z; >= 2.2 m ignored; 4 m range gate from the sensor origin")
 
-    def __init__(self, center_xy, *, half_extent_m=12.0, res=0.05, range_m=4.0, ground_tol_m=0.05,
-                 overhead_min_m=0.8, ceiling_max_m=2.2, face_push_m=0.035):
+    def __init__(self, center_xy, *, half_extent_m=6.0, res=0.05, range_m=4.0, ground_tol_m=0.05,
+                 overhead_min_m=0.8, ceiling_max_m=2.2, face_push_m=0.035, version=0):
         import numpy as np
 
         self.np = np
@@ -267,7 +324,8 @@ class DisplayMap:
         self.support = np.full((self.n, self.n), np.nan)
         self.ceiling = np.full((self.n, self.n), np.nan)
         self.lock = threading.Lock()
-        self.version, self.updated_s, self.observed = 0, None, 0
+        # `version` continues across a reset (a new map after an odometry reset), so map seq never goes back.
+        self.version, self.updated_s, self.observed = int(version), None, 0
         self.stats = {"clouds": 0, "points": 0, "used_points": 0, "ground_points": 0, "range_gated": 0,
                       "above_band": 0, "outside_grid": 0, "solid_cells": 0, "overhead_cells": 0, "ground_cells": 0}
 
@@ -423,11 +481,31 @@ class RobotLink:
         self.snapshot_thinning = 0
         self.snapshot_period = self.limits["snapshot_period_s"]
         self.last_frame_t = -math.inf
-        self.path_m, self.last_xy, self.odom_jumps = 0.0, None, 0
+        self.path_m, self.odom_jumps, self.odom_resets = 0.0, 0, 0
+        # Odometry history (receipt monotonic, x, y, yaw) for stillness and the node-frame comparison.
+        self.odom_hist = deque(maxlen=128)
+        self.motion = None  # {speed_mps, yaw_rate_rad_s, ...} from the newest odometry sample
+        self.still_since = None  # receipt time from which the robot has been continuously still
+        self.odom_disconnected = self.odom_reconnected = False
+        # The node's memory as Studio assumes it: {xy, t, reason}; set on the first odometry, moved on a reset.
+        self.memory_origin = None
+        self.memory_note = None
+        self.frame_check = None  # node status xy vs the LIO pose at the status time
+        # Node instances (a node restart resets what Studio staged on it).
+        self.node_instance, self.last_tick, self.last_status_phase = 1, None, None
+        self.first_status_plans = None
         self.commands = deque(maxlen=20)
         self.legs, self.leg_open = [], None
         self.phase_prev = None
-        self.last_goal_cmd = None  # the last applied goal command: {seq, xy, time_s}
+        self.phase_change_mono = None
+        # Goal provenance for the current node instance (main thread only).
+        self.goal_instance = None
+        self.goal_record = None  # the last Studio goal read back from the node: {seq, xy, readback, error_m, time_s}
+        self.staged_on_node = 0  # Studio goal commands put on the wire to this node instance
+        self.node_first_goal = None
+        self.goal_changed_outside = False
+        self.unverified_note = None
+        self.frame_nav = {"phase": None, "walk": None, "goal_xy": None}
         self.pending = None
         self.last_seq = 0
         self.stream_status = {}
@@ -481,12 +559,18 @@ class RobotLink:
             poller.register(monitor, zmq.POLLIN)
         try:
             while not self.stop_event.is_set():
-                for sock, _ in poller.poll(50):
+                # Transport events first: a reconnect must be known before the first message of a restarted bridge.
+                for sock, _ in sorted(poller.poll(50), key=lambda item: item[0] not in monitors):
                     if sock in monitors:
                         event = recv_monitor_message(sock)
                         state = "connected" if event["event"] == zmq.EVENT_CONNECTED else "disconnected"
                         with self.lock:
                             self.streams[monitors[sock]].transport = state
+                            if monitors[sock] == "odom":
+                                if state == "disconnected":
+                                    self.odom_disconnected = True
+                                elif self.odom_disconnected:  # the publisher came back: a new LIO frame
+                                    self.odom_disconnected, self.odom_reconnected = False, True
                         continue
                     sid, topic = sockets[sock]
                     batch = []
@@ -544,29 +628,10 @@ class RobotLink:
             _, f = decode_packed_topic(message, topic)
             pos = [float(v) for v in f["pos"]]
             quat = [float(v) for v in f["quat_wxyz"]]
-            lin = [float(v) for v in f["lin_w"]] if "lin_w" in f and f["lin_w"].shape == (3,) else None
+            if len(pos) != 3 or len(quat) != 4 or not all(map(math.isfinite, pos + quat)):
+                raise ValueError("odom pos/quat_wxyz must be 3 and 4 finite numbers")
             stamp = float(f["stamp"][0]) if "stamp" in f else None
-            with self.lock:
-                count = (self.odom["count"] + 1) if self.odom else 1
-                self.odom = {"pos": pos, "quat": quat, "lin": lin, "stamp": stamp, "t": t, "receipt": receipt,
-                             "count": count}
-                if self.last_xy is not None:
-                    step = math.dist(self.last_xy, pos[:2])
-                    if step > 1.0:  # a LIO reset or a restarted bridge: not walked distance
-                        self.odom_jumps += 1
-                        self.event("odom_jump", f"odometry jumped {step:.2f} m between two messages",
-                                   jump_m=step)
-                    else:
-                        self.path_m += step
-                self.last_xy = pos[:2]
-                if self.map is None and self.endpoints.get("cloud") is not None:
-                    lim = self.limits
-                    self.map = DisplayMap(pos[:2], half_extent_m=lim["map_half_extent_m"], res=lim["map_res_m"],
-                                          range_m=lim["map_range_m"])
-                    self.event("map", f"display map centred on the first odometry pose {pos[0]:.2f}, {pos[1]:.2f}")
-                if t - self.last_frame_t >= 0.75 * self.frame_period:  # 50 Hz input jitters around 20 ms
-                    self.last_frame_t = t
-                    self._record_frame()
+            self._on_odom(pos, quat, _vec3(f, "lin_w"), _vec3(f, "ang_w"), stamp, receipt)
         elif sid == "cloud":
             _, f = decode_packed_topic(message, topic)
             import numpy as np
@@ -612,6 +677,149 @@ class RobotLink:
         event["wire_base64"] = base64.b64encode(message).decode("ascii")
         self.capture.submit(event)
 
+    # ------------------------------------------------------------------ odometry: resets, stillness, memory centre
+    def _on_odom(self, pos, quat, lin, ang, stamp, receipt):
+        """One decoded odometry sample (receive thread). Detects LIO/bridge resets, tracks stillness, records frames."""
+        t = receipt - self.t0
+        yaw = yaw_of(quat)
+        with self.lock:
+            prev = self.odom
+            reset, step, gap = None, None, None
+            if prev is not None:
+                step, gap = math.dist(prev["pos"][:2], pos[:2]), receipt - prev["receipt"]
+                if self.odom_reconnected:
+                    reset = "the odometry transport reconnected after an outage (a restarted bridge starts a new frame)"
+                elif stamp is not None and prev["stamp"] is not None and stamp < prev["stamp"]:
+                    reset = f"the odometry stamp went backwards ({prev['stamp']:.3f} -> {stamp:.3f})"
+                elif gap < 0.2 and step > 0.5:
+                    reset = f"the odometry jumped {step:.2f} m in {gap:.3f} s"
+                if step > 0.5:  # never walked distance at 50 Hz
+                    self.odom_jumps += 1
+                    self.event("odom_jump", f"odometry jumped {step:.2f} m between two messages ({gap:.3f} s apart)",
+                               jump_m=step, gap_s=gap)
+                elif reset is None:
+                    self.path_m += step
+            self.odom_reconnected = False
+            self.odom = {"pos": pos, "quat": quat, "lin": lin, "ang": ang, "yaw": yaw, "stamp": stamp, "t": t,
+                         "receipt": receipt, "count": (prev["count"] + 1) if prev else 1}
+            if reset is not None:
+                self._reset_odometry(pos, t, reset, step)
+            elif self.memory_origin is None:
+                self._centre(pos, t, "first odometry pose")
+            self._update_still(receipt, pos, yaw, lin, ang, gap if reset is None else None)
+            self.odom_hist.append((receipt, pos[0], pos[1], yaw))
+            if t - self.last_frame_t >= 0.75 * self.frame_period:  # 50 Hz input jitters around 20 ms
+                self.last_frame_t = t
+                self._record_frame()
+
+    def _centre(self, pos, t, reason):
+        """Under self.lock: (re)centre the assumed node memory and, with a cloud, a new display map on `pos`."""
+        self.memory_origin = {"xy": [pos[0], pos[1]], "t": t, "reason": reason}
+        if self.endpoints.get("cloud") is None:
+            return
+        lim, old = self.limits, self.map
+        self.map = DisplayMap(pos[:2], half_extent_m=lim["map_half_extent_m"], res=lim["map_res_m"],
+                              range_m=lim["map_range_m"], version=0 if old is None else old.version + 1)
+        self.cloud_queue.clear()  # clouds received before a reset are in the old frame
+        self.event("map", f"display map centred on {pos[0]:.2f}, {pos[1]:.2f} ({reason})", center_xy=pos[:2],
+                   reset_count=self.odom_resets)
+
+    def _reset_odometry(self, pos, t, reason, step):
+        self.odom_resets += 1
+        self.odom_hist.clear()
+        self.still_since, self.frame_check = None, None
+        self.memory_note = ("re-centred after an odometry reset: a node started before the reset keeps its memory "
+                            "in the old frame")
+        self.event("odom_reset", f"odometry reset: {reason}; the display map and the assumed memory centre are "
+                   f"re-centred on {pos[0]:.2f}, {pos[1]:.2f}", reason=reason, jump_m=step, center_xy=pos[:2],
+                   reset_count=self.odom_resets)
+        self._centre(pos, t, f"odometry reset {self.odom_resets}: {reason}")
+
+    def _update_still(self, receipt, pos, yaw, lin, ang, gap):
+        lim = self.limits
+        ref = None
+        for sample in reversed(self.odom_hist):
+            if receipt - sample[0] >= 0.2:
+                ref = sample
+                break
+        fd_speed = fd_yaw = None
+        if ref is not None and receipt - ref[0] <= 0.6:
+            dt = receipt - ref[0]
+            fd_speed = math.hypot(pos[0] - ref[1], pos[1] - ref[2]) / dt
+            fd_yaw = abs(_wrap(yaw - ref[3])) / dt
+        wire_speed = math.hypot(lin[0], lin[1]) if lin else None
+        wire_yaw = abs(ang[2]) if ang else None
+        # The finite difference is required (fail closed): the wire may carry zeros it never measured.
+        speed = None if fd_speed is None else max(v for v in (fd_speed, wire_speed) if v is not None)
+        yaw_rate = None if fd_yaw is None else max(v for v in (fd_yaw, wire_yaw) if v is not None)
+        still = (speed is not None and speed < lim["still_speed_mps"] and yaw_rate < lim["still_yaw_rate_rad_s"]
+                 and (gap is None or gap <= 0.1))
+        if not still:
+            self.still_since = None
+        elif self.still_since is None:
+            self.still_since = receipt
+        self.motion = {"speed_mps": speed, "yaw_rate_rad_s": yaw_rate, "wire_speed_mps": wire_speed,
+                       "wire_yaw_rate_rad_s": wire_yaw, "fd_speed_mps": fd_speed, "fd_yaw_rate_rad_s": fd_yaw,
+                       "receipt": receipt}
+
+    def _still_state(self, mono):
+        """(ok, reason, held_s, motion): still for still_for_s, and phase_dwell_s since the node's last phase change.
+
+        `motion` is the snapshot the decision used (the receive thread replaces self.motion concurrently)."""
+        lim = self.limits
+        with self.lock:
+            motion, since, change = self.motion, self.still_since, self.phase_change_mono
+        if not self._odom_fresh():
+            return (False, "robot stillness unknown: odometry is " + ("unavailable" if self.odom is None else "stale"),
+                    None, motion)
+        if motion is None or motion["speed_mps"] is None:
+            return False, "robot stillness unknown: needs 0.2 s of continuous odometry", None, motion
+        if since is None:
+            return False, (f"the robot is moving ({motion['speed_mps']:.2f} m/s, {motion['yaw_rate_rad_s']:.2f} rad/s; "
+                           f"still means below {lim['still_speed_mps']:.2f} m/s and "
+                           f"{lim['still_yaw_rate_rad_s']:.2f} rad/s)"), 0.0, motion
+        held = max(0.0, mono - since)
+        if held < lim["still_for_s"]:
+            return False, f"the robot has been still for {held:.1f} s (needs {lim['still_for_s']:.1f} s)", held, motion
+        if change is None:
+            return False, "no node phase observed yet", held, motion
+        dwell = mono - change
+        if dwell < lim["phase_dwell_s"]:
+            return False, (f"the node phase changed to {self.phase_prev} {dwell:.1f} s ago "
+                           f"(needs {lim['phase_dwell_s']:.1f} s)"), held, motion
+        return True, None, held, motion
+
+    def _check_frame(self, status, sent_mono, receipt):
+        """Under self.lock (control thread): node status xy vs the LIO pose received closest to the status time."""
+        node_xy = _xy(status.get("xy"))
+        t_match = 0.5 * (sent_mono + receipt)
+        best = min(self.odom_hist, key=lambda s: abs(s[0] - t_match), default=None)
+        base = {"node_xy": node_xy, "status_mono": receipt, "tolerance_m": self.limits["frame_tolerance_m"]}
+        if node_xy is None or best is None or abs(best[0] - t_match) > 0.1:
+            self.frame_check = dict(base, ok=None, offset_m=None, odom_xy=None, match_dt_s=None,
+                                    detail="not compared: " + ("the node status has no xy" if node_xy is None
+                                                               else "no LIO odometry within 0.1 s of the status"))
+            return
+        speed = (self.motion or {}).get("speed_mps") or 0.0
+        tol = self.limits["frame_tolerance_m"] + 0.04 * speed  # the node's tick and the odom receipt differ by <= 40 ms
+        offset = math.dist(node_xy, best[1:3])
+        self.frame_check = dict(base, ok=offset <= tol, offset_m=offset, tolerance_m=tol, odom_xy=[best[1], best[2]],
+                                match_dt_s=best[0] - t_match, detail=None)
+
+    def _frame_state(self):
+        """(ok: True | False | None, reason, check). None: not compared on the newest status."""
+        with self.lock:
+            fc, status_mono = self.frame_check, self.status_mono
+        if fc is None or not self._status_fresh() or fc["status_mono"] != status_mono:
+            return None, "node frame not compared yet: needs fresh node status and LIO odometry", fc
+        if fc["ok"] is None:
+            return None, "node frame " + fc["detail"], fc
+        if not fc["ok"]:
+            return False, (f"the node's odometry is not the LIO bridge's: node status xy {_fmt_xy(fc['node_xy'])} is "
+                           f"{fc['offset_m']:.2f} m from the LIO pose {_fmt_xy(fc['odom_xy'])} (limit "
+                           f"{fc['tolerance_m']:.2f} m); start the node with --odom zmq on the bridge's odometry"), fc
+        return True, None, fc
+
     # ------------------------------------------------------------------ recording frames
     def _record_frame(self):
         """Called under self.lock on an odometry receipt, at most frame_rate_hz."""
@@ -641,6 +849,8 @@ class RobotLink:
                 reference.update(REFERENCE_LABELS)
         status = self.status if self._status_fresh() else None
         latency = status.get("latency_s") if status else None
+        # Node phase (null while its status is not fresh), the walk in progress and the node's goal during it.
+        navigation = dict(self.frame_nav, phase=self.frame_nav["phase"] if status else None)
         frame = {
             "time": odom["t"], "sequence": odom["count"],
             "source_time": odom["stamp"], "source_clock_domain": "unknown",
@@ -653,6 +863,7 @@ class RobotLink:
             "joint_velocity_rad_s": debug["velocity"] if joints else None,
             "qpos": list(odom["pos"]) + list(odom["quat"]) + list(joints) if joints else None,
             "reference": reference, "command": None, "plan": None, "imu": None, "perception_index": None,
+            "navigation": navigation,
             "health": {"state_age_ms": age * 1000, "reference_age_ms": None if pose is None else (now - pose["t"]) * 1000,
                        "planner_latency_ms": latency * 1000 if _finite(latency) else None,
                        "planner_latency_basis": "node status latency_s (reported)" if _finite(latency) else None,
@@ -812,6 +1023,7 @@ class RobotLink:
                     continue
                 period = 0.1 if self.fast_poll else self.limits["status_period_s"]
                 next_status = time.monotonic() + period
+                sent = time.monotonic()
                 reply, error = exchange({"cmd": "status"}, self.limits["request_timeout_s"])
                 receipt = time.monotonic()
                 stream = self.streams["node_status"]
@@ -831,13 +1043,29 @@ class RobotLink:
                         stream.last_valid = receipt
                         stream.last_error = None
                         stream.transport = "replying"
+                        self._note_instance(reply)
                         self.status, self.status_mono = reply, receipt
+                        self._check_frame(reply, sent, receipt)
                         if reply.get("fixture") is True and not self.fixture:
                             self.fixture = True
                             self.event("fixture", "the node reports fixture: true (tools/fake_node.py, not a robot)")
         finally:
             if sock is not None:
                 sock.close(0)
+
+    def _note_instance(self, reply):
+        """Under self.lock (control thread): a node tick that goes back, or BOOT after running, is a restarted node."""
+        tick, phase = reply.get("tick"), reply.get("phase")
+        restarted = ((type(tick) is int and type(self.last_tick) is int and tick < self.last_tick)
+                     or (phase == "BOOT" and self.last_status_phase not in (None, "BOOT")))
+        if restarted:
+            self.node_instance += 1
+            self.event("node_restart", f"the node restarted (status tick {self.last_tick} -> {tick}, phase {phase}); "
+                       "Studio's goal verification starts over", instance=self.node_instance)
+        if self.first_status_plans is None and type(reply.get("plans")) is int:
+            self.first_status_plans = reply["plans"]
+        self.last_tick = tick if type(tick) is int else None
+        self.last_status_phase = phase
 
     def _status_fresh(self):
         return self.status_mono is not None and time.monotonic() - self.status_mono <= 1.5
@@ -873,12 +1101,40 @@ class RobotLink:
                            + (", deferred stand pending)" if phase in ("ARRIVED", "STOPPED") else ")"))
             if not self._odom_fresh():
                 why.append("odometry is " + ("unavailable" if self.odom is None else "stale"))
+            else:
+                still, still_why, _, _ = self._still_state(time.monotonic())
+                if not still:
+                    why.append(still_why)
+            frame_ok, frame_why, _ = self._frame_state()
+            if frame_ok is not True and self._status_fresh() and self._odom_fresh():
+                why.append(frame_why)
             reasons["goal"] = "; ".join(why) or None
             if phase not in WALKING:
                 reasons["stand"] = f"stand applies while walking (PRESCAN or RUN); node phase {phase}"
         can = {"goal": reasons["goal"] is None, "go": False, "stand": reasons["stand"] is None,
                "end": not self.ended}
         return can, reasons
+
+    def _goal_range(self, goal_xy, robot_xy):
+        """(ok, reason): within max_goal_distance_m of the robot and inside the assumed node memory (square, margin)."""
+        lim = self.limits
+        with self.lock:
+            origin = self.memory_origin
+        if robot_xy is None:
+            return False, "the robot's position is unknown (no fresh odometry)"
+        dist = math.dist(goal_xy, robot_xy)
+        if dist > lim["max_goal_distance_m"]:
+            return False, (f"the goal is {dist:.2f} m from the robot; the limit is {lim['max_goal_distance_m']:.1f} m "
+                           "(limits.max_goal_distance_m)")
+        if origin is None:
+            return False, "the node's memory centre is unknown (no odometry received yet)"
+        reach = lim["memory_half_extent_m"] - lim["memory_edge_margin_m"]
+        off = max(abs(goal_xy[0] - origin["xy"][0]), abs(goal_xy[1] - origin["xy"][1]))
+        if off > reach:
+            return False, (f"the goal is outside the node's memory as Studio assumes it: {off:.2f} m from its centre "
+                           f"{_fmt_xy(origin['xy'])} along an axis, more than {lim['memory_half_extent_m']:.1f} m minus "
+                           f"a {lim['memory_edge_margin_m']:.1f} m margin")
+        return True, None
 
     # ------------------------------------------------------------------ commands
     def _record_command(self, seq, cmd, status, reason, **extra):
@@ -938,10 +1194,17 @@ class RobotLink:
                 return
             check = doc.get("check")
             if isinstance(check, dict) and check.get("ok") is False:
-                blocking = [c.get("label") or c.get("id") for c in check.get("checks", [])
+                checks = check.get("checks") if isinstance(check.get("checks"), list) else []
+                blocking = [c.get("label") or c.get("id") for c in checks
                             if isinstance(c, dict) and c.get("status") == "block"]
                 self._record_command(seq, "goal", "rejected", "the goal check blocks: " + (", ".join(map(str, blocking)) or "not ok"),
                                      xy=xy, **extra)
+                return
+            if not isinstance(check, dict) or check.get("ok") is not True:  # fail closed: unchecked never reaches the node
+                note = check.get("note") if isinstance(check, dict) and isinstance(check.get("note"), str) else None
+                note = note[len("not checked:"):].strip() if note and note.startswith("not checked:") else note
+                self._record_command(seq, "goal", "rejected", "not checked: the gateway could not check this goal on a map"
+                                     + (f" ({note[:200]})" if note else ""), xy=xy, **extra)
                 return
             can, reasons = self._can()
             if not can["goal"]:
@@ -949,6 +1212,10 @@ class RobotLink:
                 return
             with self.lock:
                 odom = dict(self.odom)
+            range_ok, range_why = self._goal_range(xy, odom["pos"][:2])
+            if not range_ok:
+                self._record_command(seq, "goal", "rejected", range_why, xy=xy, **extra)
+                return
             ahead, left = goal_to_ahead_left(odom["pos"][:2], odom["quat"], xy)
             conversion = {"from_xy": odom["pos"][:2], "from_yaw_rad": yaw_of(odom["quat"]), "ahead": ahead,
                           "left": left, "odom_age_s": time.monotonic() - odom["receipt"],
@@ -968,6 +1235,10 @@ class RobotLink:
                         "stage": "ack", "ack_mono": None, "reported": None}
         if cmd == "goal":
             self.fast_poll = True
+            # From here the node may hold this goal whatever the reply says: unverified until it is read back.
+            self.goal_record = None
+            self.staged_on_node += 1
+            self.unverified_note = f"Studio sent command {seq} and is reading it back from the node"
 
     def _advance_pending(self):
         p = self.pending
@@ -999,7 +1270,9 @@ class RobotLink:
                 if reported is not None:
                     dist = math.dist(reported, xy)
                     if dist <= tol:
-                        self.last_goal_cmd = {"seq": p["seq"], "xy": xy, "time_s": self.now()}
+                        self.goal_record = {"seq": p["seq"], "xy": xy, "readback": reported, "error_m": dist,
+                                            "time_s": self.now()}
+                        self.unverified_note = None
                         self._finish(p, "applied", f"read back from node status: goal [{reported[0]:.3f}, "
                                      f"{reported[1]:.3f}], {dist * 100:.1f} cm from the request",
                                      readback={"goal": reported, "error_m": dist, "tolerance_m": tol})
@@ -1008,26 +1281,102 @@ class RobotLink:
                 reported = p["reported"]
                 if reported is None:
                     why = (f"readback unavailable: no node status with a goal within "
-                           f"{self.limits['readback_timeout_s']:.1f} s of the command")
+                           f"{self.limits['readback_timeout_s']:.1f} s of the command; the node may hold this goal "
+                           "(UNVERIFIED): do not press g; stage a new goal")
                 else:
                     why = (f"readback mismatch: node reports goal [{reported[0]:.3f}, {reported[1]:.3f}], "
                            f"{math.dist(reported, xy):.3f} m from the requested [{xy[0]:.3f}, {xy[1]:.3f}] "
-                           f"(tolerance {tol * 100:.0f} cm); the node keeps the goal it reports")
+                           f"(tolerance {tol * 100:.0f} cm); the node keeps that goal, UNVERIFIED: do not press g; "
+                           "stage a new goal")
                 self._finish(p, "rejected", why, readback={"goal": reported, "tolerance_m": tol,
                                                          "error_m": None if reported is None else math.dist(reported, xy)})
 
     def _finish(self, p, status, reason, **more):
         self.pending = None
         self.fast_poll = False
+        if p["cmd"] == "goal" and status != "applied":
+            self.unverified_note = f"command {p['seq']} was sent but not verified: {reason}"[:300]
         extra = dict(p["extra"], sent=p["req"].message, **more)
         self._record_command(p["seq"], p["cmd"], status, reason, **extra)
 
-    # ------------------------------------------------------------------ phases and legs
-    def _track_phase(self):
+    # ------------------------------------------------------------------ goal provenance, phases and legs
+    def _track_status(self):
+        """Main thread, every loop: what the node holds (goal provenance), phase changes and legs."""
         with self.lock:
-            status, status_mono = self.status, self.status_mono
+            status, status_mono, instance = self.status, self.status_mono, self.node_instance
         if status is None:
             return
+        if instance != self.goal_instance:  # a (re)started node holds its own launch goal and memory
+            restarted = self.goal_instance is not None
+            self.goal_instance = instance
+            self.goal_record, self.node_first_goal, self.goal_changed_outside = None, None, False
+            self.staged_on_node = 1 if self.pending is not None and self.pending["cmd"] == "goal" else 0
+            self.unverified_note = None if not self.staged_on_node else self.unverified_note
+            if restarted:
+                with self.lock:
+                    odom = self.odom if self._odom_fresh() else None
+                    if odom is not None:
+                        self.memory_origin = {"xy": list(odom["pos"][:2]), "t": odom["t"],
+                                              "reason": f"node restart {instance - 1} (its memory starts over there)"}
+                        self.memory_note = "re-centred where Studio saw the node restart"
+        goal = _xy(status.get("goal"))
+        if goal is not None:
+            if self.node_first_goal is None:
+                self.node_first_goal = goal
+            elif math.dist(goal, self.node_first_goal) > 1e-4 and self.staged_on_node == 0 and self.pending is None:
+                self.goal_changed_outside = True
+            rec = self.goal_record
+            if rec is not None and self.pending is None and math.dist(goal, rec["readback"]) > 1e-4:
+                self.goal_record, self.goal_changed_outside = None, True
+                self.unverified_note = (f"the node's goal changed outside Studio after command {rec['seq']} "
+                                        f"(the console's n?): now {_fmt_xy(goal)}")
+                self.event("node_goal", f"the node's goal changed outside Studio to {_fmt_xy(goal)} "
+                           f"(it held Studio's command {rec['seq']})", goal_xy=goal, after_seq=rec["seq"])
+        self._track_phase(status, status_mono)
+        leg = self.leg_open
+        frame_nav = {"phase": status.get("phase") if isinstance(status.get("phase"), str) else None,
+                     "walk": leg["index"] if leg else None, "goal_xy": (leg["last_goal"] if leg else None)}
+        with self.lock:
+            self.frame_nav = frame_nav
+
+    def _goal_provenance(self, goal):
+        """(verification, detail, record) for the goal the node reports now."""
+        rec, tol = self.goal_record, self.limits["readback_tolerance_m"]
+        if rec is not None and math.dist(goal, rec["xy"]) <= tol:
+            return "verified", (f"read back from the node after Studio command {rec['seq']} "
+                                f"({rec['error_m'] * 100:.1f} cm from the request)"), rec
+        if self.staged_on_node == 0:
+            if self.node_first_goal is not None and not self.goal_changed_outside \
+                    and math.dist(goal, self.node_first_goal) <= 1e-4:
+                return "external", ("the node's launch goal (--goal; or one set on the console before Studio "
+                                    "connected): Studio has not staged a goal on this node"), None
+            return "external", "set outside Studio (the console's n?): Studio has not staged a goal on this node", None
+        return "unverified", self.unverified_note or "differs from the last goal Studio verified", None
+
+    def _goal_view(self, status, fresh):
+        """navigation.goal and navigation.goal_warning."""
+        goal = _xy(status.get("goal")) if status else None
+        if goal is None:
+            return None, None
+        verification, detail, rec = self._goal_provenance(goal)
+        view = {"xy": goal, "frame_id": "odom", "source": "node status", "verification": verification,
+                "detail": detail, "seq": rec["seq"] if rec else None, "staged_at_s": rec["time_s"] if rec else None,
+                "status": "fresh" if fresh else "stale"}
+        if verification == "verified":
+            warning = None
+        elif self.pending is not None and self.pending["cmd"] == "goal":
+            warning = (f"Studio is reading back command {self.pending['seq']} from the node; the node may already "
+                       f"hold it: wait before pressing g.")
+        elif verification == "unverified":
+            warning = f"The node holds an UNVERIFIED goal {_fmt_xy(goal)}: do not press g; stage a new goal from Studio."
+        elif detail.startswith("the node's launch goal"):
+            warning = f"The node holds its launch goal {_fmt_xy(goal)}, not one from Studio: stage a goal before pressing g."
+        else:
+            warning = (f"The node holds a goal set outside Studio {_fmt_xy(goal)} (the console's n?), not one from "
+                       "Studio: stage a goal before pressing g.")
+        return view, warning
+
+    def _track_phase(self, status, status_mono):
         phase = status.get("phase")
         t_status = status_mono - self.t0
         if self.leg_open is not None:  # the node accepts a new goal mid-walk (e.g. from the console's n key)
@@ -1041,6 +1390,8 @@ class RobotLink:
             return
         prev = self.phase_prev
         self.phase_prev = phase
+        with self.lock:
+            self.phase_change_mono = status_mono
         self.event("phase", f"node phase {prev} -> {phase}", **{"from": prev, "to": phase,
                    "observed_s": t_status, "basis": "node status poll"})
         if phase in WALKING and prev not in WALKING:
@@ -1053,22 +1404,24 @@ class RobotLink:
         with self.lock:
             odom_xy = list(self.odom["pos"][:2]) if self._odom_fresh() else None
             path = self.path_m
-        staged = self.last_goal_cmd
-        if staged is not None and self.legs and self.legs[-1]["go_at_s"] is not None \
-                and staged["time_s"] < self.legs[-1]["go_at_s"]:
-            staged = None  # staged before the previous leg: not this leg's staging
+        goal = _xy(status.get("goal"))
+        # Attributed to a Studio command only when the node walks to the goal Studio read back (within tolerance).
+        verification, detail, rec = self._goal_provenance(goal) if goal is not None else ("unverified", "no goal", None)
         plans = status.get("plans")
-        leg = {"index": len(self.legs), "goal_xy": _xy(status.get("goal")),
-               "staged_at_s": staged["time_s"] if staged else None, "staged_seq": staged["seq"] if staged else None,
+        leg = {"index": len(self.legs) + 1, "goal_xy": goal,
+               "goal_source": "studio" if verification == "verified" else verification, "goal_detail": detail,
+               "staged_at_s": rec["time_s"] if rec else None, "staged_seq": rec["seq"] if rec else None,
                "go_at_s": t_status,
                "go_basis": "first node status showing PRESCAN/RUN (polled); the operator's Go came up to one poll earlier",
                "start_xy": odom_xy, "end_s": None, "outcome": None, "duration_s": None, "path_m": None,
                "final_dist_m": None, "max_contact_n": None, "max_contact_basis": "not observable on the real robot",
                "plans": None, "retargets": 0, "in_progress": True,
-               "_path0": path, "_plans0": plans if type(plans) is int else None, "last_goal": _xy(status.get("goal"))}
+               "_path0": path, "_plans0": plans if type(plans) is int else None, "last_goal": goal}
         self.legs.append(leg)
         self.leg_open = leg
-        self.event("leg", f"leg {leg['index']} started (node phase {status.get('phase')})", leg=leg["index"])
+        self.event("leg", f"walk {leg['index']} started (node phase {status.get('phase')}, goal "
+                   f"{'unknown' if goal is None else _fmt_xy(goal)}, {leg['goal_source']})", leg=leg["index"],
+                   goal_source=leg["goal_source"], staged_seq=leg["staged_seq"])
 
     def _end_leg(self, status, t_status, outcome):
         leg = self.leg_open
@@ -1083,7 +1436,7 @@ class RobotLink:
                    plans=plans - leg["_plans0"] if type(plans) is int and leg["_plans0"] is not None else None,
                    in_progress=False)
         self.leg_open = None
-        self.event("leg", f"leg {leg['index']} ended: {outcome}", leg=leg["index"], outcome=outcome)
+        self.event("leg", f"walk {leg['index']} ended: {outcome}", leg=leg["index"], outcome=outcome)
 
     def _legs_public(self):
         out = []
@@ -1096,40 +1449,151 @@ class RobotLink:
             out.append(item)
         return out
 
+    def _summary(self, legs):
+        """walks / arrived / motion_s, as the simulated robot reports them; motion is observed by status polls."""
+        return {"walks": len(legs), "arrived": sum(1 for leg in legs if leg.get("outcome") == "arrived"),
+                "motion_s": float(sum(leg["duration_s"] or 0.0 for leg in legs)),
+                "motion_basis": "time with node phase PRESCAN/RUN, from node status polls (up to one poll late)"}
+
     # ------------------------------------------------------------------ snapshot
+    def _memory_view(self):
+        with self.lock:
+            origin, note = self.memory_origin, self.memory_note
+        if origin is None:
+            return None
+        plans = self.first_status_plans
+        if note is None and type(plans) is int and plans > 0:
+            note = (f"the node had already planned {plans} times when Studio first saw it: the robot may have moved "
+                    "since the node started, so its memory centre may differ")
+        return {"origin_xy": origin["xy"], "half_extent_m": self.limits["memory_half_extent_m"], "frame_id": "odom",
+                "basis": MEMORY_BASIS, "centred_s": origin["t"], "centred_on": origin["reason"], "note": note,
+                "edge_margin_m": self.limits["memory_edge_margin_m"], "reset_count": self.odom_resets}
+
+    def _ready(self, status, status_mono, fresh, odom, goal, memory, pending_stand, mono, frame_state, still_state):
+        """The pre-Go checklist (pass | warn | block), in the order the operator reads it before pressing g.
+
+        Every input is a snapshot taken once by _navigation, so the items agree with each other and with `can`."""
+        lim, items = self.limits, []
+
+        def add(item_id, label, state, detail):
+            items.append({"id": item_id, "label": label, "status": state, "detail": detail})
+
+        age = None if status_mono is None else mono - status_mono
+        if fresh:
+            add("node_status", "Node status fresh", "pass", f"{age:.2f} s old (limit 1.5 s)")
+        else:
+            add("node_status", "Node status fresh", "block",
+                "no node status yet" if age is None else f"node status is {age:.1f} s old (limit 1.5 s)")
+        odom_age = None if odom is None else mono - odom["receipt"]
+        odom_fresh = odom_age is not None and odom_age <= 0.1
+        if odom_fresh:
+            add("odometry", "LIO odometry fresh", "pass", f"{odom_age:.2f} s old (limit 0.1 s)")
+        else:
+            add("odometry", "LIO odometry fresh", "block",
+                "no odometry yet" if odom_age is None else f"odometry is {odom_age:.1f} s old (limit 0.1 s)")
+        frame_ok, frame_why, fc = frame_state
+        if frame_ok:
+            add("frame", "Node frame matches LIO", "pass", f"node status xy is {fc['offset_m'] * 100:.1f} cm from the "
+                f"LIO pose (limit {fc['tolerance_m'] * 100:.0f} cm)")
+        else:
+            add("frame", "Node frame matches LIO", "block", frame_why)
+        still, still_why, held, motion = still_state
+        if still:
+            add("still", "Robot still", "pass", f"still for {held:.1f} s ({motion['speed_mps']:.3f} m/s, "
+                f"{motion['yaw_rate_rad_s']:.3f} rad/s)")
+        else:
+            add("still", "Robot still", "block", still_why)
+        if goal is None:
+            add("goal_verified", "Node goal verified", "block", "the node reports no goal" if fresh
+                else "node status unavailable")
+        elif goal["verification"] == "verified":
+            add("goal_verified", "Node goal verified", "pass", f"{_fmt_xy(goal['xy'])}: {goal['detail']}")
+        else:
+            add("goal_verified", "Node goal verified", "block",
+                f"{goal['verification'].upper()} goal {_fmt_xy(goal['xy'])}: {goal['detail']}")
+        label = f"Goal inside the memory and within {lim['max_goal_distance_m']:.1f} m"
+        robot = list(odom["pos"][:2]) if odom_fresh else None
+        if goal is None or robot is None or memory is None:
+            add("goal_range", label, "block", "unknown: needs the node's goal, fresh odometry and the memory centre")
+        else:
+            ok, why = self._goal_range(goal["xy"], robot)
+            if not ok:
+                add("goal_range", label, "block", why)
+            else:
+                detail = (f"{math.dist(goal['xy'], robot):.2f} m from the robot; inside the assumed memory "
+                          f"(±{memory['half_extent_m']:.0f} m around {_fmt_xy(memory['origin_xy'])})")
+                add("goal_range", label, "warn" if memory["note"] else "pass",
+                    detail + (f"; {memory['note']}" if memory["note"] else ""))
+        phase = status.get("phase") if (status and fresh) else None
+        if pending_stand:
+            add("stand", "Stand not deferred", "block", f"{pending_stand}: the robot holds the plan's last pose until "
+                "it is clear. Take over with the remote's D-up only if nothing is directly above the robot")
+        elif phase is None:
+            add("stand", "Stand not deferred", "block", "unknown: node status unavailable")
+        elif phase in ("ARRIVED", "STOPPED"):
+            add("stand", "Stand not deferred", "pass", f"node phase {phase}, standing = true")
+        elif phase == "WAIT":
+            add("stand", "Stand not deferred", "pass", "node phase WAIT (no stand pending)")
+        elif phase in WALKING:
+            add("stand", "Stand not deferred", "warn", f"the robot is walking (node phase {phase})")
+        else:
+            add("stand", "Stand not deferred", "block", f"node phase {phase}")
+        return items
+
     def _navigation(self):
         mono = time.monotonic()
         with self.lock:
             streams = [s.snapshot(mono, self.t0) for s in self.streams.values()]
             status, status_mono = self.status, self.status_mono
             commands = list(self.commands)
+            odom = self.odom
         fresh = self._status_fresh()
+        frame_state = self._frame_state()
+        still_state = self._still_state(mono)
         phase = "ENDED" if self.ended else (status.get("phase") if status else None)
-        goal_xy = _xy(status.get("goal")) if status else None
-        staged = self.last_goal_cmd
-        goal = None
-        if goal_xy is not None:
-            matches = staged is not None and math.dist(staged["xy"], goal_xy) <= self.limits["readback_tolerance_m"]
-            goal = {"xy": goal_xy, "frame_id": "odom", "seq": staged["seq"] if matches else None,
-                    "staged_at_s": staged["time_s"] if matches else None, "source": "node status",
-                    "status": "fresh" if fresh else "stale"}
+        goal, goal_warning = self._goal_view(status, fresh)
+        pending_stand = (PENDING_STAND_NOTE if fresh and not self.ended and status.get("phase") in ("ARRIVED", "STOPPED")
+                         and status.get("standing") is False else None)
+        memory = self._memory_view()
         can, reasons = self._can()
         dist = status.get("goal_dist_m") if (status and fresh) else None
         display_map = self.map
         map_info = None
         if display_map is not None:
-            map_info = dict(display_map.describe(), file="memory.npz",
+            map_info = dict(display_map.describe(), file="memory.npz", reset_count=self.odom_resets,
                             file_seq=self.map_written if self.map_written >= 0 else None)
+        ready = self._ready(status, status_mono, fresh, odom, goal, memory, pending_stand, mono, frame_state,
+                            still_state)
+        legs = self._legs_public()
+        lim = self.limits
+        still_ok, still_why, held, motion = still_state
+        frame_check = None
+        if frame_state[2] is not None:
+            frame_check = {k: v for k, v in frame_state[2].items() if k != "status_mono"}
+            frame_check["current"] = frame_state[0] is not None  # compared on the newest node status
         return {
             "phase": phase, "phase_status": "ended" if self.ended else ("fresh" if fresh else ("stale" if status else "unavailable")),
             "phase_age_s": None if status_mono is None else mono - status_mono, "phase_source": "node status",
             "standing": self._standing(),
             "standing_basis": "node phase WAIT, or ARRIVED/STOPPED with node status standing = true",
-            "goal": goal, "goal_dist_m": dist if _finite(dist) else None, "goal_dist_source": "node status",
-            "legs": self._legs_public(), "commands": commands, "can": can, "can_reasons": reasons,
-            "go_note": GO_NOTE, "streams": streams, "map": map_info, "check": None,
+            "pending_stand": pending_stand,
+            "goal": goal, "goal_warning": goal_warning,
+            "goal_dist_m": dist if _finite(dist) else None, "goal_dist_source": "node status",
+            "legs": legs, **self._summary(legs), "commands": commands, "can": can, "can_reasons": reasons,
+            "ready": ready, "ready_ok": not any(item["status"] == "block" for item in ready),
+            "ready_basis": "pre-Go checklist: read it before pressing g on the console (Studio never sends Go)",
+            "go_note": GO_NOTE, "streams": streams, "map": map_info, "memory": memory, "check": None,
+            "limits": {k: lim[k] for k in ("max_goal_distance_m", "memory_half_extent_m", "memory_edge_margin_m",
+                                           "frame_tolerance_m", "still_speed_mps", "still_yaw_rate_rad_s",
+                                           "still_for_s", "phase_dwell_s", "readback_tolerance_m")},
+            "still": {"ok": still_ok, "reason": still_why, "held_s": held,
+                      "speed_mps": None if motion is None else motion["speed_mps"],
+                      "yaw_rate_rad_s": None if motion is None else motion["yaw_rate_rad_s"],
+                      "classification": "estimated", "basis": STILL_BASIS},
+            "frame_check": frame_check, "odom_resets": self.odom_resets,
             "node": {"status": status, "age_s": None if status_mono is None else mono - status_mono,
-                     "fresh": fresh, "fixture": self.fixture, "classification": "reported by the node"},
+                     "fresh": fresh, "fixture": self.fixture, "instance": self.node_instance,
+                     "classification": "reported by the node"},
             "pending_command": None if self.pending is None else {"seq": self.pending["seq"], "cmd": self.pending["cmd"],
                                                                   "stage": self.pending["stage"]},
         }
@@ -1255,7 +1719,8 @@ class RobotLink:
 
         self.ctx = zmq.Context()
         if self.cfg.get("capture"):
-            self.capture = BoundedRecorder(self.output / "capture.jsonl", queue_size=256,
+            # A small queue: clouds are large, and close() drains it within finalize's budget.
+            self.capture = BoundedRecorder(self.output / "capture.jsonl", queue_size=64,
                                            max_bytes=self.cfg["capture"]["max_bytes"])
             self.capture.submit({"record": "capture_start", "schema_version": 1, "session_id": self.session_id,
                                  "receipt_timestamp": self.t0, "receipt_clock": "collector_host_monotonic",
@@ -1275,9 +1740,9 @@ class RobotLink:
         try:
             while not self.stop_event.is_set():
                 now = self.now()
+                self._track_status()
                 self._poll_inbox()
                 self._advance_pending()
-                self._track_phase()
                 if now >= next_publish:
                     self._publish()
                     next_publish = now + lim["publish_period_s"]
@@ -1296,12 +1761,16 @@ class RobotLink:
         return self.finalize(error)
 
     def finalize(self, error=None):
+        """Write the recording and the receipt, fast: the gateway sends SIGKILL a few seconds after SIGTERM."""
+        started = time.monotonic()
         self.stop_event.set()
-        for thread in self.threads:
-            thread.join(timeout=max(3.0, self.limits["command_timeout_s"] + 1.0))
+        deadline = started + FINALIZE_JOIN_S
+        for thread in self.threads:  # one shared budget; a thread blocked in a socket call is left behind
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        stuck = [thread.name for thread in self.threads if thread.is_alive()]
         if self.pending is not None:
             self._finish(self.pending, "rejected", "the link ended before the node confirmed the command")
-        self._track_phase()
+        self._track_status()
         if self.leg_open is not None:
             self._end_leg(self.status if self._status_fresh() else None, self.now(), "link ended during the leg")
         self.ended = True
@@ -1310,28 +1779,41 @@ class RobotLink:
             self._write_map(force=True)
         except OSError as exc:
             error = error or f"memory.npz: {exc}"
-        capture_stats = None
-        if self.capture is not None:
+        capture_stats, capture_thread = {}, None
+        if self.capture is not None:  # drained in parallel with the session encoding
             self.capture.submit({"record": "capture_end", "receipt_timestamp": time.monotonic(),
                                  "duration_s": self.now(), "stopped_by": self.stopped_by})
-            capture_stats = self.capture.close()
+            capture_thread = threading.Thread(target=lambda: capture_stats.update(self.capture.close()),
+                                              name="link-capture-close", daemon=True)
+            capture_thread.start()
         session = self._session()
         complete = bool(session["frames"])
         try:
-            atomic_write(self.output / "session.json", self._bounded(session))
+            body, kept = self._encode_session(session)
+            atomic_write(self.output / "session.json", body)
         except (OSError, ValueError) as exc:
-            error, complete = error or f"session.json: {exc}", False
+            error, complete, kept = error or f"session.json: {exc}", False, {"frames": 0, "snapshots": 0}
+        if capture_thread is not None:  # the recording is written; the capture tail must not cost the receipt
+            capture_thread.join(timeout=max(0.5, FINALIZE_CAPTURE_BY_S - (time.monotonic() - started)))
+            if capture_thread.is_alive():
+                capture_stats = {"writer_error": "capture writer was still flushing when the link wrote its receipt; "
+                                                 "capture.jsonl may lack its capture_end record"}
         try:
             self._publish(status="ended")
         except (OSError, ValueError):
             pass
-        if not any(thread.is_alive() for thread in self.threads):
-            self.ctx.term()  # a stuck socket thread would block term(); the process exit reclaims it instead
-        report = {"stopped_by": self.stopped_by, "duration_s": self.now(), "frames": len(session["frames"]),
-                  "snapshots": len(session["perception"].get("frames", [])), "legs": session["navigation"]["legs"],
+        ctx = getattr(self, "ctx", None)
+        if ctx is not None and not stuck and not any(thread.is_alive() for thread in self.threads):
+            ctx.term()  # a stuck socket thread would block term(); the process exit reclaims it instead
+        legs = session["navigation"]["legs"]
+        report = {"stopped_by": self.stopped_by, "duration_s": self.now(), **self._summary(legs), "legs": legs,
+                  "frames": kept["frames"], "snapshots": kept["snapshots"],
                   "commands": [e["command"] for e in session["events"] if e["type"] == "command"],
                   "streams": session["navigation"]["streams"], "odom_jumps": self.odom_jumps,
-                  "fixture": self.fixture, "capture": capture_stats, "thread_errors": list(self.thread_errors)}
+                  "odom_resets": self.odom_resets, "fixture": self.fixture,
+                  "capture": capture_stats if self.capture is not None else None,
+                  "thread_errors": list(self.thread_errors), "threads_left_running": stuck,
+                  "finalize_s": time.monotonic() - started}
         if not complete and error is None:
             error = "no odometry was received: the recording has no frames to replay"
         result = {"schema_version": 1, "status": "completed" if complete and error is None else "failed",
@@ -1346,10 +1828,6 @@ class RobotLink:
         with self.lock:
             frames = list(self.frames)
             events = sorted(self.events, key=lambda e: e["time"])
-        times = [s["time"] for s in self.snapshots]
-        for frame in frames:
-            k = bisect.bisect_right(times, frame["time"]) - 1
-            frame["perception_index"] = k if k >= 0 else None
         last = self.snapshots[-1] if self.snapshots else {"available": False, "reason": "No perception recorded"}
         return {"schema_version": 1, "kind": "navigation", "robot": "real",
                 "metadata": dict(self._metadata("replay"), recording_complete=bool(frames),
@@ -1359,30 +1837,70 @@ class RobotLink:
                 "perception": dict(last, kind="time-series", frames=list(self.snapshots), synchronized=False),
                 "environment": {"boxes": [], "classification": "unavailable",
                                 "note": "No ground-truth geometry on a real robot; the display map is an estimate."},
-                "graph": self._graph(nav["streams"]), "trajectory": [f["position"] for f in frames],
-                "navigation": nav}
+                "graph": self._graph(nav["streams"]), "trajectory": None, "navigation": nav}
 
-    def _bounded(self, session):
-        body = json.dumps(session, allow_nan=False, separators=(",", ":"))
-        while len(body) > MAX_SESSION_BYTES:
-            snaps = session["perception"]["frames"]
-            if len(snaps) > 10:
-                session["perception"]["frames"] = snaps[::2]
-                self.snapshot_thinning += 1
-                times = [s["time"] for s in session["perception"]["frames"]]
-                for frame in session["frames"]:
-                    k = bisect.bisect_right(times, frame["time"]) - 1
-                    frame["perception_index"] = k if k >= 0 else None
-            elif len(session["frames"]) > 100:
-                session["frames"] = session["frames"][::2]
-                session["trajectory"] = [f["position"] for f in session["frames"]]
-                self.frame_thinning += 1
-            else:
+    def _encode_session(self, session):
+        """The recording as JSON within MAX_SESSION_BYTES, at a cost bounded by that size (not by the session length).
+
+        Per-item sizes are estimated from a sample; only the snapshots and frames that are kept are serialized, one by
+        one, and a stride (a power of two) that turns out too small is doubled on the strings already made, so a
+        long session is never re-encoded as a whole. Snapshots are thinned first (to at least 10; they keep what the
+        frames leave, and at least 30 % of the budget), then frames (to at least 100). Returns (body, kept counts)."""
+        def dumps(value):
+            return json.dumps(value, allow_nan=False, separators=(",", ":"))
+
+        def mean_size(items, extra=1):
+            sample = items[::max(1, len(items) // 100)]
+            return sum(len(dumps(item)) + extra for item in sample) / len(sample) if sample else 0.0
+
+        frames, snaps = session["frames"], session["perception"]["frames"]
+        marks = {key: f"@@{key}-{uuid.uuid4().hex}@@" for key in ("frames", "snapshots", "trajectory")}
+        session["frames"], session["perception"]["frames"] = marks["frames"], marks["snapshots"]
+        session["trajectory"] = marks["trajectory"]
+        budget = MAX_SESSION_BYTES - len(dumps(session)) - 8192  # the stride notes added below are small
+        if budget <= 0:
+            raise ValueError("recording exceeds the session size bound (events and metadata alone)")
+        per_frame = mean_size(frames, 41) if frames else 0.0  # + its trajectory entry
+        per_snap = mean_size(snaps)
+        frames_est = per_frame * len(frames)
+        snap_target = budget if frames_est + per_snap * len(snaps) <= budget else max(budget - frames_est, 0.3 * budget)
+        s = 1
+        while per_snap * len(snaps[::s]) > snap_target and len(snaps[::2 * s]) >= 10:
+            s *= 2
+        kept_snaps = snaps[::s]
+        snap_strs = [dumps(snap) for snap in kept_snaps]
+        snap_bytes = sum(len(x) + 1 for x in snap_strs)
+        while (snap_bytes > snap_target or budget - snap_bytes < min(frames_est, 100 * per_frame)) \
+                and len(snap_strs) >= 20:  # the estimate was low
+            kept_snaps, snap_strs, s = kept_snaps[::2], snap_strs[::2], 2 * s
+            snap_bytes = sum(len(x) + 1 for x in snap_strs)
+        frame_budget = budget - snap_bytes
+        f = 1
+        while per_frame * len(frames[::f]) > frame_budget and len(frames[::2 * f]) >= 100:
+            f *= 2
+        kept = frames[::f]
+        times = [snap["time"] for snap in kept_snaps]
+        for frame in kept:
+            k = bisect.bisect_right(times, frame["time"]) - 1
+            frame["perception_index"] = k if k >= 0 else None
+        frame_strs = [dumps(frame) for frame in kept]
+        while sum(len(x) + 41 for x in frame_strs) > frame_budget:  # the estimate was low: halve, no re-encoding
+            if len(frame_strs) < 200:
                 raise ValueError("recording exceeds the session size bound")
-            session["metadata"]["frame_decimation"].update(thinning_passes=self.frame_thinning,
-                                                           snapshot_thinning_passes=self.snapshot_thinning)
-            body = json.dumps(session, allow_nan=False, separators=(",", ":"))
-        return body
+            frame_strs, kept, f = frame_strs[::2], kept[::2], 2 * f
+        self.frame_thinning += int(math.log2(f))
+        self.snapshot_thinning += int(math.log2(s))
+        session["metadata"]["frame_decimation"].update(
+            thinning_passes=self.frame_thinning, snapshot_thinning_passes=self.snapshot_thinning,
+            session_frame_stride=f, session_snapshot_stride=s,
+            session_bound_note=f"recording bounded to {MAX_SESSION_BYTES // (1024 * 1024)} MiB")
+        body = dumps(session)
+        body = body.replace(f'"{marks["snapshots"]}"', "[" + ",".join(snap_strs) + "]", 1)
+        body = body.replace(f'"{marks["trajectory"]}"', dumps([frame["position"] for frame in kept]), 1)
+        body = body.replace(f'"{marks["frames"]}"', "[" + ",".join(frame_strs) + "]", 1)
+        session["frames"], session["perception"]["frames"] = kept, kept_snaps
+        session["trajectory"] = [frame["position"] for frame in kept]
+        return body, {"frames": len(kept), "snapshots": len(kept_snaps)}
 
 
 def main(argv=None):

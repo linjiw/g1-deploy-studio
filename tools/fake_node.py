@@ -16,7 +16,18 @@ demonstrated without a robot. Every endpoint is a literal loopback address given
 Motion is a kinematic unicycle (at most --speed m/s): WAIT (until `go`, as the console's --wait-go) -> PRESCAN
 (0.5 s) -> RUN -> ARRIVED within --goal-radius; `stand` -> STOPPED. There is no planner, no physics, no obstacle
 avoidance, no robot body in the cloud and no DDS. The odom frame is the start pose (floor z = 0, yaw 0 = start
-heading), as the bridge defines it; the arena is in Studio's world frame.
+heading), as the bridge defines it; the arena is in Studio's world frame. Like the bridge, `odom` carries ang_w = 0.
+
+Status semantics are node.py's: `standing` is true only in ARRIVED/STOPPED with no deferred stand; a `go` in
+ARRIVED/STOPPED walks again and drops a deferred stand; `stand` applies in PRESCAN/RUN.
+
+Fault and hazard injection (for Studio's tests and UI):
+  --goal-error-m DX DY   every goal the control socket applies is offset (a readback mismatch)
+  --odom-offset DX DY    the node's own odometry differs from the bridge's: status `xy` and `goal` are reported in a
+                         frame shifted by (DX, DY), as a node started with `--odom leg` would (Studio must refuse goals)
+  --defer-stand S        every stand issued while walking (arrival or `stand`) is deferred for S s, as node.py defers it
+                         under a low ceiling: a fake overhead box (underside 1.25 m) appears 0.5 m ahead of the robot in
+                         the cloud, the robot holds its pose, `standing` stays false, then the stand is issued
 
   .venv/bin/python tools/fake_node.py --odom-bind tcp://127.0.0.1:5561 --pose-bind tcp://127.0.0.1:5556 \
       --debug-bind tcp://127.0.0.1:5557 --control-bind tcp://127.0.0.1:5562 [--arena arena.json] [--goal 3 0]
@@ -30,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import signal
 import sys
@@ -37,7 +49,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOY = Path("/home/linjiw/code/g1-student-deploy")
+DEPLOY = Path(os.environ.get("G1_STUDENT_DEPLOY") or "/home/linjiw/code/g1-student-deploy")
 DT = 0.02
 BANNER = ("fake_node: PROTOCOL FIXTURE - not a robot, not g1deploy/node.py. Loopback only. "
           "Kinematic unicycle; no planner, physics, robot body or DDS.")
@@ -175,10 +187,13 @@ class FakeNode:
         self.rep.bind(args.control_bind)
         # Robot state in the odom frame (the start pose is the origin).
         self.x, self.y, self.yaw, self.v = 0.0, 0.0, 0.0, 0.0
-        self.goal = np.array([args.goal[0], args.goal[1]], dtype=float)  # --goal-frame start
+        self.goal = np.array([args.goal[0], args.goal[1]], dtype=float)  # --goal-frame start (bridge odom frame)
         self.goal_error = np.array(args.goal_error_m, dtype=float)
+        self.odom_offset = np.array(args.odom_offset, dtype=float)  # the node's frame = bridge odom + this offset
         self.tick, self.phase, self.go_event = 0, "WAIT", False
         self.prescan_until = None
+        self.active = False  # node.py's self.active: a plan (or a stand chunk) is playing
+        self.pending_stand, self.defer_until = None, None
         self.commands, self.status = [], {"phase": "BOOT"}
         self.stop_flag = threading.Event()
         self.plans, self.clouds, self.last_cloud, self.debug_index = 0, 0, -1.0, 0
@@ -220,43 +235,57 @@ class FakeNode:
             emit("command", cmd=cmd, args={k: v for k, v in c.items() if k != "cmd"})
             if cmd == "go":
                 self.go_event = True
-                if self.phase in ("ARRIVED", "STOPPED"):
+                if self.phase in ("ARRIVED", "STOPPED"):  # walk again from the stand
                     self.phase, self.prescan_until = "PRESCAN", self.tick + int(self.args.prescan_s / DT)
+                    self.pending_stand, self.defer_until = None, None
                     emit("prescan")
             elif cmd == "stand" and self.phase in ("RUN", "PRESCAN"):
                 self.phase = "STOPPED"
-                self.stand("operator")
+                if self.active:
+                    self.stand("operator")
             elif cmd == "goal":
                 yaw = self.yaw
                 ahead, left = float(c.get("ahead", 0.0)), float(c.get("left", 0.0))
                 self.goal = np.array([self.x, self.y]) + np.array([math.cos(yaw) * ahead - math.sin(yaw) * left,
                                                                    math.sin(yaw) * ahead + math.cos(yaw) * left])
                 self.goal = self.goal + self.goal_error  # fault injection for readback tests (default 0)
-                emit("goal", frame="current", goal_odom=self.goal.tolist())
+                emit("goal", frame="current", goal_odom=(self.goal + self.odom_offset).tolist())
             elif cmd == "quit":
-                if self.phase == "RUN":
+                if self.active and self.phase == "RUN":
                     self.stand("quit")
                 return True
         return False
 
     # -- motion and streams ---------------------------------------------------------------------
     def stand(self, reason):
-        self.v = 0.0
+        """node.py stand(): deferred (--defer-stand) while a plan plays, else the settle chunk is streamed."""
+        self.v = 0.0  # the fixture holds its pose at once (node.py plays the current plan out first)
+        if self.args.defer_stand > 0 and self.pending_stand is None and self.defer_until is None and self.active:
+            self.pending_stand = reason
+            self.defer_until = self.tick + int(self.args.defer_stand / DT)
+            heading = self.yaw + self.start[2]
+            wx, wy = self.world(self.x, self.y)
+            self.fan.boxes.append({"center_xy": [wx + 0.5 * math.cos(heading), wy + 0.5 * math.sin(heading)],
+                                   "half_xy": [0.3, 0.3], "yaw": heading, "z_bottom": 1.25, "z_top": 1.4})
+            emit("stand_deferred", reason=reason, tick=self.tick, seconds=self.args.defer_stand)
+            return
+        self.pending_stand, self.defer_until = None, None
         self.send_pose(stand=True)
         emit("stand", reason=reason, tick=self.tick)
 
     def send_pose(self, stand=False):
+        np, n = self.np, 60
+        self.active = True  # a plan (or the stand chunk) now plays, as node.py's self.active
+        if not stand:
+            self.plans += 1
         if self.pub_pose is None:
             return
-        np, n = self.np, 60
         ticks = np.arange(self.tick, self.tick + n, dtype=np.int64)
         q = np.repeat(np.asarray(self.C.DEFAULT_MJ, dtype=np.float32)[None], n, 0)
         quat = np.repeat(np.asarray(quat_yaw(self.yaw), dtype=np.float32)[None], n, 0)
         msg = self.zs.pose_message(ticks, q, np.zeros_like(q), quat, timestamp=time.monotonic())
         self.pub_pose.send(msg)
         self.stream_end = int(ticks[-1])
-        if not stand:
-            self.plans += 1
 
     def world(self, x, y):
         sx, sy, syaw = self.start
@@ -314,13 +343,14 @@ class FakeNode:
     def update_status(self):
         np = self.np
         cloud_age = time.monotonic() - self.last_cloud if self.last_cloud > 0 else 1e9
-        self.status = dict(phase=self.phase, tick=self.tick, goal=self.goal.tolist(),
+        node_xy = np.array([self.x, self.y]) + self.odom_offset  # the node's own odometry frame
+        self.status = dict(phase=self.phase, tick=self.tick, goal=(self.goal + self.odom_offset).tolist(),
                            goal_dist_m=float(np.linalg.norm([self.x - self.goal[0], self.y - self.goal[1]])),
-                           pelvis_z_m=self.args.pelvis_z, tilt_rad=0.0, xy=[self.x, self.y], plans=self.plans,
+                           pelvis_z_m=self.args.pelvis_z, tilt_rad=0.0, xy=node_xy.tolist(), plans=self.plans,
                            latency_s=0.05 if self.plans else None, latency_est_s=0.3, cloud_age_s=float(cloud_age),
                            lidar_frames=self.clouds, overruns=0, rule="fixture" if self.plans else None,
                            stream_ahead=int(self.stream_end - self.tick) if self.stream_end >= 0 else None,
-                           standing=self.phase in ("ARRIVED", "STOPPED"), fixture=True)
+                           standing=self.pending_stand is None and self.phase in ("ARRIVED", "STOPPED"), fixture=True)
 
     def run(self):
         threading.Thread(target=self.control_loop, daemon=True).start()
@@ -353,10 +383,12 @@ class FakeNode:
                 if self.tick - self.last_plan_tick >= 10:
                     self.send_pose()
                     self.last_plan_tick = self.tick
-                if float(self.np.linalg.norm(self.goal - [self.x, self.y])) <= self.args.goal_radius:
+                if float(self.np.linalg.norm(self.goal - [self.x, self.y])) <= self.args.goal_radius and self.active:
                     self.phase = "ARRIVED"
                     emit("arrived", tick=self.tick)
                     self.stand("arrived")
+            if self.pending_stand is not None and self.tick >= self.defer_until:  # the fake ceiling "clears"
+                self.stand(self.pending_stand)
             self.tick += 1
         return "stopped"
 
@@ -415,6 +447,10 @@ def main(argv=None):
     ap.add_argument("--no-cloud", action="store_true")
     ap.add_argument("--goal-error-m", type=float, nargs=2, default=(0.0, 0.0), metavar=("DX", "DY"),
                     help="fault injection: offset added to every goal the control socket applies")
+    ap.add_argument("--odom-offset", type=float, nargs=2, default=(0.0, 0.0), metavar=("DX", "DY"),
+                    help="fault injection: the node's odometry frame differs from the bridge's by this offset")
+    ap.add_argument("--defer-stand", type=float, default=0.0, metavar="S",
+                    help="hazard: defer every stand issued while walking for S s (a fake low ceiling)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
     if args.press:
@@ -430,6 +466,8 @@ def main(argv=None):
         ap.error("--odom-bind and --control-bind are required")
     if not 0 < args.speed <= 0.7:
         ap.error("--speed must be in (0, 0.7] m/s")
+    if not 0 <= args.defer_stand <= 120:
+        ap.error("--defer-stand must be in [0, 120] s")
     print(BANNER, file=sys.stderr, flush=True)
     print(f"fake_node: odom/cloud {args.odom_bind}  pose {args.pose_bind}  g1_debug {args.debug_bind}  "
           f"control {args.control_bind}", file=sys.stderr, flush=True)
