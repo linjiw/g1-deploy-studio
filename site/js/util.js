@@ -11,7 +11,7 @@ export const OUTCOME = {
   estop: { label: 'E-stop', color: 0xf07870, text: "The walk was stopped: the robot tilted past 0.75 rad (node.py's supervisor) or the pelvis dropped below 0.35 m (Studio's fall rule). On the robot the runner switches to damping." },
   fell: { label: 'Fell', color: 0xf07870, text: 'The robot fell while settling to a stand.' },
   session_end: { label: 'Ended', color: 0x8aa0ad, text: 'The session ended during the walk.' },
-  refused: { label: 'Refused', color: 0x8aa0ad, text: 'The node refused the goal.' },
+  refused: { label: 'Refused', color: 0x8aa0ad, text: 'The goal was refused.' },
 };
 
 // One verdict per walk for colours and badges: arrival by the robot's estimate is not the whole story.
@@ -32,7 +32,7 @@ export const PHASE = {
   PRESCAN: { label: 'PRESCAN', color: '#c4a0d9', text: 'Pre-scan: before every walk node.py stands for 0.5 s while its LiDAR fills the map.', why: 'node.py pre-scans before every walk.' },
   RUN: { label: 'RUN', color: '#56d9d0', text: 'Walking: the planner replans from its memory several times a second and SONIC tracks the plan.', why: 'Flow student plans; SONIC tracks.' },
   ARRIVED: { label: 'ARRIVED', color: '#7be0a5', text: "Arrived: settling to a stand. The recording ends once it stands still.", why: "node.py's arrival rule: its own pose estimate within the 0.4 m goal radius." },
-  STOPPED: { label: 'STOPPED', color: '#efbb70', text: 'Stopped: standing up where it is.', why: 'A timeout, the operator, or a supervisor stop.' },
+  STOPPED: { label: 'STOPPED', color: '#efbb70', text: 'Stopped: standing up where it is.', why: "A walk timeout (Studio's 60 s limit in simulation), the operator, or a supervisor stop." },
 };
 
 // The planner's candidate selection (Flow closed_loop/planner.py), in words.

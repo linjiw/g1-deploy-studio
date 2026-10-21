@@ -187,6 +187,10 @@ def export_world(world_id, recordings, out):
                               'path_m': data['path_m'], 'reason': data['reason'], 'bytes': len(text),
                               'sha256': hashlib.sha256(text.encode()).hexdigest()[:16]}
     index = world_index(world_id, base, walks)
+    # A walk file the index does not list (an older recording of a redefined room) must not reach the site.
+    for f in (out / world_id / 'g').glob('*.json'):
+        if f.stem not in walks:
+            f.unlink()
     (out / world_id / 'index.json').write_text(json.dumps(index, separators=(',', ':')))
     return index
 
@@ -255,8 +259,12 @@ def featured(out, worlds):
     indexes = {w: json.loads((out / w / 'index.json').read_text()) for w in worlds}
     walks = []
     for w in worlds:
-        for f in sorted((out / w / 'g').glob('g*.json')):
-            walks.append((w, json.loads(f.read_text())))
+        listed = set(indexes[w]['walks'])
+        files = {f.stem for f in (out / w / 'g').glob('g*.json')}
+        if files != listed:
+            raise ValueError(f'{w}: walk files and the room index disagree ({sorted(files ^ listed)[:5]})')
+        for gid in sorted(listed):
+            walks.append((w, json.loads((out / w / 'g' / f'{gid}.json').read_text())))
     pick, facts = {}, {'walks': len(walks)}
     causes = {'table-edge': [], 'phantom': [], 'real-overhead': [], 'unclassified': []}
     for w, d in walks:
@@ -274,7 +282,8 @@ def featured(out, worlds):
                                      f"the recorded map and the room's boxes). In this one the stand waits {c['held_s']:.1f} s, from {c['t']:.1f} s."}
     # The door: walks to the far side that cross the wall line through the 0.8 m door.
     if 'doorway' in indexes:
-        far, through, clean = 0, 0, 0
+        far, through, clean, elsewhere = 0, 0, 0, 0
+        half_door = min((abs(b['center_xy'][1]) - b['half_xy'][1] for b in indexes['doorway']['boxes']), default=0.4)
         best = None
         for w, d in walks:
             if w != 'doorway' or not d['goal'] or d['goal'][0] <= 2.3:
@@ -283,14 +292,15 @@ def featured(out, worlds):
             xs = [d['q'][k * 36] / 1000 for k in range(d['n'])]
             ys = [d['q'][k * 36 + 1] / 1000 for k in range(d['n'])]
             crossing = next((ys[k] for k in range(1, d['n']) if xs[k - 1] < 2.0 <= xs[k]), None)
-            door = crossing is not None and abs(crossing) < 0.4
+            door = crossing is not None and abs(crossing) < half_door
             through += door
+            elsewhere += crossing is not None and not door
             ok = d['outcome'] == 'arrived' and (d['max_contact_n'] or 0) <= 100
             clean += door and ok
             if door and (best is None or (ok and not best[1])):
                 best = (d, ok)
-        facts['doorway'] = {'far_goals': far, 'through_door': through, 'through_clean': clean,
-                            'door_halfwidth_m': min((abs(b['center_xy'][1]) - b['half_xy'][1] for b in indexes['doorway']['boxes']), default=None)}
+        facts['doorway'] = {'far_goals': far, 'through_door': through, 'through_clean': clean, 'crossed_elsewhere': elsewhere,
+                            'door_halfwidth_m': half_door}
         if best:
             d, ok = best
             pick['doorway'] = {'world': 'doorway', 'goal': d['goal_id'], 'label': 'Watch it go through',

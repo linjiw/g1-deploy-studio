@@ -7,10 +7,12 @@ const lazy = (sectionId, start) => {
   const section = $(sectionId);
   if (!section) return;
   let started = false;
+  let done = null;
   const go = () => {
-    if (started) return;
+    if (started) return done;
     started = true; io.disconnect();
-    start().catch(error => { console.error(error); section.insertAdjacentHTML('beforeend', `<p class="muted">Could not load this part: ${escape(error.message)}</p>`); });
+    done = start().catch(error => { console.error(error); section.insertAdjacentHTML('beforeend', `<p class="muted">Could not load this part: ${escape(error.message)}</p>`); });
+    return done;
   };
   const io = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) go(); }, { rootMargin: '400px 0px' });
   io.observe(section);
@@ -69,4 +71,12 @@ lazy('how', async () => (await import('./pipeline.js')).initPipeline($('pipeline
 lazy('robot-day', async () => (await import('./robotday.js')).initRobotDay($('day')));
 lazy('findings', async () => (await import('./findings.js')).initFindings($('findings-cards')));
 lazy('tour', chapters);
-window.addEventListener('load', () => idle(() => starters.forEach(go => go()), { timeout: 4000 }));
+// Sections built after a jump to #findings or #use change the heights above it: land there again, unless the
+// visitor has already scrolled on their own.
+let moved = false;
+for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) window.addEventListener(type, () => { moved = true; }, { once: true, passive: true });
+window.addEventListener('load', () => idle(async () => {
+  await Promise.all(starters.map(go => go()));
+  const target = /^#[a-z-]+$/.test(location.hash) ? document.querySelector(location.hash) : null;
+  if (target && !moved) requestAnimationFrame(() => target.scrollIntoView({ block: 'start' }));
+}, { timeout: 4000 }));

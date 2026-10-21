@@ -28,9 +28,9 @@ function cards(featured, catalog) {
   const d = f.doorway;
   if (d && d.far_goals) {
     const door = d.door_halfwidth_m ? `${(2 * d.door_halfwidth_m).toFixed(1)} m` : 'single';
-    const other = d.far_goals - d.through_door;
+    const other = d.crossed_elsewhere ?? 0;
     out.push({ id: 'doorway', kind: 'policy', tag: 'Policy · measured here', title: `Through a ${door} door`,
-      text: `The doorway room has one ${door} door in a 2 m wall that runs past the edge of the planner's map. Of ${d.far_goals} recorded walks to goals on the far side, ${d.through_door} went through the door (${pct(d.through_door, d.far_goals)})${other ? ` and ${other} crossed the wall line elsewhere` : ''}; ${d.through_clean} of those through the door arrived without contact over 100 N.`,
+      text: `The doorway room has one ${door} door in a 2 m wall that runs past the edge of the planner's map. Of ${d.far_goals} recorded walks to goals on the far side, ${d.through_door} went through the door (${pct(d.through_door, d.far_goals)})${other ? ` and ${other} crossed the wall line elsewhere` : ''}${d.far_goals - d.through_door - other > 0 ? `; ${d.far_goals - d.through_door - other} never reached the wall` : ''}; ${d.through_clean} of those through the door arrived without contact over 100 N.`,
       status: 'Simulation, one seed per goal. Not a hardware result.' });
   }
   const b = f.beam;

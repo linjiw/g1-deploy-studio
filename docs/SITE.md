@@ -8,7 +8,7 @@ Owner decision, 2026-10-21 (STATUS decisions):
 
 | Option | Why not (or why) |
 |---|---|
-| **Recorded walks of the real stack** (chosen) | The stack runs once, here, at low priority. No weights leave this machine, nothing runs here afterwards, and the page works on a phone. Goals snap to a grid and every walk starts from the start mark |
+| **Recorded, simulated walks of the deploy stack** (chosen) | The stack runs once, here, at low priority. No weights leave this machine, nothing runs here afterwards, and the page works on a phone. Goals snap to a grid and every walk starts from the start mark |
 | The policy live in the browser (MuJoCo WASM + ONNX) | Publishes the SONIC release weights (NVIDIA Open Model License; lucid-g1-deploy deliberately does not redistribute them) and an export of the unpublished student planner; needs a JavaScript port of the planner, perception and node logic with a parity risk; about 100 MB of downloads and slow on laptops |
 | Live sessions served from this machine | About one CPU core per visitor, a public tunnel to a research machine, and only up while it is |
 

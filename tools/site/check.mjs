@@ -85,6 +85,17 @@ await check('pick for me, press g on the keyboard, the timeline moves, the outco
   if (arrived && !text.includes(`arrived ${arrived.dist.toFixed(2)} m from the goal`)) throw new Error(`arrival sentence does not use the arrival distance ${arrived.dist}: ${text.slice(0, 160)}`);
   return `${t0} -> ${t1}; ${shown}`;
 });
+await check('Escape puts a staged goal away', async () => {
+  await page.click('#pg-random');
+  await page.waitForSelector('#pg-go:visible', { timeout: 5000 });
+  await page.keyboard.press('Escape');
+  const mode = await page.evaluate(() => window.studioPlayground.S.mode);
+  if (mode !== 'pick') throw new Error(`mode ${mode} after Escape`);
+  await page.click('#pg-random');
+  await page.keyboard.press('g');
+  await page.waitForFunction(() => window.studioPlayground.S.mode === 'done', null, { timeout: 120000 });
+  return 'Escape returns to picking';
+});
 await check('scrubbing seeks, and scrubbing back rebuilds the map', async () => {
   const before = await page.evaluate(() => ({ t: window.studioPlayground.S.t, step: window.studioPlayground.S.mapStep, d: window.studioPlayground.S.walk.duration }));
   await page.locator('#pg-scrub').scrollIntoViewIfNeeded();
@@ -151,6 +162,12 @@ await check('findings and tour render', async () => {
   await page.locator('#findings').scrollIntoViewIfNeeded();
   await page.waitForSelector('#findings-cards .finding', { timeout: 10000 });
   const n = await page.locator('#findings-cards .finding').count();
+  // The findings count walks from the same recordings as the rooms: the totals must agree.
+  const rooms = await (await page.request.get(new URL('data/worlds.json', URL_).href)).json();
+  const featured = await (await page.request.get(new URL('data/featured.json', URL_).href)).json();
+  const total = rooms.worlds.reduce((a, w) => a + w.walks, 0);
+  if (featured.facts.walks !== total) throw new Error(`findings count ${featured.facts.walks} walks, the rooms ${total}`);
+  for (const w of rooms.worlds) if (featured.facts.contact?.[w.id] && featured.facts.contact[w.id].walks !== w.walks) throw new Error(`${w.id}: ${featured.facts.contact[w.id].walks} vs ${w.walks}`);
   await page.locator('#tour').scrollIntoViewIfNeeded();
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(OUT, 'desktop-findings.png') });

@@ -62,7 +62,7 @@
 <section id="try" class="playground" aria-labelledby="try-title">
   <div class="section-head">
     <h2 id="try-title">Send the robot somewhere</h2>
-    <p>This is Studio's Navigate workflow on <b>recorded, simulated walks of the deploy stack</b>: the frozen learned planner (the Flow student), the SONIC tracking policy and node.py's state machine, in MuJoCo with a simulated LiDAR and the robot's deploy settings. Click the floor to pick a goal, read the checks, send it, then press <kbd>Go</kbd> (or <kbd>g</kbd>) the way the operator does.</p>
+    <p>This is Studio's Navigate workflow on <b>recorded, simulated walks of the deploy stack</b>: the frozen learned planner (the Flow student), the SONIC tracking policy and Studio's reproduction of node.py's state machine, in MuJoCo with a simulated LiDAR and the robot's deploy settings. Click the floor to pick a goal, read the checks, send it, then press <kbd>Go</kbd> (or <kbd>g</kbd>) the way the operator does.</p>
   </div>
   <div class="tabs" id="pg-worlds" role="tablist" aria-label="Rooms"></div>
   <p id="pg-world-stats" class="world-stats"></p>
@@ -172,7 +172,7 @@
     <h3>What this is, and what it is not</h3>
     <div class="two">
       <ul class="yes">
-        <li>The deploy stack's software: the frozen Flow student planner, the SONIC tracking policy and node.py's state machine, run on CPU in MuJoCo with a simulated MID-360 LiDAR</li>
+        <li>The deploy stack's software: the frozen Flow student planner, the SONIC tracking policy and Studio's reproduction of node.py's state machine, run on CPU in MuJoCo with a simulated MID-360 LiDAR</li>
         <li>The robot's deploy settings: planner budget of 16 candidates and 10 ODE steps, a 160 ms planner latency with predictive anchoring, LIO-level odometry drift</li>
         <li>Studio's own goal checks, computed on the map the robot had at the start mark</li>
         <li>Every walk that was recorded, including the ones that went wrong, with contact and the true final distance shown</li>
@@ -221,7 +221,7 @@ python3 -m venv .venv
 npm ci
 .venv/bin/python -m studio.server --port 8790
 # then open http://127.0.0.1:8790/</code></pre>
-      <p class="muted">What you get from this repository alone: Replay of your own recordings, and the tests. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack (g1-student-deploy with the Flow student bundle and the SONIC policy), which is not public. No recordings, weights or robot meshes ship with the code.</p>
+      <p class="muted">What you get from this repository alone: the gateway, the browser app and the tests; Replay draws the robot only when a recording points at a local G1 model. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack (g1-student-deploy with the Flow student bundle and the SONIC policy), which is not public. No recordings, weights or robot meshes ship with the code.</p>
     </div>
     <div class="card">
       <h3>Read more</h3>

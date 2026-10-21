@@ -15,7 +15,7 @@ const NODES = {
   lio: { x: 40, y: 220, title: 'Point-LIO + bridge', sub: 'ZMQ :5561 odom · cloud',
     text: "Point-LIO fuses the LiDAR with its IMU into odometry. g1-student-deploy's ros2_lio_bridge forwards it on ZMQ :5561 at 50 Hz, and with --forward-cloud the registered cloud too. The odom frame starts where LIO starts: the floor is z = 0 and yaw 0 is the start heading. The bridge is written but untested: the development machine has no ROS 2.",
     facts: [['Publishes', ':5561 odom 50 Hz, cloud'], ['Binds', 'tcp://*:5561 (every interface today)'], ['If it stops', 'node.py E-stops after 0.5 s; the console switches the runner to damping'], ['Kind', 'estimated']] },
-  node: { x: 400, y: 220, title: 'node.py', sub: 'Flow planner · memory · route',
+  node: { x: 400, y: 220, title: 'node.py', sub: 'Flow planner · memory',
     text: "g1-student-deploy's node removes the robot's own body from each scan and fuses the points into a 12 × 12 m memory at 5 cm (floor and ceiling heights). Flow's SensorRoute finds a route through it and the frozen Flow student plans whole-body motion (16 candidates, 10 ODE steps). Phases: WAIT → PRESCAN → RUN → ARRIVED or STOPPED, with a tilt E-stop at 0.75 rad and a 0.4 m goal radius.",
     facts: [['Plans to', ':5556 pose reference (50 Hz frames)'], ['Control', ':5562 status · goal · go · stand · quit'], ['Binds', 'tcp://*:5562 and *:5556 (every interface today; proposal U3 would bind them to loopback)'], ['Memory', '12 × 12 m, 5 cm cells, 4 m range']] },
   sonic: { x: 760, y: 220, title: 'SONIC runner', sub: 'C++ · ONNX · 50 Hz',
@@ -28,7 +28,7 @@ const NODES = {
     text: "A person starts every walk: g on the node console hands the runner to the node's stream and tells node.py to go (the console starts it with --wait-go; the remote's F1 alone only switches the runner's stream). h asks the node to stand; the remote's D-up hands control to SONIC standing (not near overhead obstacles) and Select is the runner's damping E-stop (the robot drops: gantry or spotter only). The physical E-stop stays in hand.",
     facts: [['Starts', 'g on the node console'], ['Stops', 'h · D-up · Select · physical E-stop'], ['Always', 'a person']] },
   browser: { x: 760, y: 400, title: 'Your browser', sub: 'SSH tunnel to :8790',
-    text: 'The operator laptop opens Studio through an SSH tunnel (ssh -N -L 8790:127.0.0.1:8790 …): Studio itself listens only on 127.0.0.1.',
+    text: 'The operator laptop opens Studio through an SSH tunnel (ssh -N -L 8790:127.0.0.1:8790 …): Studio itself listens only on loopback.',
     facts: [['Tunnel', 'ssh -N -L 8790:127.0.0.1:8790'], ['Shows', 'pose, LiDAR, map, plan, stream ages'], ['Kind', 'view only']] },
 };
 // [path, label, label x, label y, anchor, kind]

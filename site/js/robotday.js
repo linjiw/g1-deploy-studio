@@ -247,7 +247,7 @@ export async function initRobotDay(root) {
         <div class="keys"><button class="keycap ${ok ? 'armed' : ''}" id="day-g" aria-label="Press g">g</button><span class="${ok ? 'verdict pass' : 'verdict block'}">${ok ? 'Checklist clear: press g' : 'Checklist blocked: do not press g'}</span></div>
         ${D.message ? `<p class="verdict block" style="margin-top:8px">${escape(D.message)}</p>` : ''}`;
     },
-    review: () => `<h3>Watch, then review</h3><p>While it walks: the plan (pink), the path, distance to the goal, plan age and planner latency against the 160 ms budget, tilt against the 0.75 rad E-stop. Stand asks the node to settle; the remote's D-up and the E-stop stay with people.</p><p>Afterwards the session opens in Replay next to its simulated rehearsal, and <b>Make an arena twin</b> turns the robot's map into a simulation arena to rehearse the next walk on.</p>
+    review: () => `<h3>Watch, then review</h3><p>While it walks: the plan reference SONIC is following, the path, distance to the goal, every stream's age, tilt against the 0.75 rad E-stop. Stand asks the node to settle; the remote's D-up and the E-stop stay with people.</p><p>Afterwards the session opens in Replay next to its simulated rehearsal, and <b>Make an arena twin</b> turns the robot's map into a simulation arena to rehearse the next walk on.</p>
       <div class="actions"><button class="button" id="day-replay" ${D.walk ? '' : 'disabled'}>Replay the walk</button><a class="button ghost" href="#try">Try more goals above</a></div>`,
   };
 
