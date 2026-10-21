@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>G1 Deploy Studio</title>
+  <meta name="description" content="A browser cockpit for deploying a learned navigation policy on a Unitree G1. Pick a goal on the robot's own LiDAR map, read Studio's checks, press Go, and watch recorded simulated walks of the deploy stack.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://linjiw.github.io/g1-deploy-studio/">
+  <meta property="og:title" content="G1 Deploy Studio">
+  <meta property="og:description" content="Rehearse first. See what the robot sees. The operator says go. Try Navigate on recorded simulated walks of a Unitree G1 navigation stack.">
+  <meta property="og:image" content="https://linjiw.github.io/g1-deploy-studio/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://linjiw.github.io/g1-deploy-studio/assets/og.png">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315232b'/%3E%3Ctext x='4' y='23' fill='%2356d9d0' font-size='20' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/site.css">
+  <script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js","three/addons/":"./vendor/three/addons/"}}</script>
+  <link rel="modulepreload" href="vendor/three/three.module.min.js">
+  <link rel="modulepreload" href="vendor/three/three.core.min.js">
+  <link rel="modulepreload" href="js/playground.js">
+  <link rel="modulepreload" href="js/viewer.js">
+  <link rel="modulepreload" href="js/data.js">
+  <link rel="modulepreload" href="js/util.js">
+  <link rel="preload" href="data/meshes.bin" as="fetch" crossorigin>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+<a class="skip" href="#try">Skip to the playground</a>
+<header class="top">
+  <a class="brand" href="#top"><span class="mark">G1</span><span>Deploy <b>Studio</b></span></a>
+  <nav aria-label="Sections">
+    <a href="#try">Try it</a><a href="#how">How it works</a><a href="#robot-day">Robot day</a><a href="#findings">Findings</a><a href="#tour">Tour</a><a href="#use">Use it</a>
+  </nav>
+  <a class="gh" href="https://github.com/linjiw/g1-deploy-studio">GitHub</a>
+</header>
+
+<main>
+<section id="top" class="hero">
+  <div class="hero-text">
+    <p class="eyebrow">Unitree G1 · learned navigation · simulation first</p>
+    <h1>Rehearse first. See what the robot sees. <span>The operator says go.</span></h1>
+    <p class="lede">G1 Deploy Studio is a browser cockpit for deploying a learned navigation policy on a humanoid.
+      A learned planner plans from the robot's own LiDAR map, a tracking policy turns the plan into motor targets, and Studio shows every step:
+      what the robot perceives, where it plans to go, and whether a goal passes Studio's checks before it is sent. Studio never commands a motor.</p>
+    <div class="cta"><a class="button primary" href="#try">Send the robot somewhere</a><a class="button" href="#tour">Watch the tour (9:44)</a></div>
+    <ul class="stats" id="hero-stats">
+      <li><b data-stat="walks">—</b><span>simulated walks, recorded</span></li>
+      <li><b data-stat="worlds">—</b><span>rooms</span></li>
+      <li><b data-stat="arrived">—</b><span>arrived, by the robot's estimate</span></li>
+      <li><b>0</b><span>motor commands from Studio</span></li>
+    </ul>
+  </div>
+  <a class="hero-shot" id="hero-shot" href="#try">
+    <img src="assets/hero.jpg" width="1200" height="900" alt="A recorded walk: the G1 in the corridor, over the map its LiDAR built" fetchpriority="high">
+    <span class="caption" id="hero-caption"><b>A recorded walk</b> in the alternating-walls room. Red columns are the walls as the LiDAR saw them (the outlines are the real walls), pink is the plan, teal the path walked.</span>
+  </a>
+</section>
+
+<section id="try" class="playground" aria-labelledby="try-title">
+  <div class="section-head">
+    <h2 id="try-title">Send the robot somewhere</h2>
+    <p>This is Studio's Navigate workflow on <b>recorded, simulated walks of the deploy stack</b>: the frozen learned planner (the Flow student), the SONIC tracking policy and node.py's state machine, in MuJoCo with a simulated LiDAR and the robot's deploy settings. Click the floor to pick a goal, read the checks, send it, then press <kbd>Go</kbd> (or <kbd>g</kbd>) the way the operator does.</p>
+  </div>
+  <div class="tabs" id="pg-worlds" role="tablist" aria-label="Rooms"></div>
+  <p id="pg-world-stats" class="world-stats"></p>
+  <div class="pg" id="pg-panel" role="tabpanel">
+    <div class="pg-stage">
+      <div id="pg-canvas" class="canvas" role="application" aria-label="3D view of the room and the robot. Click the floor to pick a goal; Pick one for me works from the keyboard."></div>
+      <div class="overlay top-left">
+        <span id="pg-phase" class="phase">WAIT</span>
+      </div>
+      <div class="overlay top-right layer-buttons" role="group" aria-label="Layers">
+        <button data-layer="map" aria-pressed="true" title="The planner's memory: floor, obstacles, low steps and overhead cells the robot has seen">Robot's map</button>
+        <button data-layer="lidar" aria-pressed="true" title="The latest LiDAR returns after the robot's own body is filtered out">LiDAR</button>
+        <button data-layer="plan" aria-pressed="true" title="The plan SONIC is tracking right now (pelvis path, at pelvis height)">Plan</button>
+        <button data-layer="world" data-state="ghost" title="The simulation's real boxes. The robot never receives them; it only knows its map">Real room <small>ghost</small></button>
+        <button data-layer="outcomes" aria-pressed="true" title="Every recorded goal, coloured by what happened">Outcomes</button>
+      </div>
+      <div class="overlay bottom-right camera-buttons" role="group" aria-label="Camera">
+        <button data-camera="orbit" aria-pressed="true">Orbit</button><button data-camera="top" aria-pressed="false">Top</button><button data-camera="follow" aria-pressed="false">Follow</button>
+      </div>
+      <details class="legend" open>
+        <summary>Legend</summary>
+        <ul>
+          <li><i class="sw floor"></i>floor the robot has seen</li>
+          <li><i class="sw low"></i>low obstacle (steps over)</li>
+          <li><i class="sw obst"></i>obstacle, at its seen height</li>
+          <li><i class="sw over"></i>overhead (below 2 m)</li>
+          <li><i class="ln plan"></i>plan being tracked</li>
+          <li><i class="ln path"></i>path walked (sim truth)</li>
+          <li><i class="dot est"></i>robot's own estimate</li>
+          <li><i class="ln route"></i>Studio's check route</li>
+          <li><i class="dot ok"></i><i class="dot warn"></i><i class="dot bad"></i>recorded outcomes</li>
+        </ul>
+      </details>
+      <div id="pg-result" class="result-chip" role="status" hidden></div>
+      <div id="pg-flash" class="flash" role="status" hidden></div>
+      <div id="pg-timeline" class="timeline" hidden>
+        <button id="pg-play" class="icon" aria-label="Play">▶</button>
+        <div class="scrub"><div id="pg-bands" class="bands"></div><input id="pg-scrub" type="range" min="0" max="1000" value="0" aria-label="Walk time"></div>
+        <span id="pg-time" class="mono">0.0 s</span>
+        <button id="pg-speed" class="speed" title="Playback speed (simulated time)" aria-label="Playback speed">1×</button>
+      </div>
+    </div>
+    <aside class="pg-side" aria-label="Goal, checks and outcome">
+      <div id="pg-outcome" class="card outcome" hidden>
+        <h3 id="pg-outcome-title" aria-live="polite">Arrived</h3>
+        <p id="pg-outcome-text"></p>
+        <div id="pg-outcome-facts" class="facts"></div>
+        <p id="pg-outcome-meta" class="fineprint"></p>
+        <div class="actions"><button id="pg-again" class="button">Replay</button><button id="pg-new" class="button primary">New goal</button></div>
+      </div>
+      <div class="card">
+        <p id="pg-world-blurb" class="muted"></p>
+        <p id="pg-status" class="status" aria-live="polite">Loading the room…</p>
+        <div id="pg-facts" class="facts"></div>
+      </div>
+      <div class="card">
+        <h3>Goal checks</h3>
+        <div id="pg-goal"></div>
+        <div id="pg-staged" class="staged" hidden>
+          <p><b>Staged.</b> On the real robot Studio would now send this goal to <code>node.py</code>, read it back and show it as <em>verified</em>. Nothing moves until the operator presses <kbd>g</kbd>.</p>
+        </div>
+        <div class="actions">
+          <button id="pg-send" class="button primary" disabled hidden>Send goal</button>
+          <button id="pg-go" class="button go" hidden>Go</button>
+          <button id="pg-clear" class="button ghost" hidden>Clear</button>
+        </div>
+        <div class="actions small"><button id="pg-random" class="link">Pick one for me</button><button id="pg-failure" class="link">Show a walk that went wrong</button></div>
+      </div>
+      <p class="fineprint">Each walk is a fresh session from the start mark: boot with a 1 s pre-scan, one goal, Go (node.py's own 0.5 s pre-scan), walk, stand, end. Your click snaps to the nearest recorded goal on a 0.4 m grid; each goal was recorded once, with one seed. The planner never sees the real boxes, only its map. <a href="#limits">What this is not</a>.</p>
+    </aside>
+  </div>
+</section>
+
+<section id="how" class="how" aria-labelledby="how-title">
+  <div class="section-head">
+    <h2 id="how-title">How the pieces fit</h2>
+    <p>On the robot day everything runs on the deploy PC next to the G1. Studio attaches there on loopback: it listens to the streams, and it may send <code>node.py</code> a checked goal or a request to stand, and ask for its status. Click a part to see what it does.</p>
+  </div>
+  <div class="how-grid">
+    <div class="diagram" id="pipeline" role="group" aria-label="System diagram: the robot, the deploy PC, Studio and the operator"></div>
+    <aside class="card" id="pipeline-detail" aria-live="polite"></aside>
+  </div>
+  <div class="who-sends">
+    <div><h3>Studio may send</h3><ul class="yes"><li><code>goal</code> to <code>node.py</code>, only after the checks pass and only while the robot stands still</li><li><code>stand</code> to <code>node.py</code></li><li><code>status</code> requests, to read the goal back</li></ul></div>
+    <div><h3>Studio never sends</h3><ul class="no"><li><code>go</code>: the operator presses <kbd>g</kbd> on the console or F1 on the remote</li><li><code>quit</code>, or anything to the SONIC runner</li><li>any DDS message: it has no DDS participant and no motor-command path</li></ul></div>
+    <div><h3>People keep</h3><ul class="people"><li>the wireless remote: D-up hands control to SONIC standing (not near overhead obstacles); Select is the runner's damping E-stop (the robot drops: gantry or spotter only)</li><li>the physical E-stop and a gantry or spotter</li><li>the decision to walk</li></ul></div>
+  </div>
+  <p class="fineprint wide">Exposure today: Studio binds only loopback, but node.py (<code>tcp://*:5562</code>, which accepts <code>go</code> and <code>quit</code>, and <code>*:5556</code>) and the LIO bridge (<code>*:5561</code>) bind every interface. Until they bind 127.0.0.1 (proposal U3 to the deploy repository), firewall the robot network.</p>
+</section>
+
+<section id="robot-day" class="robot-day" aria-labelledby="day-title">
+  <div class="section-head">
+    <h2 id="day-title">A day with the real robot</h2>
+    <p>What deploying this suite looks like, step by step, with Studio's real pre-Go checklist. Break things with the switches and watch which check stops you. The rules and messages are the robot link's; the robot is a recorded simulated walk, shown the way Studio shows a real one: as its LIO estimate.</p>
+  </div>
+  <div class="day" id="day"></div>
+</section>
+
+<section id="findings" class="findings" aria-labelledby="findings-title">
+  <div class="section-head">
+    <h2 id="findings-title">What rehearsing found</h2>
+    <p>Running hours of simulated walks before a real one is the point. These came out of it; where there is an example, it is one of the recordings above.</p>
+  </div>
+  <div class="cards" id="findings-cards"></div>
+  <div id="limits" class="limits card">
+    <h3>What this is, and what it is not</h3>
+    <div class="two">
+      <ul class="yes">
+        <li>The deploy stack's software: the frozen Flow student planner, the SONIC tracking policy and node.py's state machine, run on CPU in MuJoCo with a simulated MID-360 LiDAR</li>
+        <li>The robot's deploy settings: planner budget of 16 candidates and 10 ODE steps, a 160 ms planner latency with predictive anchoring, LIO-level odometry drift</li>
+        <li>Studio's own goal checks, computed on the map the robot had at the start mark</li>
+        <li>Every walk that was recorded, including the ones that went wrong, with contact and the true final distance shown</li>
+      </ul>
+      <ul class="no">
+        <li>Not a run on a real robot: nothing here has run on hardware</li>
+        <li>Not live: walks were recorded in advance, one per goal, one seed; your browser plays them back and runs no policy</li>
+        <li>Not the C++ runner and DDS chain: the simulated robot is an in-process lockstep loop</li>
+        <li>Not continuous: goals snap to a 0.4 m grid and every walk starts from the start mark</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="tour" class="tour" aria-labelledby="tour-title">
+  <div class="section-head">
+    <h2 id="tour-title">The tour (9:44)</h2>
+    <p>Studio end to end: replay, rehearsal, the arena editor, suites, Navigate with the simulated robot and the real-robot link, and the validation behind it. Captions included.</p>
+  </div>
+  <div class="video" id="video-slot">
+    <video id="tour-video" controls preload="metadata" playsinline poster="media/tour-poster.jpg">
+      <source src="media/g1-deploy-studio-tour.mp4" type="video/mp4">
+      <track kind="captions" src="media/g1-deploy-studio-tour.vtt" srclang="en" label="English" default>
+    </video>
+  </div>
+  <ol class="chapters" id="chapters" aria-label="Chapters"></ol>
+</section>
+
+<section id="use" class="use" aria-labelledby="use-title">
+  <div class="section-head">
+    <h2 id="use-title">Use it</h2>
+    <p>Studio is a Python gateway and a browser app. It runs on loopback next to the deployment it watches. The page above is a demo of one workspace; this is the tool.</p>
+  </div>
+  <div class="gallery">
+    <figure><a href="assets/studio-navigate.jpg"><img src="assets/studio-navigate.jpg" width="1280" height="778" loading="lazy" alt="Studio's Navigate workspace with the simulated robot walking to a goal on its own map"></a><figcaption><b>Navigate · simulated robot.</b> The same workflow, live: the worker runs node.py's rules on CPU while you watch.</figcaption></figure>
+    <figure><a href="assets/studio-robot-link.jpg"><img src="assets/studio-robot-link.jpg" width="1280" height="778" loading="lazy" alt="Studio's robot link showing an unverified node goal in red and the pre-Go checklist blocking"></a><figcaption><b>Navigate · robot link</b> (against the protocol fixture). The node's goal did not read back: red warning, checklist blocks, do not press g.</figcaption></figure>
+    <figure><a href="assets/studio-replay.jpg"><img src="assets/studio-replay.jpg" width="1280" height="778" loading="lazy" alt="Studio's Replay workspace with reference ghosts, the plan and timeline lanes for planner compute, SONIC inference and contact"></a><figcaption><b>Replay.</b> Every run, causally: reference ghosts, the executing plan, and lanes for planner compute, SONIC inference, tracking and contact.</figcaption></figure>
+  </div>
+  <div class="use-grid">
+    <div class="card">
+      <h3>Run it</h3>
+<pre><code>git clone https://github.com/linjiw/g1-deploy-studio
+cd g1-deploy-studio
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+npm ci
+.venv/bin/python -m studio.server --port 8790
+# then open http://127.0.0.1:8790/</code></pre>
+      <p class="muted">What you get from this repository alone: Replay of your own recordings, and the tests. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack (g1-student-deploy with the Flow student bundle and the SONIC policy), which is not public. No recordings, weights or robot meshes ship with the code.</p>
+    </div>
+    <div class="card">
+      <h3>Read more</h3>
+      <ul class="links">
+        <li><a href="https://github.com/linjiw/g1-deploy-studio#readme">README</a>: what Studio does and does not do</li>
+        <li><a href="https://github.com/linjiw/g1-deploy-studio/blob/main/docs/NAVIGATE.md">Navigate</a>: the workflow, the session contract and the goal checks</li>
+        <li><a href="https://github.com/linjiw/g1-deploy-studio/blob/main/docs/REAL_WORLD_DEPLOYMENT.md">Real-world deployment</a>: the design for a real room</li>
+        <li><a href="https://github.com/linjiw/g1-deploy-studio/blob/main/docs/REVIEW-20261021-NAVIGATE.md">Review record</a>: what independent reviewers found and what was fixed</li>
+        <li><a href="https://github.com/linjiw/g1-deploy-studio/blob/main/docs/SITE.md">This site</a>: how the walks were recorded and how the page is built</li>
+        <li><a href="https://github.com/linjiw/g1-deploy-studio/blob/main/docs/STATUS.md">Status</a>: verified, estimated and open</li>
+      </ul>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <p><b>G1 Deploy Studio</b> · Apache-2.0 · research software, not affiliated with Unitree Robotics or NVIDIA. The G1 meshes are Unitree's (<a href="licenses/unitree_mujoco-LICENSE.txt">BSD-3-Clause</a>), simplified for the web; three.js is <a href="licenses/three.js-LICENSE.txt">MIT</a>; see <a href="https://github.com/linjiw/g1-deploy-studio/blob/main/NOTICE">NOTICE</a>. This page runs no policy and sends nothing anywhere: it is static files.</p>
+</footer>
+<noscript><p class="noscript">The interactive parts of this page need JavaScript and WebGL. The tour video above works without them.</p></noscript>
+</body>
+</html>
