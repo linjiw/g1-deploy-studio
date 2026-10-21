@@ -1,17 +1,24 @@
 {
   "name": "g1-deploy-studio",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test:browser": "node tools/browser/ui_acceptance.mjs",
     "test:browser:forwarded": "node tools/browser/forwarded.mjs",
-    "test:rehearsal": "node tools/browser/rehearsal_flow.mjs"
+    "test:rehearsal": "node tools/browser/rehearsal_flow.mjs",
+    "site:check": "node tools/site/check.mjs"
   },
   "dependencies": {
     "three": "0.180.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1"
+    "@playwright/test": "1.61.1",
+    "meshoptimizer": "1.2.0"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/linjiw/g1-deploy-studio.git"
   }
 }

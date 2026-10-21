@@ -1,0 +1,50 @@
+{
+ "schema_version": 1,
+ "label": "Studio demo \u00b7 offset doorway",
+ "kind": "boxes",
+ "frame_id": "world",
+ "units": "m",
+ "boxes": [
+  {
+   "center_xy": [
+    2.0,
+    1.3
+   ],
+   "half_xy": [
+    0.9000000000000001,
+    0.12
+   ],
+   "yaw": 1.570796,
+   "z_bottom": 0.0,
+   "z_top": 1.2
+  },
+  {
+   "center_xy": [
+    2.0,
+    -1.3
+   ],
+   "half_xy": [
+    0.9000000000000001,
+    0.12
+   ],
+   "yaw": -1.570796,
+   "z_bottom": 0.0,
+   "z_top": 1.2
+  }
+ ],
+ "bounds": {
+  "min": [
+   -3.0,
+   -3.2079647570252936
+  ],
+  "max": [
+   5.1,
+   3.2079647570252936
+  ]
+ },
+ "description": null,
+ "provenance": {
+  "source": "Studio arena editor (arena-5f331788aa98)",
+  "sha256": "47d068e87266af42fb6ef751bee97751fe8813176d2602eb0a7b6c6815b983db"
+ }
+}
