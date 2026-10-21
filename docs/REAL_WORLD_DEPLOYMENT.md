@@ -115,7 +115,7 @@ Steps 2–4 can be built and checked now, in simulation: the CPU rehearsals alre
 ### 6.1 Phase 0: a course built from an arena (no new robot interface)
 
 1. Design or pick an arena in Studio and rehearse it.
-2. Studio prints a **build sheet**: obstacle positions and sizes measured from a start mark on the floor, the robot's start heading, and the goal as *ahead, left* from the start.
+2. Studio prints a **build sheet**: obstacle positions and sizes measured from a start mark on the floor, the robot's start heading, and the goal as *ahead, left* from the start. *Built (2026-10-21): Arena → **Build sheet**, `/sheet.html`, see WORKBENCH.md §1. Checked in simulation and print only; no course has been built from it yet.*
 3. Build the course, stand the robot on the start mark and run the console exactly as today: `./g1 robot --iface eth0 --goal AHEAD LEFT ...`. The console already uses `--goal-frame start`.
 4. Afterwards, import the node log, the memory dump and a Studio capture into replay, next to the rehearsal of the same arena. The arena boxes are drawn as "course as designed", and the memory dump shows how well the robot saw them.
 

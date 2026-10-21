@@ -19,6 +19,12 @@ Open **Arena**. The stage becomes a top-down editor in world metres (x forward a
   - Each preset is checked live with the same conservative standing-footprint preflight the server uses: 0.25 m around every box below 1.3 m.
   - Preflight is geometry only. Route feasibility is not checked; only a rehearsal can tell.
 - **Save arena** stores a new immutable map, `arena-<id>`, with a SHA-256, presets and its base-map provenance. Editing a saved arena and saving again creates a new arena. Earlier runs on a saved arena are overlaid on the canvas.
+- **Build sheet** opens `/sheet.html?arena=<id>&preset=<index>` in a new tab for the saved arena and the active preset. It is disabled until the arena is saved. It is a printable page (A4 or Letter, two pages) for building the course in a real room ([REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md) §6.1). It contains:
+  - a plan and an obstacle table in the start-mark frame (ahead, left, rotation relative to the start heading);
+  - the goal and the `./g1 robot --goal AHEAD LEFT` line; `--odom zmq` past 3 m;
+  - this preset's rehearsals with Wilson intervals, and a go/no-go checklist from g1-student-deploy's operator procedure.
+
+  The sheet only reads the API. It is a plan for an operator-run test, not a hardware certification.
 - **JSON** export and import: `{kind: "boxes", frame_id: "world", units: "m", boxes: [...], presets: [...]}`. At most 128 boxes per arena and 64 arenas.
 
 Scans (`kind: scan`) remain inspection-only. They have no collision geometry, so they cannot drive physics.

@@ -11,6 +11,7 @@ import hashlib
 import http.client
 import json
 from pathlib import Path
+import re
 import tempfile
 import threading
 import time
@@ -225,6 +226,27 @@ class SessionDeliveryTests(GatewayCase):
         importmap = html.split(b'<script type="importmap">', 1)[1].split(b'</script>', 1)[0]
         digest = base64.b64encode(hashlib.sha256(importmap).digest()).decode()
         self.assertEqual(policy['script-src'], f"'self' 'sha256-{digest}'")
+
+    def test_build_sheet_page_runs_under_the_same_script_policy(self):
+        # The build sheet is a second HTML page. It must work without inline scripts (the policy hashes only
+        # index.html's importmap) and must stay read-only: no preparation token, no POST.
+        status, headers, body = self.call('/sheet.html')
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['content-type'], 'text/html')
+        self.assertNotIn('unsafe-inline', headers['content-security-policy'].split('script-src', 1)[1].split(';', 1)[0])
+        self.assertEqual(server_module.INLINE_SCRIPT.findall(body), [], 'sheet.html must not contain inline scripts')
+        self.assertEqual(re.findall(rb'<script[^>]*\bsrc="([^"]+)"', body), [b'/js/sheet.js'])
+        self.assertNotRegex(body, rb'(?i)\b(src|href)="(https?:)?//')
+        for module in ('/js/sheet.js', '/js/runs.js', '/js/util.js'):
+            with self.subTest(module=module):
+                status, script, source = self.call(module)
+                self.assertEqual((status, script['content-type']), (200, 'application/javascript'))
+        source = self.call('/js/sheet.js')[2].decode()
+        imports = set(re.findall(r"^import .* from '([^']+)';", source, re.M))
+        self.assertEqual(imports, {'./util.js', './runs.js'}, 'No bare specifiers: the sheet has no importmap')
+        for forbidden in ('X-Studio-Token', 'csrf', "method: 'POST'", 'fetch('):
+            self.assertNotIn(forbidden, source)
+        self.assertEqual(re.findall(r"request\(`?'?(/api/[a-z]+)", source), ['/api/map', '/api/runs', '/api/policies', '/api/version'])
 
     def test_static_files_revalidate_with_etag(self):
         web = self.base / 'site/apps/web'

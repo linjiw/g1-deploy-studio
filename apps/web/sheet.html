@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Build sheet · G1 Deploy Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315232b'/%3E%3Ctext x='4' y='23' fill='%2356d9d0' font-size='20' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    /* Build sheet: a standalone document page. styles.css supplies the tokens, buttons and chips;
+       the cockpit's full-viewport grid is replaced by a scrolling document. */
+    html { height: auto; }
+    body.sheet { display: block; height: auto; overflow: auto; min-height: 100%; background: var(--bg); color: var(--text); }
+    .sheet-page { max-width: 1000px; margin: 0 auto; padding: 18px 16px 40px; }
+    .sheet-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .sheet-toolbar .spacer { flex: 1; }
+    .sheet-toolbar label { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+    .sheet-toolbar select { max-width: 360px; }
+    .sheet-head { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 14px; }
+    .sheet-head h1 { font-size: 22px; margin: 4px 0 2px; overflow-wrap: anywhere; }
+    .sheet-head .sub { color: var(--muted); font-size: 13.5px; overflow-wrap: anywhere; }
+    .not-cert { display: inline-block; margin-top: 8px; padding: 4px 9px; border: 1px solid #6a5232; border-radius: 5px; color: var(--c-amber); background: #2a2118; font-weight: 650; font-size: 12px; letter-spacing: .02em; }
+    .sheet section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 12px; min-width: 0; }
+    .sheet section h2 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+    .two-col > section { margin: 0; }
+    .row-gap { margin-bottom: 12px; }
+    .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 13px; margin: 0; }
+    .kv dt { color: var(--dim); }
+    .kv dd { margin: 0; overflow-wrap: anywhere; }
+    .big { font-size: 17px; font-weight: 650; }
+    .console { display: block; font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); border: 1px solid var(--border-strong); border-radius: 6px; padding: 9px 10px; margin: 8px 0 6px; white-space: normal; color: var(--c-bone); }
+    .console .tok { white-space: nowrap; }
+    .sheet .callout { margin: 6px 0; }
+    .sheet ul.notes { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .plan { display: block; width: 100%; height: auto; max-height: 72vh; background: #0d151d; border-radius: 6px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; font-size: 11.5px; color: var(--muted); }
+    .legend i { display: inline-block; width: 18px; height: 10px; vertical-align: -1px; margin-right: 5px; border: 1px solid var(--muted); }
+    .legend i.lg-ground { background: #7d7592b0; border-color: #b6aecb; }
+    .legend i.lg-over { border: 1.5px dashed #c9a8e6; }
+    .legend i.lg-goal { border: 2px solid var(--c-amber); border-radius: 50%; width: 12px; height: 12px; }
+    .legend i.lg-start { background: #75c9f1; border-color: #75c9f1; border-radius: 50%; width: 10px; height: 10px; }
+    .legend i.lg-path { border: 0; border-top: 2px solid #8e9aa9; height: 0; vertical-align: 3px; }
+    table.data { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    table.data th, table.data td { text-align: right; padding: 4px 6px; border-bottom: 1px solid #1b2430; white-space: nowrap; }
+    table.data th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; vertical-align: bottom; }
+    table.data td.l, table.data th.l { text-align: left; white-space: normal; }
+    table.data tr.flag td.note { color: var(--c-amber); }
+    .table-wrap { overflow-x: auto; }
+    .checklist { list-style: none; margin: 0; padding: 0; font-size: 12.5px; line-height: 1.45; }
+    .checklist li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; margin: 0 0 6px; }
+    .checklist li::before { content: ''; width: 13px; height: 13px; border: 1.5px solid var(--muted); border-radius: 2px; margin-top: 2px; }
+    .checklist code { font-size: 11.5px; overflow-wrap: anywhere; }
+    .blank { display: inline-block; min-width: 54px; border-bottom: 1px solid var(--muted); margin: 0 3px; }
+    .muted { color: var(--muted); }
+    .cond { font-weight: 600; }
+    .sheet-foot { color: var(--dim); font-size: 11.5px; line-height: 1.5; margin-top: 6px; overflow-wrap: anywhere; }
+    #sheet-status { margin: 30px 0; }
+    /* SVG plan, screen colours */
+    .plan .g-minor { stroke: #1b2a36; stroke-width: 1; }
+    .plan .g-major { stroke: #2b4052; stroke-width: 1; }
+    .plan .g-ahead { stroke: #56d9d0; stroke-width: 1.2; stroke-dasharray: 8 4 2 4; }
+    .plan .g-label { fill: #a3afbd; font: 11px var(--font); }
+    .plan .g-caption { fill: #c3cdd7; font: 600 11px var(--font); letter-spacing: .06em; }
+    .plan .box-ground { fill: #7d7592b0; stroke: #d0c8e2; stroke-width: 1.4; }
+    .plan .box-overhead { fill: #8a6fa81f; stroke: #c9a8e6; stroke-width: 1.6; stroke-dasharray: 6 4; }
+    .plan .badge circle { fill: #0b0f15; stroke: #e6ebf0; stroke-width: 1; }
+    .plan .badge text { fill: #e6ebf0; font: 700 11px var(--font); }
+    .plan .box-note { fill: #e3d4f2; font: 10.5px var(--font); }
+    .plan .start-dot { fill: #75c9f1; }
+    .plan .start-ring { fill: none; stroke: #75c9f1; stroke-width: 1.5; }
+    .plan .heading { stroke: #75c9f1; stroke-width: 2.5; fill: none; }
+    .plan .heading-tip { fill: #75c9f1; }
+    .plan .goal-ring { fill: #efbb7014; stroke: #efbb70; stroke-width: 2; }
+    .plan .goal-cross { stroke: #efbb70; stroke-width: 1.6; }
+    .plan .straight { stroke: #ffffff55; stroke-width: 1; stroke-dasharray: 3 4; }
+    .plan .path { fill: none; stroke-width: 1.6; opacity: .75; }
+    .plan .mark-label { fill: #e6ebf0; font: 600 11.5px var(--font); }
+    .plan .scale-bar { fill: #e6ebf0; }
+
+    @page { margin: 12mm; }
+    @media print {
+      :root { color-scheme: light; font-size: 9.5pt; }
+      html, body.sheet { background: #fff !important; color: #000 !important; overflow: visible; }
+      .no-print { display: none !important; }
+      .sheet-page { max-width: none; padding: 0; margin: 0; }
+      .sheet *:not(svg):not(svg *) { color: #000 !important; background: transparent !important; box-shadow: none !important; }
+      .sheet section { border: 0; border-top: 0.6pt solid #000; border-radius: 0; padding: 2.2mm 0 1.6mm; margin: 0 0 1.5mm; }
+      .sheet section.keep, .two-col { break-inside: avoid; }
+      .sheet section h2 { font-size: 8.5pt; margin-bottom: 1.4mm; }
+      .sheet-head { border-bottom: 1.2pt solid #000; padding-bottom: 2mm; margin-bottom: 2mm; }
+      .sheet-head + section { border-top: 0; padding-top: 0; }
+      .sheet-head h1 { font-size: 15pt; }
+      .not-cert { border: 1pt solid #000; font-size: 8.5pt; margin-top: 1.5mm; }
+      .two-col { gap: 5mm; }
+      .kv { font-size: 9pt; gap: 0.6mm 4mm; }
+      .big { font-size: 11pt; }
+      .console { border: 0.8pt solid #000; font-size: 9pt; padding: 1.6mm 2mm; margin: 1.5mm 0; }
+      .sheet .callout { border: 0.6pt solid #000; padding: 1.2mm 2mm; margin: 1mm 0; font-size: 8.5pt; }
+      .sheet ul.notes { font-size: 8pt; margin-top: 1mm; }
+      .plan { max-height: 88mm; background: #fff !important; border: 0.6pt solid #000; border-radius: 0; }
+      .legend { font-size: 8pt; margin-top: 1mm; gap: 1mm 4mm; }
+      .legend i { border-color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .legend i.lg-ground { background: #d4d4d4 !important; }
+      .legend i.lg-over { border: 1pt dashed #000 !important; }
+      .legend i.lg-goal { border: 1.4pt solid #000 !important; }
+      .legend i.lg-start { background: #000 !important; }
+      .legend i.lg-path { border-top: 1pt solid #888 !important; }
+      table.data { font-size: 8.5pt; }
+      table.data th, table.data td { padding: 0.7mm 1.4mm; border-bottom: 0.4pt solid #999; }
+      table.data th { font-size: 7.5pt; }
+      table.data tr { break-inside: avoid; }
+      table.data thead { display: table-header-group; }
+      table.data tr.flag td.note { font-weight: 700; }
+      .table-wrap { overflow: visible; }
+      .checklist { font-size: 8.8pt; line-height: 1.35; }
+      .checklist li { margin-bottom: 1mm; }
+      .checklist li::before { border: 0.9pt solid #000; }
+      .checklist code { font-size: 8.3pt; }
+      .blank { border-bottom: 0.6pt solid #000; }
+      .chip { border-color: #000 !important; }
+      .outcome::before { background: #000 !important; }
+      .sheet-foot { font-size: 7.5pt; }
+      /* SVG plan, print colours: black on white */
+      .plan .g-minor { stroke: #e2e2e2; stroke-width: .8; }
+      .plan .g-major { stroke: #a8a8a8; stroke-width: .9; }
+      .plan .g-ahead { stroke: #000; stroke-width: 1; }
+      .plan .g-label { fill: #000; font-size: 13px; }
+      .plan .g-caption { fill: #000; font-size: 12.5px; }
+      .plan .box-ground { fill: #d4d4d4; stroke: #000; stroke-width: 1.3; }
+      .plan .box-overhead { fill: none; stroke: #000; stroke-width: 1.3; }
+      .plan .badge circle { fill: #fff; stroke: #000; r: 10px; }
+      .plan .badge text { fill: #000; font-size: 12.5px; }
+      .plan .box-note { fill: #000; font-size: 12px; }
+      .plan .start-dot, .plan .heading-tip { fill: #000; }
+      .plan .start-ring, .plan .heading { stroke: #000; }
+      .plan .goal-ring { fill: none; stroke: #000; stroke-width: 1.6; }
+      .plan .goal-cross { stroke: #000; }
+      .plan .straight { stroke: #666; }
+      .plan .path { stroke: #8a8a8a !important; stroke-width: 1; opacity: 1; }
+      .plan .mark-label { fill: #000; font-size: 13px; }
+      .plan .scale-bar { fill: #000; }
+    }
+    @media screen and (max-width: 760px) { .two-col { grid-template-columns: minmax(0, 1fr); } }
+  </style>
+</head>
+<body class="sheet">
+  <main class="sheet-page">
+    <nav class="sheet-toolbar no-print" aria-label="Build sheet controls">
+      <a href="/">← Studio</a>
+      <label id="sheet-preset-picker" hidden>Preset <select id="sheet-preset"></select></label>
+      <span class="spacer"></span>
+      <button id="sheet-print" class="primary-action" type="button" disabled>Print</button>
+    </nav>
+    <div id="sheet-root" aria-live="polite"><p id="sheet-status" class="tiny">Loading build sheet…</p></div>
+  </main>
+  <script type="module" src="/js/sheet.js"></script>
+</body>
+</html>
