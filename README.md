@@ -1,5 +1,9 @@
 # G1 Deploy Studio
 
+**Try it in your browser: [linjiw.github.io/g1-deploy-studio](https://linjiw.github.io/g1-deploy-studio/).** Pick a goal on the robot's own LiDAR map, read the checks Studio runs before anything is sent, press Go as the operator does, and watch a recorded, simulated walk of the deploy stack: the frozen Flow student planner, the SONIC tracking policy and node.py's state machine in MuJoCo with a simulated LiDAR, at the robot's deploy settings. Contact and the true final distance are shown with every walk. The site also walks through a robot day with the real pre-Go checklist. ([How the site is built](docs/SITE.md).)
+
+![Navigate on the public site: the robot's map, a goal and its checks, a recorded walk](docs/img/site-navigate.png)
+
 A local cockpit for rehearsing Unitree G1 navigation policies before deployment. You can:
 - build a navigation arena (walls, overhead beams, start/goal presets);
 - run a pinned policy profile in an isolated CPU simulation (Flow planner → SONIC ONNX tracker → MuJoCo);
@@ -9,16 +13,18 @@ A local cockpit for rehearsing Unitree G1 navigation policies before deployment.
 
 Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the same timeline.
 
-**No motor commands, ever.** Studio has no DDS participant and no motor-command path: it never publishes `rt/lowcmd`, hand commands or ZMQ `pose`. With the real robot (Navigate's robot link, on the deploy PC, loopback only) it may send exactly two things to the planner node's control socket: a goal, only while the robot stands and only after the goal passed its checks, and a stand request. It never sends Go or quit; the operator starts every walk on the console or the remote and keeps the physical E-stop. A simulation result is not hardware readiness, and the robot link has been tested against a protocol fixture only.
+**No motor commands, ever.** Studio has no DDS participant and no motor-command path: it never publishes `rt/lowcmd`, hand commands or ZMQ `pose`. With the real robot (Navigate's robot link, on the deploy PC, loopback only) it may send exactly two things to the planner node's control socket: a goal, only while the robot stands and only after the goal passed its checks, and a stand request. It never sends Go or quit; the operator starts every walk on the console or the remote and keeps the physical E-stop. A simulation result is not hardware readiness, and the robot link has been tested against a protocol fixture only. **Nothing in this repository has run on a robot.**
 
-**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md), and a narrated 10-minute introduction (with the Navigate chapter) is in `~/research-data/g1-deploy-studio/evidence/video-20261021/`.
+**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md). The narrated 10-minute tour is on the [site](https://linjiw.github.io/g1-deploy-studio/#tour).
+
+**What you need.** This repository is Studio: the gateway, the browser app, the simulated robot and robot link adapters, their tests and the site. It contains no robot model, meshes, weights or recordings. Replay works on your own recordings. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack from local checkouts (`g1-student-deploy` with the frozen Flow student bundle and the SONIC release policy, and Flow for the WX profiles; paths in `studio/workbench.py` and `config/references.json`), which are not part of this repository.
 
 ## Open it
 
 The gateway runs as a durable user service on loopback:
 
 ```bash
-cd /home/linjiw/code/g1-deploy-studio
+cd g1-deploy-studio
 tools/studio_service.sh status        # served commit + unit state
 ```
 
@@ -83,8 +89,12 @@ Browser tests need Chromium (`CHROME_PATH`, default `/opt/google/chrome/chrome`)
 
 ## Guides
 
-[Introduction video tooling](tools/video/README.md) · [Robustness campaign](docs/ROBUSTNESS.md) · [Real-time (L3) rehearsal](docs/REALTIME_REHEARSAL.md) · [Service and access](docs/SERVICE.md) · [Policies and the WX adapter](docs/POLICIES.md) · [Arena, rehearsal and runs](docs/WORKBENCH.md) · [Unitree G1 contract](docs/ROBOT_CONTRACT.md) · [Model pipeline](docs/MODEL_PIPELINE.md) · [Sensors](docs/SENSORS.md) · [Interfaces](docs/INTERFACES.md) · [Architecture](docs/ARCHITECTURE.md) · [Acceptance evidence](docs/ACCEPTANCE.md) · [Roadmap](docs/ROADMAP.md) · [Agent rules](AGENTS.md)
+[Public site](docs/SITE.md) · [Introduction video tooling](tools/video/README.md) · [Robustness campaign](docs/ROBUSTNESS.md) · [Real-time (L3) rehearsal](docs/REALTIME_REHEARSAL.md) · [Service and access](docs/SERVICE.md) · [Policies and the WX adapter](docs/POLICIES.md) · [Arena, rehearsal and runs](docs/WORKBENCH.md) · [Unitree G1 contract](docs/ROBOT_CONTRACT.md) · [Model pipeline](docs/MODEL_PIPELINE.md) · [Sensors](docs/SENSORS.md) · [Interfaces](docs/INTERFACES.md) · [Architecture](docs/ARCHITECTURE.md) · [Acceptance evidence](docs/ACCEPTANCE.md) · [Roadmap](docs/ROADMAP.md) · [Agent rules](AGENTS.md)
 
 ## Boundaries
 
 Studio integrates the existing deployment stacks read-only and vendors no weights, meshes, recordings or third-party source. Models and meshes are served from their original local paths. ROS 2, Unitree DDS and ZMQ are distinct transports; a ROS graph never shows the ZMQ edges. The C++/DDS real-time (L3) rehearsal runs the unchanged chain inside a loopback-only user+network+PID namespace (the runner hard-codes DDS domain 0, which cannot leave that namespace). Its launcher, `tools/l3_rehearsal.sh`, is reviewed and ready but is started by an operator ([docs/REALTIME_REHEARSAL.md](docs/REALTIME_REHEARSAL.md)). NVML still fails for new processes, so GPU utilisation is read from another experiment's logger or recorded as unknown. Live robot observation requires separate authorization, a safety review and physical E-stop procedures.
+
+## License
+
+Apache-2.0 ([LICENSE](LICENSE)). Third-party pieces, including the Unitree G1 meshes the public site redistributes (BSD-3-Clause), are listed in [NOTICE](NOTICE). Research software, not affiliated with Unitree Robotics or NVIDIA.

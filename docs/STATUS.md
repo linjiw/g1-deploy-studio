@@ -24,6 +24,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 | Navigate with the real robot: robot link on the deploy PC (loopback streams; goal and stand to node.py, never Go) | M5 | Verified against a protocol fixture only (browser 7/7); not run against node.py or a robot | [NAVIGATE](NAVIGATE.md) |
 | Scan to twin (an arena fitted to the robot's map) and the printable course build sheet | — | Verified in simulation and print | [NAVIGATE](NAVIGATE.md), [WORKBENCH](WORKBENCH.md) |
 | Site maps across sessions (mapping walk, relocalization) | — | Designed, not built | [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §5.3 |
+| **Public site**: Navigate on recorded walks of the real stack (five rooms, deploy settings, every grid goal that passes the checks), the robot-day checklist, the system diagram, the tour | L1 / L2, recorded | Verified (browser checks, desktop and phone) | [SITE](SITE.md) |
 
 ## Current results
 
@@ -69,9 +70,9 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 2026-10-20 | Independent review session (3 high, 8 medium, 14 low, 12 nits; `evidence/review-20261020/REVIEW.md`). Then an independent verification (`evidence/verify-20261020/VERIFY.md`): 22 fixed and 3 partial; it also found one regression from a fix (following a detached run after a reload). The partial items, the regression and the remaining nits were fixed afterwards. One label stays by design: the HUD's "Speed (fd)" on recordings without a velocity field is a finite difference |
 | 2026-10-20 | Torque is counted at the effective limit (source clip or model clamp); scenario identity includes the actuator profile; saved scenarios keep `source`; under latency the shown plan is the executing one, live and recorded, for both the WX and the bundle worker |
 | 2026-10-20 | A second verification (`evidence/verify2-20261020/VERIFY2.md`): 19 items fixed and 1 by design; it found that the bundle worker still showed the in-flight plan (N8). A third verification (`evidence/verify3-20261020/VERIFY3.md`) confirmed the N8 fix and found N9 (a race in the single-load fix) and N10 (the leg-torque count included arm joints; Addendum D/E counts corrected). Both are fixed. The whole review session is in [REVIEW-20261020](REVIEW-20261020.md) |
-
 | 2026-10-21 | Navigate review session: independent review (6 high, 8 medium, 13 low), independent validation (16 defects), fixes, an independent verification that re-ran every finding (1 regression, fixed). Record: [REVIEW-20261021-NAVIGATE](REVIEW-20261021-NAVIGATE.md) |
 | 2026-10-21 | Real-world navigation (owner delegated the decisions): Studio may send `status`, `goal` and `stand` to node.py's control socket; never `go`, `quit` or any motor/DDS write. Goals are staged only while the robot stands and read back within 5 cm. The simulated robot follows node.py's rules; simulated time pauses while it waits. Only the frozen bundle plans from the robot's own LiDAR, so Navigate uses it |
+| 2026-10-21 | Publishing (owner's choices): the repository is public as `linjiw/g1-deploy-studio` under Apache-2.0. The site plays **recorded** walks of the real stack (deploy settings); no weights are published and no policy runs in the browser or on this machine for visitors. Site data and the video are release assets (pinned by SHA-256), not Git content. The Unitree G1 meshes on the site are byte-identical to `unitree_mujoco` (BSD-3-Clause) before simplification ([NOTICE](../NOTICE)) |
 
 ## Verify
 
