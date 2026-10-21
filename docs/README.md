@@ -26,6 +26,7 @@ Start with **[STATUS.md](STATUS.md)**: one page with what works, the current res
 | [ROBUSTNESS.md](ROBUSTNESS.md) | Random-goal campaign. Addenda: open floor (A), latency (B), predictive anchoring (C), actuator profiles (D) and firming runs (E) |
 | [VALIDATION.md](VALIDATION.md) | First independent validation (v0.2, 101 checks) |
 | [REVALIDATION.md](REVALIDATION.md) | Re-validation (v0.3, 118 checks) and the fix verification |
+| [REVIEW-20261021-NAVIGATE.md](REVIEW-20261021-NAVIGATE.md) | Navigate review session: what was built, the review, validation and verification findings and their fixes, final regression |
 | [REVIEW-20261020.md](REVIEW-20261020.md) | v0.4 review session: independent review, two verifications, every finding and its fix, final regression, a 10-minute walkthrough |
 | [ACCEPTANCE.md](ACCEPTANCE.md) | Executed acceptance checks (v0.2) |
 

@@ -11,7 +11,7 @@ Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the
 
 **No motor commands, ever.** Studio has no DDS participant and no motor-command path: it never publishes `rt/lowcmd`, hand commands or ZMQ `pose`. With the real robot (Navigate's robot link, on the deploy PC, loopback only) it may send exactly two things to the planner node's control socket: a goal, only while the robot stands and only after the goal passed its checks, and a stand request. It never sends Go or quit; the operator starts every walk on the console or the remote and keeps the physical E-stop. A simulation result is not hardware readiness, and the robot link has been tested against a protocol fixture only.
 
-**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md), and a narrated 7-minute introduction is in `~/research-data/g1-deploy-studio/evidence/video-20261020/`.
+**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md), and a narrated 10-minute introduction (with the Navigate chapter) is in `~/research-data/g1-deploy-studio/evidence/video-20261021/`.
 
 ## Open it
 

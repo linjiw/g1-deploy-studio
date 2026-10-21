@@ -5,7 +5,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 
 - **Service:** http://127.0.0.1:8790/ (systemd user unit `g1-deploy-studio`, see [SERVICE.md](SERVICE.md)). The served commit is shown in the status bar and at `/api/version`.
 - **Remote:** `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open http://localhost:8790/.
-- **Video introduction:** `~/research-data/g1-deploy-studio/evidence/video-20261020/` (7:19, narrated, subtitles; rebuild with [tools/video](../tools/video/README.md)).
+- **Video introduction:** `~/research-data/g1-deploy-studio/evidence/video-20261021/` (9:44, narrated, subtitles, with the Navigate chapter at 06:31; rebuild with [tools/video](../tools/video/README.md)).
 
 ## Capabilities
 
@@ -70,6 +70,7 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 2026-10-20 | Torque is counted at the effective limit (source clip or model clamp); scenario identity includes the actuator profile; saved scenarios keep `source`; under latency the shown plan is the executing one, live and recorded, for both the WX and the bundle worker |
 | 2026-10-20 | A second verification (`evidence/verify2-20261020/VERIFY2.md`): 19 items fixed and 1 by design; it found that the bundle worker still showed the in-flight plan (N8). A third verification (`evidence/verify3-20261020/VERIFY3.md`) confirmed the N8 fix and found N9 (a race in the single-load fix) and N10 (the leg-torque count included arm joints; Addendum D/E counts corrected). Both are fixed. The whole review session is in [REVIEW-20261020](REVIEW-20261020.md) |
 
+| 2026-10-21 | Navigate review session: independent review (6 high, 8 medium, 13 low), independent validation (16 defects), fixes, an independent verification that re-ran every finding (1 regression, fixed). Record: [REVIEW-20261021-NAVIGATE](REVIEW-20261021-NAVIGATE.md) |
 | 2026-10-21 | Real-world navigation (owner delegated the decisions): Studio may send `status`, `goal` and `stand` to node.py's control socket; never `go`, `quit` or any motor/DDS write. Goals are staged only while the robot stands and read back within 5 cm. The simulated robot follows node.py's rules; simulated time pauses while it waits. Only the frozen bundle plans from the robot's own LiDAR, so Navigate uses it |
 
 ## Verify
