@@ -20,6 +20,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 | Durable service, release guard, loopback + Host/Origin + CSRF, SSH tunnel | — | Verified | [SERVICE](SERVICE.md) |
 | Real-time chain (simulator + C++ SONIC runner + node) in an isolated namespace | L3 | **Ready, not yet run** | [REALTIME_REHEARSAL](REALTIME_REHEARSAL.md) |
 | Read-only physical G1 | M5 | Not started (needs a safety review) | REALTIME_REHEARSAL § M5 |
+| Real-world workflow: live robot map, goals on the map, scan-to-twin, site maps | — | **Designed, not built** | [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) |
 
 ## Current results
 
@@ -46,6 +47,7 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 8 | WX-RF is privileged (plans from the exact boxes) | Flow research | Pin a LiDAR-conditioned block when Flow adopts one |
 | 9 | NVML fails for new processes (driver 595.91 vs libraries 595.99) | Host admin | Not a Studio change; GPU use is read from another logger or recorded as unknown |
 | 10 | Software-WebGL playback is render-limited | Environment | Flagged in the UI (RENDER-LIMITED), and real time is kept; GPU browsers are unaffected |
+| 11 | Real-world goal workflow: may Studio send goals to the node's control socket (`:5562`), and may U1–U3 be proposed to g1-student-deploy? | Owner | Decide ([REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §11). Until then Studio stays read-only; Phase 0 and scan-to-twin need no approval |
 
 ## Decisions
 

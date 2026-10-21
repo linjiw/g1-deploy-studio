@@ -34,6 +34,7 @@ Current state, results and open issues are in [STATUS.md](STATUS.md). This page 
    - Studio's live mode fed from it, with observe-only banners and stream ages shown against the source thresholds already in the contract;
    - the physical E-stop owned by the operator;
    - the first passive reading must include `mode_machine`, which selects the actuator profile.
+6. **Real-world navigation workflow**: designed in [REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md). Phases: 0, build sheet and post-run import; twin, scan to arena; 1, live view; 2, goals on the live map (needs a decision on the control socket); 3, site maps.
 
 
 ## Current implementation status (2026-10-15)

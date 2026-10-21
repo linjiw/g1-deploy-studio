@@ -14,6 +14,7 @@ Start with **[STATUS.md](STATUS.md)**: one page with what works, the current res
 | [REALTIME_REHEARSAL.md](REALTIME_REHEARSAL.md) | The isolated L3 chain: decision, verified probes, the launcher, the M5 read-only robot plan |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Studio's place in the SONIC pipeline and its integration contract |
 | [ROADMAP.md](ROADMAP.md) | Next steps toward a read-only physical G1 |
+| [REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md) | Design: seeing the robot's perception, building maps from it, putting goals on them and watching real runs |
 | [CODE_REFERENCES.md](CODE_REFERENCES.md) | Verified file references in the reference repositories |
 | [../tools/video/README.md](../tools/video/README.md) | Rebuilding the introduction video |
 
