@@ -10,6 +10,8 @@ PIDF="$EVID/gateway-$PORT.pid"
 mkdir -p "$EVID"
 case "${1:-start}" in
   start)
+    # A gateway already answering on this port would make the readiness check below pass for the wrong process.
+    if curl -sf "http://127.0.0.1:$PORT/api/version" >/dev/null 2>&1; then echo "port $PORT is already served by another gateway; stop it first"; exit 1; fi
     nohup .venv/bin/python -m studio.server --port "$PORT" --data-root "$ROOT" \
       --config tools/browser/validation/sessions.validation.json >>"$EVID/gateway-$PORT.log" 2>&1 &
     echo $! >"$PIDF"
