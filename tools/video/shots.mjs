@@ -26,6 +26,13 @@ async function worldPoint(page, x, y) {
   const vp = await page.locator('#viewport').boundingBox();
   return [vp.x + (ndc[0] + 1) / 2 * vp.width, vp.y + (1 - ndc[1]) / 2 * vp.height];
 }
+// Click the map where a world point is drawn and place the goal at exactly that point (a pixel click rounds to
+// about 1 cm, and the quick planner's walk through a doorway depends on the exact goal).
+async function pickAt(page, h, x, y) {
+  await h.click(await worldPoint(page, x, y), { real: false, after: 0 });
+  await page.evaluate(xy => window.__studio.pickGoal(xy), [x, y]);
+  await h.hold(0.2);
+}
 const navState = page => page.evaluate(() => window.__studio.navigate.job?.latest?.navigation ?? null);
 async function timelapse(page, h, done, { maxFrames = 150, wallMs = 150 } = {}) {
   for (let i = 0; i < maxFrames; i++) {
@@ -225,7 +232,8 @@ export const SHOTS = {
     await boot(page, DEMO, '?workspace=navigate');
     await h.ready();
     await h.waitFor(() => !!document.querySelector('#nav-world'));
-    const world = await page.evaluate(() => [...document.querySelectorAll('#nav-world option')].find(o => /offset doorway/i.test(o.textContent))?.value);
+    // The original world, not a twin an earlier capture saved from it ("Twin · Studio demo · offset doorway").
+    const world = await page.evaluate(() => [...document.querySelectorAll('#nav-world option')].find(o => o.textContent.trim() === 'Studio demo · offset doorway')?.value);
     if (world) { await page.selectOption('#nav-world', world); await h.settle(800); }
     await h.caption('Navigate · a simulated robot', "It follows node.py's rules and knows the world only through its own LiDAR");
     await h.spot('#navigate-panel .nav-robot', 'simulated now · the real robot later, same panel', { dim: false, below: true });
@@ -236,12 +244,12 @@ export const SHOTS = {
     await h.settle(600);
     await h.caption("Navigate · the robot's own map", 'teal: seen floor · red: obstacle · amber: low step · purple: overhead · never-seen space stays empty');
     await h.hold(3.0);
-    await h.click(await worldPoint(page, 2.0, 1.3), { after: 0.2 });
+    await pickAt(page, h, 2.0, 1.3);
     await h.waitFor(() => !!window.__studio.navigate.pick?.check);
     await h.settle(400);
     await h.caption('Navigate · checked before sending', "A goal in a wall is refused, on the robot's map and with the node's own rules");
     await h.spot('.nav-checks', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
-    await h.click(await worldPoint(page, 3.4, 0.5), { after: 0.2 });
+    await pickAt(page, h, 3.6, 0.6);
     await h.waitFor(() => window.__studio.navigate.pick?.check?.ok === true);
     await h.settle(400);
     await h.caption('Navigate · a goal behind the doorway', 'Inside the map · seen and free · no low ceiling · a route through what it knows');
@@ -262,8 +270,8 @@ export const SHOTS = {
     await h.ready();
     await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.can?.goal === true, null, 120000);
     await page.waitForTimeout(1500); await h.settle(500);
-    await h.caption('Navigate · the next goal', 'Back through the doorway; the map keeps everything it has seen');
-    await h.click(await worldPoint(page, 0.6, 0.9), { after: 0.2 });
+    await h.caption('Navigate · the next goal', 'Farther along; the map keeps everything it has seen');
+    await pickAt(page, h, 4.3, 0.1);
     await h.waitFor(() => window.__studio.navigate.pick?.check?.ok === true);
     await h.hold(1.2);
     await h.click('#nav-send', { after: 0.4 });
@@ -314,7 +322,7 @@ export const SHOTS = {
       await h.spot('#source-badge', 'LIO ESTIMATE', { dim: false, below: true }); await h.hold(2.6); await h.clearSpots();
       // The link takes a goal once the robot has been still for 0.5 s and the node's frame matches LIO.
       await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.can?.goal === true, null, 30000);
-      await h.click(await worldPoint(page, 2.6, 0.3), { after: 0.2 });
+      await pickAt(page, h, 2.6, 0.3);
       await h.waitFor(() => window.__studio.navigate.pick?.check?.ok === true, null, 30000);
       await h.waitFor(() => !document.querySelector('#nav-send')?.disabled, null, 30000);
       await h.click('#nav-send', { after: 0.6 });

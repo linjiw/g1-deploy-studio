@@ -59,6 +59,7 @@ def main():
     narration = {s['id']: s for s in json.loads((out / 'narration.json').read_text())['segments']}
     chapters_by_id = {'title': 'Introduction', 'chain': 'Why: the deployment chain', 'architecture': 'Design',
                       'ch-tour': 'The cockpit', 'arena': 'Arena and rehearsal', 'ch-results': 'What we learned',
+                      'ch-navigate': 'Deploying to a real room: Navigate',
                       'validation': 'Evidence and safety', 'roadmap': 'Next steps'}
 
     t, cues, filters, inputs, chapters = 0.0, [], [], [], []
