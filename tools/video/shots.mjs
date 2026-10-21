@@ -20,6 +20,26 @@ const robotRect = async (page, w = 260, h = 420) => {
   return [x - w / 2, y - h / 2, w, h];
 };
 
+// Navigate shots: world -> screen for clicks on the map; time-lapse while the simulated robot walks.
+async function worldPoint(page, x, y) {
+  const [ndc] = await page.evaluate(p => window.__studio.projectWorld([p]), [x, y, 0]);
+  const vp = await page.locator('#viewport').boundingBox();
+  return [vp.x + (ndc[0] + 1) / 2 * vp.width, vp.y + (1 - ndc[1]) / 2 * vp.height];
+}
+const navState = page => page.evaluate(() => window.__studio.navigate.job?.latest?.navigation ?? null);
+async function timelapse(page, h, done, { maxFrames = 150, wallMs = 150 } = {}) {
+  for (let i = 0; i < maxFrames; i++) {
+    await h.frame(1);
+    if (await page.evaluate(done)) return true;
+    await page.waitForTimeout(wallMs);
+  }
+  return false;
+}
+const walkEnded = () => { const n = window.__studio.navigate.job?.latest?.navigation; return !!(n?.paused && n.legs?.length && n.legs.at(-1).outcome); };
+// The robot-link shot runs tools/fake_node.py (a protocol fixture, not a robot) on these loopback ports;
+// the demo gateway must be started with STUDIO_ROBOT_LINK pointing at a matching config.
+export const FIXTURE_PORTS = { odom: 18561, pose: 18556, debug: 18557, control: 18562 };
+
 export const SHOTS = {
   async replay({ page, h, APP }) {
     await boot(page, APP, `?session=${DEMO_RUN}&camera=follow`);
@@ -190,6 +210,113 @@ export const SHOTS = {
     await h.spot('#rh-job', 'whole-run outcome', { dim: false });
     await h.hold(2.4);
     await h.clearSpots();
+  },
+
+  async navigate({ page, h, DEMO }) {
+    await boot(page, DEMO, '?workspace=navigate');
+    await h.ready();
+    await h.waitFor(() => !!document.querySelector('#nav-world'));
+    const world = await page.evaluate(() => [...document.querySelectorAll('#nav-world option')].find(o => /offset doorway/i.test(o.textContent))?.value);
+    if (world) { await page.selectOption('#nav-world', world); await h.settle(800); }
+    await h.caption('Navigate · a simulated robot', "It follows node.py's rules and knows the world only through its own LiDAR");
+    await h.spot('#navigate-panel .nav-robot', 'simulated now · the real robot later, same panel', { dim: false, below: true });
+    await h.hold(2.0); await h.clearSpots();
+    await h.click('#nav-start-session', { after: 0.2 });
+    await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.phase === 'WAIT' && window.__studio.state.session?.metadata?.kind === 'navigation', null, 180000);
+    await page.waitForTimeout(2000);
+    await h.settle(600);
+    await h.caption("Navigate · the robot's own map", 'teal: seen floor · red: obstacle · amber: low step · purple: overhead · never-seen space stays empty');
+    await h.hold(3.0);
+    await h.click(await worldPoint(page, 2.0, 1.3), { after: 0.2 });
+    await h.waitFor(() => !!window.__studio.navigate.pick?.check);
+    await h.settle(400);
+    await h.caption('Navigate · checked before sending', "A goal in a wall is refused, on the robot's map and with the node's own rules");
+    await h.spot('.nav-checks', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
+    await h.click(await worldPoint(page, 3.4, 0.5), { after: 0.2 });
+    await h.waitFor(() => window.__studio.navigate.pick?.check?.ok === true);
+    await h.settle(400);
+    await h.caption('Navigate · a goal behind the doorway', 'Inside the map · seen and free · no low ceiling · a route through what it knows');
+    await h.spot('.nav-checks', '', { dim: false }); await h.hold(3.2); await h.clearSpots();
+    await h.click('#nav-send', { after: 0.6 });
+    await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.can?.go === true);
+    await h.click('#nav-go', { after: 0.2 });
+    await h.caption('Navigate · walking (time-lapse)', 'Plan, reference and path live · the map grows as it walks');
+    await timelapse(page, h, walkEnded, { maxFrames: 120 });
+    await h.settle(600);
+    await h.caption('Navigate · arrived and standing', 'Simulated time pauses while the robot waits for the next goal');
+    await h.spot('.nav-walks', '', { dim: false }); await h.hold(2.6); await h.clearSpots();
+  },
+
+  async navigateReview({ page, h, DEMO }) {
+    // Continues the live session of the previous shot on the demo gateway.
+    await boot(page, DEMO, '?workspace=navigate');
+    await h.ready();
+    await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.can?.goal === true, null, 120000);
+    await page.waitForTimeout(1500); await h.settle(500);
+    await h.caption('Navigate · the next goal', 'Back through the doorway; the map keeps everything it has seen');
+    await h.click(await worldPoint(page, 0.6, 0.9), { after: 0.2 });
+    await h.waitFor(() => window.__studio.navigate.pick?.check?.ok === true);
+    await h.hold(1.2);
+    await h.click('#nav-send', { after: 0.4 });
+    await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.can?.go === true);
+    await h.click('#nav-go', { after: 0.2 });
+    await timelapse(page, h, walkEnded, { maxFrames: 90 });
+    await h.settle(400);
+    await h.click('#nav-end', { after: 0.2 });
+    await h.waitFor(() => window.__studio.state.session?.metadata?.mode === 'replay' && window.__studio.navigate.job?.status === 'completed', null, 120000);
+    await h.settle(800);
+    await h.caption('Navigate · the session in Replay', 'Every walk, its goal and the timeline lanes, from one recording');
+    const duration = await page.evaluate(() => window.__studio.state.session.metadata.duration_s);
+    await h.play(0, duration, 4.0);
+    await h.click('#nav-twin', { after: 0.2 });
+    await h.waitFor(() => !!window.__studio.navigate.notice?.arena, null, 60000);
+    await h.settle(400);
+    await h.caption('Navigate · scan to twin', "Boxes fitted to the robot's map, saved as a new arena, scored against the true world");
+    await h.spot('#nav-live .callout', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
+    const arena = await page.evaluate(() => window.__studio.navigate.notice.arena);
+    await page.goto(`${DEMO}/sheet.html?arena=${encodeURIComponent(arena)}&preset=0`);
+    await page.waitForFunction(() => document.querySelector('svg') && document.body.innerText.includes('ahead'), null, { timeout: 30000 }).catch(() => {});
+    await h.ready();
+    await h.caption('Build sheet', 'The course measured from a start mark, the console command and the go / no-go list');
+    await h.hold(2.4);
+    for (let i = 0; i < 30; i++) { await page.evaluate(i => window.scrollTo(0, i * 40), i); await h.frame(); }
+    await h.hold(1.2);
+  },
+
+  async navigateRobot({ page, h, DEMO }) {
+    const { spawn } = await import('node:child_process');
+    const root = new URL('../../', import.meta.url).pathname, py = `${root}.venv/bin/python`, ep = p => `tcp://127.0.0.1:${p}`;
+    const F = FIXTURE_PORTS;
+    const fixture = spawn(py, [`${root}tools/fake_node.py`, '--odom-bind', ep(F.odom), '--pose-bind', ep(F.pose), '--debug-bind', ep(F.debug),
+      '--control-bind', ep(F.control), '--arena', 'demo'], { cwd: root, stdio: 'ignore' });
+    try {
+      await page.waitForTimeout(1500);
+      await boot(page, DEMO, '?workspace=navigate');
+      await h.ready();
+      await h.click('[data-robot="real"]', { after: 0.6 });
+      await h.waitFor(() => !!document.querySelector('#nav-connect'), null, 30000);
+      await h.caption('Navigate · the real robot', 'On the deploy PC: loopback streams from node.py, the SONIC runner and the LIO bridge');
+      await h.spot('#navigate-panel .panel-section', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
+      await h.click('#nav-connect', { after: 0.2 });
+      await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.phase === 'WAIT' && window.__studio.state.session?.metadata?.recording_kind === 'robot-link', null, 60000);
+      await page.waitForTimeout(2500); await h.settle(600);
+      await h.caption('Navigate · protocol fixture (not a robot)', 'Pose: the LIO estimate in the odom frame · map: Studio\'s reconstruction from the LiDAR');
+      await h.spot('#source-badge', 'LIO ESTIMATE', { dim: false, below: true }); await h.hold(2.6); await h.clearSpots();
+      await h.click(await worldPoint(page, 2.9, 0.4), { after: 0.2 });
+      await h.waitFor(() => window.__studio.navigate.pick?.check?.ok === true, null, 30000);
+      await h.click('#nav-send', { after: 0.6 });
+      await h.waitFor(() => (window.__studio.navigate.job?.latest?.navigation?.commands ?? []).some(c => c.cmd === 'goal' && c.status === 'applied'), null, 30000);
+      await h.caption('Navigate · staged on the node', 'Sent as ahead / left while standing, read back within 5 cm · Studio never sends Go');
+      await h.spot('#nav-live .callout', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
+      await new Promise(resolve => spawn(py, [`${root}tools/fake_node.py`, '--press', 'go', '--control-connect', ep(F.control)], { cwd: root, stdio: 'ignore' }).on('exit', resolve));
+      await h.caption('Navigate · the operator pressed Go', 'Console g or remote F1 · Studio watches; Stand settles it (not an emergency stop)');
+      await timelapse(page, h, () => window.__studio.navigate.job?.latest?.navigation?.phase === 'RUN', { maxFrames: 30, wallMs: 100 });
+      await timelapse(page, h, () => false, { maxFrames: 20, wallMs: 120 });
+      await h.click('#nav-stand', { after: 0.2 });
+      await timelapse(page, h, () => ['STOPPED', 'ARRIVED'].includes(window.__studio.navigate.job?.latest?.navigation?.phase), { maxFrames: 40, wallMs: 120 });
+      await h.hold(1.4);
+      await h.click('#nav-end', { after: 1.0 });
+    } finally { fixture.kill('SIGTERM'); }
   },
 
   async runs({ page, h, APP }) {

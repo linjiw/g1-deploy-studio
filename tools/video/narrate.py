@@ -20,7 +20,7 @@ from pathlib import Path
 SPOKEN_TO_WRITTEN = [
     (r'\[([^\]]+)\]\(/[^)]*/\)', r'\1'), (r'\bZero M Q\b', 'ZMQ'), (r'\bD D S\b', 'DDS'), (r'\bS D K\b', 'SDK'),
     (r'\bS S H\b', 'SSH'), (r'\bW X\b', 'WX'), (r'\bL zero\b', 'L0'), (r'\bL one\b', 'L1'), (r'\bL two\b', 'L2'),
-    (r'\bL three\b', 'L3'), (r'\bM five\b', 'M5'), (r'\bnewton-meter\b', 'N·m'),
+    (r'\bL three\b', 'L3'), (r'\bM five\b', 'M5'), (r'\bnewton-meter\b', 'N·m'), (r'\bL I O\b', 'LIO'), (r'\bP C\b', 'PC'),
 ]
 
 

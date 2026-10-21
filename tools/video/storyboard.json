@@ -24,7 +24,7 @@
    "kind": "deck",
    "slide": "principles",
    "min_s": 12,
-   "say": "So Studio is built on four rules. It observes, and never commands: it owns no low-command writer and no control port. Every value carries its evidence class, measured, simulator truth, estimated or commanded, and missing data stays unavailable, never a healthy zero. Simulation is isolated from the robot network. And every run pins exactly which policy, configuration and checkpoints ran."
+   "say": "So Studio is built on four rules. It never drives the robot: it owns no low-command writer, and it never starts a walk. On a real robot it may only stage a goal or ask for a stand; the operator says go. Every value carries its evidence class, measured, simulator truth, estimated or commanded, and missing data stays unavailable, never a healthy zero. Simulation is isolated from the robot network. And every run pins exactly which policy, configuration and checkpoints ran."
   },
   {
    "id": "architecture",
@@ -139,6 +139,48 @@
    "say": "The next rung is the real-time chain: the unchanged simulator, SONIC runner and planner node, inside a network [namespace](/nˈAmspˌAs/) that has nothing but a private [loopback](/lˈupbˌæk/). Probes confirmed that no traffic can leave it and no process can outlive it. The launcher is ready, waiting for an operator's go."
   },
   {
+   "id": "ch-navigate",
+   "kind": "deck",
+   "slide": "ch-navigate",
+   "min_s": 2.6,
+   "say": ""
+  },
+  {
+   "id": "navigate-flow",
+   "kind": "deck",
+   "slide": "navigate-flow",
+   "min_s": 14,
+   "say": "On a real site the robot knows only what its own LiDAR has seen. Navigate puts that map on screen. You click a goal, Studio checks it on the robot's map with the planner node's own rules, and stages it while the robot stands. The operator starts the walk on the console or the remote, and Studio shows the plan, the path and the health of every stream. When it ends, the session opens in Replay, and its map can become a simulation twin."
+  },
+  {
+   "id": "navigate",
+   "kind": "app",
+   "shot": "navigate",
+   "min_s": 30,
+   "say": "Here the robot is simulated, but it follows the node's rules: it stands, waits, scans, walks and settles. The floor shows its memory: seen floor, obstacles, low steps and overhead, while unseen space stays empty. A goal inside a wall is refused before anything is sent. A goal behind the doorway passes: inside the map, seen, free, with a route through what the robot knows. Send, then go. With the same goal, this walk matches the validated rehearsal frame for frame."
+  },
+  {
+   "id": "navigate-review",
+   "kind": "app",
+   "shot": "navigateReview",
+   "min_s": 24,
+   "say": "Each new goal adds to the same map. Ending the session saves the recording, with every walk and its goal on the timeline. Make an arena twin fits boxes to the robot's map, ready to edit and rehearse, and the build sheet prints the course measured from a start mark, with the exact console command."
+  },
+  {
+   "id": "navigate-robot",
+   "kind": "app",
+   "shot": "navigateRobot",
+   "min_s": 24,
+   "say": "With the real robot, Studio runs on the deploy P C and reads the node, the runner and the L I O bridge over [loopback](/lˈupbˌæk/). Here a protocol fixture stands in for the robot. The pose is the L I O estimate, labelled as such. A goal becomes the node's ahead and left command and is read back within five centimeters. Studio never sends go: the operator does, and the remote stays in hand."
+  },
+  {
+   "id": "navigate-finding",
+   "kind": "deck",
+   "slide": "navigate-finding",
+   "min_s": 13,
+   "say": "Building this surfaced a real deployment issue. The robot's map can mark the top edge of a table or a box, about one meter tall, as a low ceiling. The node then refuses to stand there, and the robot holds the end of its last plan. Studio now refuses such goals and explains the deferral; the fix belongs to the deploy repository."
+  },
+  {
    "id": "validation",
    "kind": "deck",
    "slide": "validation",
@@ -150,14 +192,14 @@
    "kind": "deck",
    "slide": "roadmap",
    "min_s": 12,
-   "say": "From here: run the real-time chain, then observe the physical G1 read-only, subscribe-only, under an operator procedure with the physical emergency stop. Reading the robot's mode machine first selects the right torque limits. Studio will still never send a command."
+   "say": "From here: run the real-time chain and connect Navigate to the real planner node inside it. Then, after a safety review, the physical G1: read its mode machine first, observe its streams, and stage goals while the operator keeps go, the remote and the emergency stop. Site maps that persist across sessions come next."
   },
   {
    "id": "outro",
    "kind": "deck",
    "slide": "outro",
    "min_s": 7,
-   "say": "G1 Deploy Studio. Rehearse first. Observe always. Command never."
+   "say": "G1 Deploy Studio. Rehearse first. See what the robot sees. The operator says go."
   }
  ]
 }

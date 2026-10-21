@@ -173,7 +173,7 @@ slide('principles', `
   <div class="eyebrow" data-in="0.1">Design rules</div>
   <h2 data-in="0.3" data-a="rise">Four rules the tool never breaks</h2>
   <div class="cards4">
-    <div class="card" data-in="0.9" data-a="rise"><span class="num">01</span><h3><span class="accent">Observe</span>, never command</h3><p>No <span class="mono">rt/lowcmd</span> writer, no hand commands, no control port. The SONIC runner and Unitree SDK keep ownership of the robot.</p></div>
+    <div class="card" data-in="0.9" data-a="rise"><span class="num">01</span><h3><span class="accent">Never</span> drive the robot</h3><p>No <span class="mono">rt/lowcmd</span> writer, no hand commands, never Go. On a real robot Studio may only stage a goal or ask for a stand; the operator starts every walk.</p></div>
     <div class="card" data-in="1.7" data-a="rise"><span class="num">02</span><h3>Label the <span class="bone">evidence</span></h3><p>Measured · simulator truth · estimated · commanded · configured. Missing telemetry stays <span class="mono">UNAVAILABLE</span>, never a healthy zero.</p></div>
     <div class="card" data-in="2.5" data-a="rise"><span class="num">03</span><h3><span class="amber">Isolate</span> simulation</h3><p>Loopback-only gateway, owned bounded CPU workers, no DDS or ZMQ path to a robot network, no GPU or hardware by default.</p></div>
     <div class="card" data-in="3.3" data-a="rise"><span class="num">04</span><h3><span class="green">Pin</span> what ran</h3><p>Every run records the policy profile, source revision, config and checkpoint SHA-256 and its fidelity level.</p></div>
@@ -201,7 +201,7 @@ slide('architecture', `
     <g data-in="5.0" data-a="rise">
       <rect x="0" y="560" width="1620" height="96" rx="14" fill="#1a1414" stroke="#5a3234" stroke-width="2"/>
       <text x="30" y="604" font-size="27" font-weight="700" fill="#f08c85">Robot control path — never touched</text>
-      <text x="30" y="640" font-size="22" fill="#a3afbd" font-family="JetBrains Mono">planner → ZMQ → SONIC runner → Unitree DDS rt/lowcmd · Studio may only subscribe (M5) — it owns no writer</text>
+      <text x="30" y="640" font-size="22" fill="#a3afbd" font-family="JetBrains Mono">planner → ZMQ → SONIC runner → Unitree DDS rt/lowcmd · Studio subscribes; to node.py only goal / stand</text>
     </g>
   </svg>
   ${footer('02 · DESIGN')}`);
@@ -297,7 +297,7 @@ slide('validation', `
     <div class="card" data-in="3.6" data-a="rise"><h3 style="font-size:28px">Honesty is tested, not assumed</h3>
       ${(D.honesty || []).map((x, i) => `<p data-in="${3.9 + i * 0.25}" style="margin-top:4px; font-size:22px">· ${x}</p>`).join('')}</div>
   </div>
-  ${footer('05 · TRUST')}`);
+  ${footer('06 · TRUST')}`);
 
 slide('roadmap', `
   <div class="eyebrow" data-in="0.1">Next</div>
@@ -305,12 +305,12 @@ slide('roadmap', `
   <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-top: 70px">
     ${(D.roadmap || []).map((r, i) => `<div class="card" data-in="${0.8 + i * 0.5}" data-a="rise"><span class="tag" style="color:${r.color}">${r.tag}</span><h3 style="margin-top:18px">${r.title}</h3><p>${r.text}</p></div>`).join('')}
   </div>
-  ${footer('06 · NEXT')}`);
+  ${footer('07 · NEXT')}`);
 
 slide('outro', `
   <div style="position:absolute; left:120px; top:300px; right:120px">
     <div class="eyebrow" data-in="0.2">G1 Deploy Studio</div>
-    <h1 data-in="0.4" data-a="rise" style="font-size:88px">Rehearse first.<br><span class="accent">Observe always.</span> Command never.</h1>
+    <h1 data-in="0.4" data-a="rise" style="font-size:88px">Rehearse first.<br><span class="accent">See what it sees.</span><br>The operator says Go.</h1>
     <div class="lede mono" data-in="1.4" data-a="rise" style="font-size:28px">${D.outroLine || ''}</div>
   </div>`);
 

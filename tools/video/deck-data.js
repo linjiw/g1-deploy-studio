@@ -6,11 +6,12 @@ window.DECK_DATA = {
     ['L1', 'CPU lockstep', 'physics waits for each plan · Flow + SONIC ONNX + MuJoCo', 'done'],
     ['L2', 'Planner latency', 'physics keeps running while the plan computes', 'done'],
     ['L3', 'Real-time chain', 'separate processes over DDS + ZMQ, isolated namespace — ready', 'next'],
-    ['M5', 'Read-only robot', 'subscribe-only physical G1, operator + e-stop', 'later'],
+    ['M5', 'Robot link', 'observe + stage goals · the operator keeps Go · fixture-tested', 'later'],
   ],
   chapters: [
     ['ch-tour', '03', 'The cockpit, workspace by workspace', 'Replay · Inspector · Sensors · System · Arena · Rehearse · Runs'],
     ['ch-results', '04', 'What the rehearsals showed', 'Random goals · latency · torque limits · the real-time chain'],
+    ['ch-navigate', '05', 'Deploying to a real room', "Goals on the robot's own map · scan to twin · build sheet · the robot link"],
   ],
   results: {
     headline: [
@@ -33,6 +34,40 @@ window.DECK_DATA = {
     ],
   },
   extraSlides: [
+    { id: 'navigate-flow', html: `
+      <div class="eyebrow" data-in="0.1">Navigate</div>
+      <h2 data-in="0.3" data-a="rise">From what the robot sees to a walk</h2>
+      <svg width="1680" height="560" viewBox="0 0 1680 560" style="position:absolute; left:120px; top:330px">
+        ${[['1', 'The robot sees', 'MID-360 → its own map · 12 × 12 m, 5 cm', '#56d9d0'],
+           ['2', 'Studio shows it', 'floor · obstacles · overhead · unseen stays empty', '#7fb4ff'],
+           ['3', 'Click a goal', "checked on the robot's map with node.py's rules", '#efbb70'],
+           ['4', 'Stage it', 'only while standing · read back ≤ 5 cm', '#e6dfcf'],
+           ['5', 'Operator: Go', 'console g or remote F1 · never Studio', '#f08c85'],
+           ['6', 'Watch, review', 'plan · path · health · replay · twin', '#5fd39b']]
+          .map(([n, t, sub, c], i) => { const x = (i % 3) * 560, y = Math.floor(i / 3) * 270, t0 = 0.7 + i * 0.55;
+            return `<g data-in="${t0}" data-a="rise"><rect x="${x}" y="${y}" width="510" height="220" rx="18" fill="#121821" stroke="${c}" stroke-width="2.4"/>
+              <text x="${x + 30}" y="${y + 70}" font-size="54" font-weight="800" fill="${c}" font-family="JetBrains Mono">${n}</text>
+              <text x="${x + 100}" y="${y + 70}" font-size="34" font-weight="700" fill="#e6ebf0">${t}</text>
+              <foreignObject x="${x + 30}" y="${y + 100}" width="450" height="110"><div xmlns="http://www.w3.org/1999/xhtml" style="font: 24px/1.4 Inter, sans-serif; color:#a3afbd">${sub}</div></foreignObject></g>`; }).join('')}
+      </svg>
+      <div class="footer"><span>05 · DEPLOY</span><span>G1 DEPLOY STUDIO</span></div>` },
+    { id: 'navigate-finding', html: `
+      <div class="eyebrow" data-in="0.1">What building it showed</div>
+      <h2 data-in="0.3" data-a="rise">A table-height edge can look like a ceiling</h2>
+      <div style="display:grid; grid-template-columns: 1.15fr 1fr; gap: 36px; margin-top: 34px">
+        <div class="card" data-in="0.9" data-a="rise">
+          <h3 style="font-size:30px">The deploy stack, in simulation</h3>
+          <p data-in="1.3" style="margin-top:14px">The robot's map filed the top edge of a <span class="amber">1 m pillar</span> as a ceiling at 0.98 m (also seen at 0.83–0.96 m in a recorded run).</p>
+          <p data-in="2.0" style="margin-top:14px">node.py then <span class="amber">defers its stand</span> there; when the plan ran out the robot held its last pose, leaned on the pillar at 107 N and drifted 1 m in 70 s.</p>
+          <p data-in="2.8" style="margin-top:14px">Studio now refuses such goals, explains a deferred stand and offers the remote's takeover. The fix belongs to the deploy repository.</p>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:18px">
+          <div class="card" style="padding:20px 28px" data-in="3.4" data-a="rise"><span class="tag" style="color:var(--green)">PARITY</span><p style="margin-top:8px">The simulated robot's walk equals the validated rehearsal: 279 frames, largest pose difference 0.000005.</p></div>
+          <div class="card" style="padding:20px 28px" data-in="3.9" data-a="rise"><span class="tag" style="color:var(--cyan)">ROUTE CHECK</span><p style="margin-top:8px">Studio's reachability equals Flow's SensorRoute on 25 recorded node maps: 200 routes, no mismatch.</p></div>
+          <div class="card" style="padding:20px 28px" data-in="4.4" data-a="rise"><span class="tag" style="color:var(--amber)">SPEED</span><p style="margin-top:8px">Quick planner budget about real time on this CPU; the deployed budget 0.16×.</p></div>
+        </div>
+      </div>
+      <div class="footer"><span>05 · DEPLOY</span><span>G1 DEPLOY STUDIO</span></div>` },
     { id: 'torque', html: `
       <div class="eyebrow" data-in="0.1">Hardware question, settled by research</div>
       <h2 data-in="0.3" data-a="rise">The hip limit depends on the robot's revision</h2>
@@ -115,9 +150,9 @@ window.DECK_DATA = {
   ],
   securityLine: 'Loopback-only gateway (127.0.0.1 / ::1) · Host and Origin checks · per-process CSRF token · content-hashed assets · SSH tunnel for remote access · no hardware, DDS or ZMQ command path.',
   roadmap: [
-    { tag: 'L3 · READY', color: '#7fb4ff', title: 'Real-time chain', text: 'Run the unchanged simulator, SONIC runner and node in the isolated namespace; compare with L1/L2 on the same scenarios.' },
-    { tag: 'M5 · NEXT', color: '#efbb70', title: 'Read-only G1', text: 'Subscribe-only collector on rt/lowstate, IMU and LiDAR under an operator procedure with the physical e-stop.' },
-    { tag: 'FIRST READ', color: '#5fd39b', title: 'mode_machine', text: 'Read the robot revision passively, pick the matching torque profile, then rehearse that exact robot.' },
+    { tag: 'L3 · READY', color: '#7fb4ff', title: 'Real chain + robot link', text: 'Run the isolated real-time chain and connect Navigate to the real node.py inside it, before any robot.' },
+    { tag: 'M5 · AFTER REVIEW', color: '#efbb70', title: 'The physical G1', text: 'Read mode_machine first, observe the streams, then stage goals while the operator keeps Go, the remote and the e-stop.' },
+    { tag: 'NEXT', color: '#5fd39b', title: 'Site maps', text: 'A mapping walk, relocalization each session and named goals that stay valid across days.' },
   ],
   outroLine: 'tools/studio_service.sh status · http://127.0.0.1:8790/ · ssh -N -L 8790:127.0.0.1:8790',
 };
