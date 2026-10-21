@@ -83,6 +83,7 @@ def validate_request(request):
             'idle_timeout_s': _number(request.get('idle_timeout_s', 1200), 'idle_timeout_s', 5, 7200),
             'initial_goal': None if initial_goal is None else _xy(initial_goal, 'initial_goal'),
             'map_mode': _map_mode(request.get('map_mode', 'keep')),
+            'record_grids': _flag(request.get('record_grids', False), 'record_grids'),
             'policy': {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle',
                        'identity_sha256': str((request.get('policy') or {}).get('identity_sha256') or '')[:64] or None}}
 
@@ -90,6 +91,12 @@ def validate_request(request):
 def _map_mode(value):
     if value not in MAP_MODES:
         raise ValueError(f'map_mode must be one of {list(MAP_MODES)}')
+    return value
+
+
+def _flag(value, name):
+    if not isinstance(value, bool):
+        raise ValueError(f'{name} must be true or false')
     return value
 
 
@@ -322,6 +329,7 @@ def _run(req, output, inbox, started):
          'q': start_q.copy(),  # the planner's latest pose estimate (float64, as node.py's state)
          'deferred_since': None}
     frames, perceptions, plans = [], [], []
+    grids = []  # record_grids: the full memory as display codes at every recorded snapshot (tools/site)
     executing_starts = []  # (start tick, plan row index) per plan that drove SONIC
 
     def event(kind, message, **fields):
@@ -375,6 +383,9 @@ def _run(req, output, inbox, started):
         # Live views get every snapshot; the recording keeps one per RECORD_SNAPSHOT_S (frames point at the latest kept).
         if force or not perceptions or t - perceptions[-1]['time'] >= RECORD_SNAPSHOT_S - 1e-9:
             perceptions.append(p)
+            if req['record_grids']:
+                from studio.goal_check import map_codes
+                grids.append((t, *map_codes(memory.support, memory.ceiling)))
         S['map_dirty'] = True
 
     def write_map(force=False):
@@ -827,6 +838,10 @@ def _run(req, output, inbox, started):
     if S['leg']:
         end_leg('session_end', S['end_reason'])
     write_map(force=True)
+    if grids:
+        np.savez_compressed(output / 'grids.npz', time=np.asarray([g[0] for g in grids]), codes=np.stack([g[1] for g in grids]),
+                            height_cm=np.stack([g[2] for g in grids]), lo=np.asarray(memory.lo, dtype=float),
+                            res=np.float64(memory.res))
     final_map = output / 'memory-final.npz'
     if (output / 'memory.npz').is_file():
         final_map.write_bytes((output / 'memory.npz').read_bytes())

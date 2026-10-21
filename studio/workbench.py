@@ -1118,22 +1118,16 @@ class Workbench:
             cached = job.get('_map_cache')
             if cached and cached[0] is grid:
                 return cached[1]
-        support, ceiling = np.asarray(grid['support']), np.asarray(grid['ceiling'])
-        codes = np.zeros(support.shape, dtype=np.uint8)
+        from studio.goal_check import MAP_CODES, map_codes
+        support = np.asarray(grid['support'])
+        codes, height_cm = map_codes(support, grid['ceiling'])
         seen = np.isfinite(support)
-        codes[seen] = 1
-        codes[seen & (support > 0.05)] = 2
-        codes[seen & (support > 0.25)] = 3
-        overhead = np.isfinite(ceiling) & (ceiling < 2.0)
-        codes[overhead & (codes < 2)] = 4
-        height = np.where(codes == 4, np.nan_to_num(ceiling, nan=0, posinf=0), np.nan_to_num(support, nan=0))
-        height_cm = np.clip(np.round(height * 100), 0, 255).astype(np.uint8)
         # Row-major over [i (x), j (y)] exactly as the source arrays (grid[x][y]).
         body = {'schema_version': 1, 'id': key, 'n': int(support.shape[0]), 'res_m': float(grid['res']),
                 'lo': [float(v) for v in grid['lo']], 'basis': grid.get('basis') or 'map',
                 'order': 'row-major [i, j], i along x, cell centre = lo + (i, j) * res',
                 'codes': base64.b64encode(codes.tobytes()).decode(), 'height_cm': base64.b64encode(height_cm.tobytes()).decode(),
-                'legend': {'0': 'never observed', '1': 'floor', '2': 'low obstacle (steps over)', '3': 'obstacle', '4': 'overhead'},
+                'legend': {str(k): v for k, v in MAP_CODES.items()},
                 'observed_fraction': float(seen.mean() if seen.size else 0)}
         with self.lock:
             job['_map_cache'] = (grid, body)

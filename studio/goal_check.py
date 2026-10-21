@@ -225,6 +225,27 @@ def observed_mask(grid):
     return np.isfinite(grid['support'])
 
 
+MAP_CODES = {0: 'never observed', 1: 'floor', 2: 'low obstacle (steps over)', 3: 'obstacle', 4: 'overhead'}
+
+
+def map_codes(support, ceiling):
+    """Per-cell display codes (MAP_CODES) and heights in cm (support, or the ceiling underside for code 4).
+
+    0 never observed, 1 floor, 2 low obstacle (0.05-0.25 m: the route steps over it), 3 obstacle (above 0.25 m:
+    the route avoids it), 4 overhead (a ceiling seen below 2 m over floor). Both uint8 arrays, shaped as the input.
+    """
+    support, ceiling = np.asarray(support, dtype=float), np.asarray(ceiling, dtype=float)
+    codes = np.zeros(support.shape, dtype=np.uint8)
+    seen = np.isfinite(support)
+    codes[seen] = 1
+    codes[seen & (support > 0.05)] = 2
+    codes[seen & (support > 0.25)] = 3
+    overhead = np.isfinite(ceiling) & (ceiling < 2.0)
+    codes[overhead & (codes < 2)] = 4
+    height = np.where(codes == 4, np.nan_to_num(ceiling, nan=0, posinf=0), np.nan_to_num(support, nan=0))
+    return codes, np.clip(np.round(height * 100), 0, 255).astype(np.uint8)
+
+
 def cell_of(lo, res, xy):
     """Nearest cell index (may lie outside the grid), as ``CloudMemory._cells`` and ``Route.cell`` round."""
     return np.round((np.asarray(xy, dtype=np.float64) - lo) / res).astype(int)
