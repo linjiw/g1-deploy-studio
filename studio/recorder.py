@@ -27,7 +27,14 @@ from .protocols import ALLOWED_TOPICS, MAX_PACKET_BYTES, ProtocolError, decode_p
 
 
 def validate_endpoint(endpoint: str) -> str:
-    """Reject non-loopback, DNS, IPC, wildcard, credentials, paths and queries."""
+    """Reject non-loopback, DNS, IPC, wildcard, credentials, paths and queries.
+
+    The text must be exactly what ZMQ will connect to: urlsplit lowercases the scheme and drops tabs and newlines,
+    so whitespace or control characters anywhere and any scheme other than a literal lowercase ``tcp://`` are
+    refused before parsing."""
+    if (not isinstance(endpoint, str) or not endpoint.isascii() or not endpoint.isprintable()
+            or any(ch.isspace() for ch in endpoint) or not endpoint.startswith("tcp://")):
+        raise ValueError("endpoint must be tcp://literal-loopback-address:port (lowercase scheme, no whitespace)")
     try:
         parts = urlsplit(endpoint)
         address = ipaddress.ip_address(parts.hostname or "")
