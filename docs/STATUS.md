@@ -20,7 +20,10 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 | Durable service, release guard, loopback + Host/Origin + CSRF, SSH tunnel | — | Verified | [SERVICE](SERVICE.md) |
 | Real-time chain (simulator + C++ SONIC runner + node) in an isolated namespace | L3 | **Ready, not yet run** | [REALTIME_REHEARSAL](REALTIME_REHEARSAL.md) |
 | Read-only physical G1 | M5 | Not started (needs a safety review) | REALTIME_REHEARSAL § M5 |
-| Real-world workflow: live robot map, goals on the map, scan-to-twin, site maps | — | **Designed, not built** | [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) |
+| **Navigate** with the simulated robot: node.py's state machine, goals clicked on the robot's own map with checks, Go / Stand / takeover, walks, recording | L1 / L2 | Verified (walking equals the source rehearsal frame for frame; browser 11/11) | [NAVIGATE](NAVIGATE.md) |
+| Navigate with the real robot: robot link on the deploy PC (loopback streams; goal and stand to node.py, never Go) | M5 | Verified against a protocol fixture only (browser 7/7); not run against node.py or a robot | [NAVIGATE](NAVIGATE.md) |
+| Scan to twin (an arena fitted to the robot's map) and the printable course build sheet | — | Verified in simulation and print | [NAVIGATE](NAVIGATE.md), [WORKBENCH](WORKBENCH.md) |
+| Site maps across sessions (mapping walk, relocalization) | — | Designed, not built | [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §5.3 |
 
 ## Current results
 
@@ -47,7 +50,9 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 8 | WX-RF is privileged (plans from the exact boxes) | Flow research | Pin a LiDAR-conditioned block when Flow adopts one |
 | 9 | NVML fails for new processes (driver 595.91 vs libraries 595.99) | Host admin | Not a Studio change; GPU use is read from another logger or recorded as unknown |
 | 10 | Software-WebGL playback is render-limited | Environment | Flagged in the UI (RENDER-LIMITED), and real time is kept; GPU browsers are unaffected |
-| 11 | Real-world goal workflow: may Studio send goals to the node's control socket (`:5562`), and may U1–U3 be proposed to g1-student-deploy? | Owner | Decide ([REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §11). Until then Studio stays read-only; Phase 0 and scan-to-twin need no approval |
+| 11 | node.py defers its stand next to obstacles 0.8–1.35 m tall: `CloudMemory` files their top edge as a low ceiling. When the plan runs out the robot holds its last pose (simulation: leaned on a pillar at 107 N, drifted 1 m in 70 s) | Deploy repo owner | Decide the fallback (stand after the plan ends, or ignore ceilings attached to a solid obstacle). Studio blocks goals there and explains the deferral ([NAVIGATE](NAVIGATE.md) §5) |
+| 12 | Robot link against the real node.py (L3 first, then the robot) | Operator | Run L3 (issue 1) and connect Navigate to it with `config/robot_link.json`; then the M5 safety review |
+| 13 | Proposals U1–U3 for g1-student-deploy: absolute odom goals, a telemetry stream with the planner's live map, loopback-only binds | Deploy repo owner | Proposed in [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §7; Studio works without them |
 
 ## Decisions
 
@@ -61,6 +66,8 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 2026-10-20 | Independent review session (3 high, 8 medium, 14 low, 12 nits; `evidence/review-20261020/REVIEW.md`). Then an independent verification (`evidence/verify-20261020/VERIFY.md`): 22 fixed and 3 partial; it also found one regression from a fix (following a detached run after a reload). The partial items, the regression and the remaining nits were fixed afterwards. One label stays by design: the HUD's "Speed (fd)" on recordings without a velocity field is a finite difference |
 | 2026-10-20 | Torque is counted at the effective limit (source clip or model clamp); scenario identity includes the actuator profile; saved scenarios keep `source`; under latency the shown plan is the executing one, live and recorded, for both the WX and the bundle worker |
 | 2026-10-20 | A second verification (`evidence/verify2-20261020/VERIFY2.md`): 19 items fixed and 1 by design; it found that the bundle worker still showed the in-flight plan (N8). A third verification (`evidence/verify3-20261020/VERIFY3.md`) confirmed the N8 fix and found N9 (a race in the single-load fix) and N10 (the leg-torque count included arm joints; Addendum D/E counts corrected). Both are fixed. The whole review session is in [REVIEW-20261020](REVIEW-20261020.md) |
+
+| 2026-10-21 | Real-world navigation (owner delegated the decisions): Studio may send `status`, `goal` and `stand` to node.py's control socket; never `go`, `quit` or any motor/DDS write. Goals are staged only while the robot stands and read back within 5 cm. The simulated robot follows node.py's rules; simulated time pauses while it waits. Only the frozen bundle plans from the robot's own LiDAR, so Navigate uses it |
 
 ## Verify
 

@@ -1,6 +1,6 @@
 # Real-world navigation with Studio (design)
 
-**Design, 2026-10-21. Nothing on this page has run on a robot, and nothing here is built yet.** Every physical run follows the operator procedure in g1-student-deploy (`docs/OPERATOR_GUIDE.md`, `docs/HARDWARE.md`): gantry or spotter, the wireless remote in hand, physical E-stop. Facts about the robot-side stack were read from g1-student-deploy `6a86c86` and are cited by file.
+**Design, 2026-10-21. Nothing on this page has run on a robot.** Built since (same day, simulation and fixture only): Phase 0's build sheet, scan to twin, the simulated robot with goals on its map (Phase 2 in simulation), and the robot link (Phases 1–2, against a protocol fixture). How to use them: [NAVIGATE.md](NAVIGATE.md). Site maps (§5.3) are not built. Every physical run follows the operator procedure in g1-student-deploy (`docs/OPERATOR_GUIDE.md`, `docs/HARDWARE.md`): gantry or spotter, the wireless remote in hand, physical E-stop. Facts about the robot-side stack were read from g1-student-deploy `6a86c86` and are cited by file.
 
 The question this page answers: once a course is built in a real room, how do we use Studio to see what the robot perceives, put a goal on that map, send it to the robot, and watch the policy walk there?
 

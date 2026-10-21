@@ -81,7 +81,11 @@ The gateway assigns `seq` (strictly increasing) and writes `inbox/NNNNNN.json` a
 | `goal` | `xy` | The robot stands (WAIT, ARRIVED, STOPPED) and the goal check has no blocking result | Stages the goal (sim); robot: sends `{"cmd":"goal","ahead","left"}` from the current odom pose, then reads it back from the node's status (≤ 5 cm or rejected) |
 | `go` | — | Sim: a staged goal, robot standing. Real: always rejected with `go_note` | PRESCAN → RUN |
 | `stand` | — | PRESCAN or RUN | Settle to stand (deferred near low ceilings, as in node.py). Not an emergency stop |
+| `takeover` | — | Sim only, while walking or with a deferred stand | The remote's D-up: stand now, ignoring the deferral. Real robot: refused (use the remote) |
+| `clear` | — | Sim only, a staged goal | Unstage it. Real robot: refused (node.py has no clear) |
 | `end` | — | Any time | Sim: stand, write the recording, exit. Real: stop the link (nothing is sent to the node) |
+
+For the real robot the gateway checks a goal on the link's map before writing it to the inbox; a blocked goal is refused there and never reaches the node. The link also requires fresh odometry (≤ 0.1 s) and node status (≤ 1.5 s) and no command in flight before it sends anything; phase and standing are `null` while the node's status is unknown.
 
 Every command produces an entry in `navigation.commands` and an event in the recording.
 
@@ -89,7 +93,20 @@ Every command produces an entry in `navigation.commands` and an event in the rec
 
 **Node dump format** (`node.py --dump-memory`, also used for `memory.npz`): `support` and `ceiling` (n × n float64, NaN = never observed, `ceiling` +inf = observed clear), `lo` (2,), `res` (scalar), `boxes` (JSON string, Flow `memory_boxes`), `stats` (JSON string). Cell `[i, j]` has its centre at `lo + (i, j) * res`, i along x (Flow `sensor_map.py`, `indexing="ij"`).
 
-**Goal check** (`studio.goal_check.check_goal(grid, robot_xy, goal_xy, **options)`) returns `{ok, checks: [{id, status: pass | warn | block, label, detail}], straight_m, path_m, path_xy, unknown_fraction, grid: {basis, res_m, observed_fraction}}`. `ok` means no blocking check. The reachability rule mirrors Flow's `SensorRoute`: occupied = observed support above 0.25 m, inflated by 0.35 m, unseen cells free; Studio additionally reports unseen space on the path, low obstacles and low ceilings near the goal.
+**Goal check** (`studio.goal_check.check_goal(grid, robot_xy, goal_xy, **options)`) returns `{ok, checks: [{id, status: pass | warn | block, label, detail}], straight_m, path_m, path_xy, unknown_fraction, grid: {basis, res_m, observed_fraction}}`. `ok` means no blocking check. The six checks, always in this order:
+
+| Check | Block | Warn |
+|---|---|---|
+| inside | outside the grid or within 0.5 m of its edge | — |
+| seen | — | goal cell or most of its arrival disc never observed |
+| free | an obstacle above 0.25 m within the robot radius (0.30 m) | inside the route's 0.35 m margin, or a low obstacle (0.05–0.25 m) |
+| overhead | a ceiling below 1.35 m within node.py's `ceiling_near` window (0.8 m): the node would defer its stand | — |
+| reachable | no route | over 30 % of the route crosses never-observed cells; start escaped from occupancy |
+| distance | — | beyond `max_distance_m` when set |
+
+Reachability is Flow's `SensorRoute` exactly: occupied = observed support above 0.25 m, dilated by a 0.35 m disc, never-observed cells within 0.1 m of a seen obstacle also occupied (`grow_unknown_m`, the node's configuration), other unseen cells free. It was compared with the scipy source on 25 recorded node dumps (200 routes, no mismatch).
+
+**A finding from these checks (2026-10-21).** The source perception (`CloudMemory`) can file the top edge of an obstacle 0.8–1.35 m tall (a 1.0 m pillar in simulation; 0.83–0.96 m cells in the recorded `g5-dds/detour-100` run) as an overhead ceiling. node.py then defers its stand next to it, and when the current plan runs out the robot holds the plan's last pose. In simulation it leaned on the pillar (107 N) and drifted about 1 m over 70 s before the stand was issued. Studio blocks goals there, explains a deferred stand and, for the simulated robot, offers the remote's takeover. On a real course, tables and boxes in that height range need the same care; the deploy repository owns the fix.
 
 ## 6. Twin
 

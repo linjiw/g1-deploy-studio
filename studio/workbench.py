@@ -942,8 +942,9 @@ class Workbench:
                 output.mkdir()
                 self.jobs[key] = job
                 self._persist_job(job)
-                request = {'schema_version': 1, 'id': key, 'endpoints': config['endpoints'],
-                           'fixture': bool(config.get('fixture')), 'limits': config.get('limits') or {}}
+                request = {'endpoints': config['endpoints'], 'session_id': key, 'label': config.get('label') or 'deploy PC',
+                           **({'limits': config['limits']} if config.get('limits') else {}),
+                           **({'capture': config['capture']} if config.get('capture') else {})}
                 atomic_json(output/'request.json', request)
                 env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONPATH=str(ROOT))
                 with (output/'worker.log').open('wb') as log:
@@ -984,6 +985,22 @@ class Workbench:
         if cmd == 'goal':
             body['xy'] = vector(document.get('xy'), 'goal XY', low=-50, high=50)
         with self.lock:
+            kind = self._active_session(key).get('kind')
+        if kind == 'robot':
+            if cmd == 'takeover':
+                raise ValueError("Use the remote's D-up to take over on the robot (only if nothing is overhead); Studio cannot")
+            if cmd == 'clear':
+                raise ValueError('node.py has no command to clear a goal; stage a new one instead')
+            if cmd == 'goal':
+                # The robot link sends what the gateway checked; a blocked goal never reaches the node.
+                try:
+                    body['check'] = self.nav_check(key, body['xy'])
+                except (ValueError, FileNotFoundError) as error:
+                    body['check'] = {'ok': None, 'note': f'not checked: {error}'}
+                if body['check'].get('ok') is False:
+                    blocking = '; '.join(c['label'] for c in body['check']['checks'] if c['status'] == 'block')
+                    raise ValueError(f'Goal refused before sending: {blocking}')
+        with self.lock:
             job = self._active_session(key)
             process = job.get('process')
             if job['status'] not in ('starting', 'running') or process is None or process.poll() is not None:
@@ -1008,7 +1025,9 @@ class Workbench:
         cache = job.get('_grid_cache')
         if cache and cache[0] == (str(path), stat.st_mtime_ns, stat.st_size):
             return cache[1]
-        grid = goal_check.load_grid(path)
+        basis = ("Studio reconstruction from the robot's LIO cloud (the planner does not use it)" if job.get('kind') == 'robot'
+                 else 'planner memory')
+        grid = goal_check.load_grid(path, basis=basis)
         job['_grid_cache'] = ((str(path), stat.st_mtime_ns, stat.st_size), grid)
         return grid
 

@@ -53,7 +53,7 @@ function renderIntent(state) {
       : notice('No reference payload at this cursor. Reference joints and tracking error stay unavailable.', 'warning'), { evidence: wire ? 'measured' : 'commanded' });
   const exec = card('Observed execution', `${state.frozenFrame ? notice(`Diagnostic: state held at ${clock(m.time)} while the cursor advances.`, 'warning') : ''}${fact('Root · world', hasPose(m) ? `[${vector(m.position, 2)}] m` : 'Unavailable')}
       ${fact('Heading', hasPose(m) ? num(Math.atan2(2 * (m.quaternion_wxyz[0] * m.quaternion_wxyz[3] + m.quaternion_wxyz[1] * m.quaternion_wxyz[2]), 1 - 2 * (m.quaternion_wxyz[2] ** 2 + m.quaternion_wxyz[3] ** 2)), 3, 'rad') : 'Unavailable')}
-      ${fact('Joint reference RMSE', num(h.tracking_rmse_rad, 3, 'rad'))}${fact('PD target RMSE', num(h.command_tracking_rmse_rad, 3, 'rad'))}`, { evidence: hasPose(m) ? (meta.mode === 'simulation' || isLockstep(state) ? 'sim-truth' : 'recorded') : 'unavailable' });
+      ${fact('Joint reference RMSE', num(h.tracking_rmse_rad, 3, 'rad'))}${fact('PD target RMSE', num(h.command_tracking_rmse_rad, 3, 'rad'))}`, { evidence: hasPose(m) ? (m.classification === 'estimated' ? 'estimated' : meta.mode === 'simulation' || isLockstep(state) ? 'sim-truth' : 'recorded') : 'unavailable' });
   $('intent-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${wire ? 'REFERENCE PUBLISHER → COLLECTOR' : 'PLANNER → SONIC'}</span><h3>What comes next</h3></div>${nav}${plan}${ref}${exec}`;
 }
 

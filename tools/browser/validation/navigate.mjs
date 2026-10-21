@@ -126,11 +126,24 @@ await R.check('N6', 'Walk 2 behind the pillar, then Stand mid-walk: stops and st
   await waitNav(s => s.nav?.phase === 'RUN', 60000, 'RUN');
   await sleep(2500);
   await page.click('#nav-stand');
+  // node.py defers a stand near a remembered low ceiling (the pillar's top edge can be filed as one): then the
+  // panel must say so and offer the remote's takeover, which stands the robot at once.
+  const after = await waitNav(s => s.nav?.pending_stand || standing(s) || s.nav?.phase === 'STOPPED', 30000, 'stand reply');
+  let deferred = false;
+  if (after.nav.pending_stand) {
+    deferred = true;
+    const text = await page.locator('#nav-live').innerText();
+    assert(/Stand deferred/i.test(text), 'deferral explained');
+    await R.shot('deferred');
+    await page.click('#nav-takeover');
+  }
   const s = await waitNav(s => standing(s) && s.nav.legs?.length === 2 && s.nav.legs[1].outcome, 120000, 'stopped');
+  s.deferred = deferred;
   assert(['stopped', 'arrived'].includes(s.nav.legs[1].outcome), JSON.stringify(s.nav.legs[1]));
   assert((s.nav.commands ?? []).some(c => c.cmd === 'stand' && c.status === 'applied'), 'stand applied');
   await R.shot('stopped');
-  return s.nav.legs[1];
+  assert(s.nav.legs[1].duration_s < 30, `walk 2 lasted ${s.nav.legs[1].duration_s} s`);
+  return { ...s.nav.legs[1], deferred };
 });
 
 await R.check('N7', 'Rehearse while a session runs does not adopt the navigation job', async () => {

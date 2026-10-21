@@ -262,7 +262,7 @@ def _run(req, output, inbox, started):
         'sim/lockstep.py', 'sim/episode.py', 'g1deploy/node.py', 'g1deploy/contract.py', 'g1deploy/latency.py',
         'g1deploy/goal_guard.py', 'g1deploy/perception/cloud_memory.py', 'bundle/sonic/sonic_release_g1.onnx',
         'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt')]
-    metadata = {'id': req['id'], 'title': 'Navigation session · simulated robot', 'mode': 'simulation',
+    metadata = {'id': req['id'], 'title': 'Navigate · simulated robot', 'mode': 'simulation',
                 'recording_kind': 'navigation-session', 'kind': 'navigation', 'robot': 'simulated', 'backend_id': 'sonic',
                 'model_path': str(REFERENCE_ROOT / 'sim/assets/g1_29dof.xml'), 'model_variant': 'G1 29 DoF · rubber hands',
                 'clock_domain': 'simulation', 'source_time_origin': 0, 'source_path': str(output),

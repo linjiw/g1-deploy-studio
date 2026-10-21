@@ -94,7 +94,9 @@ function resolvePending() {
   if (!reply) return;
   nav.pendingSeq = null;
   if (reply.status === 'rejected') nav.notice = { kind: 'warning', text: `${label(reply.cmd)} refused: ${reply.reason}` };
-  else {
+  else if (reply.cmd === 'stand' && navState()?.pending_stand) {
+    nav.notice = { kind: 'warning', text: 'Stand requested; the node defers it here (see above).' };
+  } else {
     nav.notice = { kind: 'ok', text: { goal: 'Goal staged. Press Go to walk there.', go: 'Walking.', stand: 'Settling to a stand.', takeover: 'Taken over: standing now.', end: 'Ending the session…', clear: 'Goal cleared.' }[reply.cmd] ?? 'Done.' };
     if (reply.cmd === 'goal') nav.pick = null;
   }
@@ -317,7 +319,9 @@ export function renderLive() {
       <div class="nav-facts">${facts(job)}</div>
       ${n?.pending_stand ? `<div class="callout warning">Stand deferred: the robot's map shows something overhead below head height within 0.8 m, so node.py lets the current plan play out first${n.holding_plan_end ? '. The plan has ended and the robot holds its last pose' : ''}. ${real ? 'On the robot: remote D-up only if nothing is overhead.' : 'Take over to stand it now (the remote\'s D-up). <button id="nav-takeover" class="link-button">Take over</button>'}</div>` : ''}
       ${n?.fallen ? '<div class="callout warning">E-stop: the robot tilted past the supervisor limit. On the robot the runner switches to damping. End the session to keep the recording.</div>' : ''}
-      ${(n?.streams ?? []).filter(s => s.status === 'stale' || s.status === 'unavailable').map(s => `<div class="callout warning">${escape(s.label)}: ${escape(s.status)}${finite(s.age_s) ? ` · ${num(s.age_s, 1)} s old` : ''}</div>`).join('')}
+      ${(n?.streams ?? []).filter(s => (s.status === 'stale' || s.status === 'unavailable')
+          // The node streams plans only while walking: a quiet pose stream while standing is expected.
+          && !(s.id === 'pose' && !['PRESCAN', 'RUN'].includes(n?.phase))).map(s => `<div class="callout warning">${escape(s.label)}: ${escape(s.status)}${finite(s.age_s) ? ` · ${num(s.age_s, 1)} s old` : ''}</div>`).join('')}
     </section>
     <section class="panel-section nav-goal">
       <h4>Goal</h4>

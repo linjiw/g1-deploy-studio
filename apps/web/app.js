@@ -94,7 +94,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     updateModeBadge(); updatePolicyChip(); updateRecordingWarning();
     $('privileged-badge').hidden = !m.privileged_map;
     $('robot-view-label').textContent = robotViewLabel();
-    $('playback-state').textContent = m.mode === 'simulation' ? 'LIVE' : 'PAUSED';
+    $('playback-state').textContent = ['simulation', 'live'].includes(m.mode) ? 'LIVE' : 'PAUSED';
     setTimelineSession(session);
     renderFrame(true);
     const built = await scene.loadSessionScene(session, id, () => generation === state.loadGeneration);
@@ -130,7 +130,7 @@ function updateModeBadge() {
   const fid = fidelity(m), level = fid.short ?? (fid.level === 'L2-approx' ? 'L2≈' : fid.level);
   const detached = live && state.liveStatus === 'detached';
   if (m.kind === 'navigation' || m.recording_kind === 'robot-link') {
-    const real = m.recording_kind === 'robot-link' || m.robot === 'real', running = live || m.mode === 'live-robot';
+    const real = m.recording_kind === 'robot-link' || m.robot === 'real', running = live || m.mode === 'live';
     $('mode-badge').textContent = running ? (real ? '● LIVE · REAL ROBOT · OBSERVE + GOALS' : `● LIVE · SIMULATED ROBOT · ${level}`)
       : real ? 'REPLAY · ROBOT SESSION · M5' : `REPLAY · NAVIGATION SESSION · ${level}`;
     $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
@@ -160,7 +160,7 @@ function updatePolicyChip() {
 function updateRecordingWarning() {
   const m = state.session?.metadata ?? {};
   const node = $('recording-warning');
-  if (m.mode === 'simulation') {
+  if (['simulation', 'live'].includes(m.mode)) {
     node.hidden = !['failed', 'detached'].includes(state.liveStatus);
     node.textContent = state.liveStatus === 'detached'
       ? 'RUN DETACHED · The gateway restarted while this worker kept running. Following its files read-only; this gateway does not own it and cannot cancel it. The recording opens when the worker finishes.'
@@ -233,12 +233,12 @@ function updateHud(sample) {
     ? `${f.navigation.walk ? `Walk ${f.navigation.walk}` : 'Standing'} · ${goal ? `goal [${vector(goal, 2)}] m` : 'no goal'} · ${String(f.navigation.phase ?? '').toLowerCase()}`
     : goal ? `Goal [${vector(goal, 2)}] m · ${crit.label ?? ''}` : '';
   const truth = meta.recording_kind !== 'robot-link' && (meta.mode === 'simulation' || ['sonic-mujoco-lockstep', 'navigation-session'].includes(meta.recording_kind));
-  $('pose-caption').textContent = `${state.frozenFrame ? 'DIAGNOSTIC HELD STATE' : truth ? 'SIM-TRUTH' : 'RECORDED'} · xyz [${vector(m.position, 2)}] m · yaw ${num(yawOf(q), 2, 'rad')}${state.frozenFrame ? ` · ${num(age, 0, 'ms')} old` : ''}`;
+  $('pose-caption').textContent = `${state.frozenFrame ? 'DIAGNOSTIC HELD STATE' : m.classification === 'estimated' ? 'LIO ESTIMATE · odom frame' : truth ? 'SIM-TRUTH' : 'RECORDED'} · xyz [${vector(m.position, 2)}] m · yaw ${num(yawOf(q), 2, 'rad')}${state.frozenFrame ? ` · ${num(age, 0, 'ms')} old` : ''}`;
   $('reference-caption').textContent = scene.view.layers.perception && sample ? (finite(sample.time) && state.session.perception?.frames ? `MAP · causal sample ${clock(sample.time)} · unknown cells stay empty` : 'MAP · final accumulated snapshot · capture time unavailable') : f.reference ? 'Cyan: SONIC reference now · amber: +0.4 s / +0.9 s · line: planner prediction' : 'No reference packets in this recording';
-  const badge = $('source-badge');
-  badge.className = `chip ${state.frozenFrame ? 'chip-unavailable' : truth ? 'chip-sim-truth' : 'chip-recorded'}`;
-  badge.textContent = state.frozenFrame ? 'STATE HELD' : truth ? 'SIM-TRUTH' : 'RECORDED';
-  badge.title = truth ? EVIDENCE['sim-truth'].tip : EVIDENCE.recorded.tip;
+  const badge = $('source-badge'), estimated = m.classification === 'estimated';
+  badge.className = `chip ${state.frozenFrame ? 'chip-unavailable' : estimated ? 'chip-estimated' : truth ? 'chip-sim-truth' : 'chip-recorded'}`;
+  badge.textContent = state.frozenFrame ? 'STATE HELD' : estimated ? 'LIO ESTIMATE' : truth ? 'SIM-TRUTH' : 'RECORDED';
+  badge.title = estimated ? 'Pose is the LIO odometry estimate streamed by the deploy PC; a robot has no ground truth.' : truth ? EVIDENCE['sim-truth'].tip : EVIDENCE.recorded.tip;
 }
 
 // ------------------------------------------------------------------ playback
@@ -249,7 +249,7 @@ function setPlaying(value) {
   state.playing = value;
   $('play').innerHTML = value ? 'Ⅱ <span>Pause</span>' : '▶ <span>Play</span>';
   $('play').setAttribute('aria-label', value ? 'Pause recording' : 'Play recording');
-  $('playback-state').textContent = value ? 'PLAYING' : state.session?.metadata?.mode === 'simulation' ? 'LIVE' : 'PAUSED';
+  $('playback-state').textContent = value ? 'PLAYING' : ['simulation', 'live'].includes(state.session?.metadata?.mode) ? 'LIVE' : 'PAUSED';
   updateView({ play: value ? '1' : null });
   if (value && scene.view.camera_mode === 'scene' && state.session?.metadata?.goal_xy) cameraView('follow', true);
   reanchor();
@@ -342,7 +342,7 @@ async function attachLive(job) {
 }
 function appendLiveFrame(latest) {
   const frame = latest.frame;
-  if (!frame || !state.session || !hasPose(frame) || state.loading || state.session.metadata.mode !== 'simulation') return;
+  if (!frame || !state.session || !hasPose(frame) || state.loading || !['simulation', 'live'].includes(state.session.metadata.mode)) return;
   state.runtime = latest.runtime ?? null; state.liveStatus = latest.status ?? null;
   const frames = state.session.frames, previous = frames.at(-1);
   if (previous && frame.time < previous.time) return;
@@ -385,8 +385,9 @@ function appendLiveFrame(latest) {
 const navAttach = { loading: null, opened: null, layers: null, mapKey: null, mapLoading: false };
 const bytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 async function refreshNavMap(job, force = false) {
-  const seq = job?.latest?.navigation?.map?.seq, key = `${job?.id}:${seq}:${job?.status}`;
-  if (!job || state.workspace !== 'navigate' || navAttach.mapLoading || (!force && key === navAttach.mapKey)) return;
+  const map = job?.latest?.navigation?.map, seq = map && 'file_seq' in map ? map.file_seq : map?.seq, key = `${job?.id}:${seq}:${job?.status}`;
+  // Only once the session has written its map file (a robot link without a cloud stream never does).
+  if (!job || !(seq > 0) || state.workspace !== 'navigate' || navAttach.mapLoading || (!force && key === navAttach.mapKey)) return;
   navAttach.mapLoading = true;
   try {
     const map = await request(`/api/nav/map?id=${encodeURIComponent(job.id)}`);
@@ -405,7 +406,7 @@ async function attachNav(job) {
     $('session-picker').value = job.id;
     if (state.workspace === 'navigate') { navLayers(true); scene.topView(job.latest.frame.position, 5); }
   }
-  if (state.sessionId === job.id && ['starting', 'running', 'cancelling'].includes(job.status))
+  if (state.sessionId === job.id && ['starting', 'running', 'cancelling'].includes(job.status) && job.latest.frame)
     appendLiveFrame({ ...job.latest, status: job.latest.status, runtime: job.runtime });
   if (state.workspace === 'navigate') { scene.setNavOverlay(navOverlay()); refreshNavMap(job); }
 }
@@ -720,7 +721,7 @@ async function initialize() {
     if (view.get('robot_view') === '1') setRobotView(true);
     if (view.get('workspace')) await setWorkspace(view.get('workspace'));
     // Reloaded while a run is live (any workspace): resume following it.
-    if (state.session?.metadata?.mode === 'simulation' && state.session.metadata.kind === 'navigation') {
+    if (['simulation', 'live'].includes(state.session?.metadata?.mode) && state.session.metadata.kind === 'navigation') {
       if (state.workspace !== 'navigate') await setWorkspace('navigate');
     } else if (state.session?.metadata?.mode === 'simulation' && !rh.catalog) {
       await initRehearse(await ensureCatalog());

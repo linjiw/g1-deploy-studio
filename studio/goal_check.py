@@ -570,7 +570,10 @@ def check_goal(grid, robot_xy, goal_xy, *, robot_radius_m=0.30, arrival_radius_m
         checks.append(_check('overhead', 'block', 'Low overhead obstacle',
                              f'An overhead obstacle {_metres(float(heights.min()))} above the floor is '
                              f'{_metres(float(reach_xy.min()))} from the goal (head height {_metres(head_height_m)}): '
-                             'standing up there drives the head into it, so the node defers the stand.'))
+                             'standing up there drives the head into it, so the node defers the stand.'
+                             + (' A ceiling this low is often the top edge of a table, box or pillar that the robot\'s map '
+                                'files as overhead; node.py defers its stand all the same.'
+                                if float(heights.min()) < 1.1 else '')))
     elif not goal_in_grid:
         checks.append(_check('overhead', 'warn', 'Not checked', 'The goal is outside the map; overhead space is unknown.'))
     else:

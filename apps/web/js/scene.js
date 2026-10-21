@@ -376,7 +376,9 @@ export function applyLayers(state = {}) {
   }
   if (view.waypoint) view.waypoint.visible = L.future && !!f?.plan?.waypoint;
   if (view.environment) view.environment.visible = L.environment;
-  if (view.mapLayer) view.mapLayer.visible = L.perception && !!view.session?.perception?.available;
+  // In Navigate the map texture shows the whole memory; the decimated points would only add noise.
+  if (view.mapLayer) view.mapLayer.visible = L.perception && !!view.session?.perception?.available && !view.navMapActive;
+  if (view.navMap) view.navMap.visible = L.perception && !!view.navMapActive;
   for (const marker of Object.values(view.markers)) marker.visible = L.navigation && !marker.userData.hidden;
   if (view.robotAxes) view.robotAxes.visible = L.frames && hasPose(m);
   view.worldAxes.visible = L.frames;
@@ -579,7 +581,13 @@ export function setNavOverlay(o = null) {
 const MAP_RGBA = { 1: [38, 92, 96, 165], 2: [239, 187, 112, 215], 3: [240, 120, 112, 235], 4: [196, 160, 217, 215] };
 export function setNavMap(map = null) {
   if (!view.scene) return;
-  if (!map) { if (view.navMap) view.navMap.visible = false; markDirty(); return; }
+  view.navMapActive = !!map;
+  const syncMapLayers = () => {  // only the two map renderables; applyLayers() needs the frame state
+    if (view.mapLayer) view.mapLayer.visible = view.layers.perception && !!view.session?.perception?.available && !view.navMapActive;
+    if (view.navMap) view.navMap.visible = view.layers.perception && view.navMapActive;
+    markDirty();
+  };
+  if (!map) { syncMapLayers(); return; }
   const n = map.n;
   if (!view.navMap || view.navMap.userData.n !== n) {
     if (view.navMap) { view.navMap.geometry.dispose(); view.navMap.material.map.dispose(); view.navMap.material.dispose(); view.scene.remove(view.navMap); }
@@ -601,8 +609,7 @@ export function setNavMap(map = null) {
   const size = n * map.res_m;
   mesh.scale.set(size, size, 1);
   mesh.position.set(map.lo[0] + (n - 1) * map.res_m / 2, map.lo[1] + (n - 1) * map.res_m / 2, 0.006);
-  mesh.visible = true;
-  markDirty();
+  syncMapLayers();
 }
 
 export function projectWorld(points) { return points.map(p => new THREE.Vector3(...p).project(view.camera).toArray()); }
