@@ -185,13 +185,15 @@ def candidate_goals(world_id, memory_path, spacing):
     return cells
 
 
+def level(cell):
+    """0: the 2-spacing lattice; 1: its centres (with 0, a checkerboard); 2: the rest."""
+    i, j = (int(v) for v in cell['id'][1:].split('-'))
+    return 0 if i % 2 == 0 and j % 2 == 0 else 1 if (i + j) % 2 == 0 else 2
+
+
 def order(cells, start):
     """Coarse lattice first, then the in-between cells, so a partial batch still covers the whole room."""
-    def rank(c):
-        i, j = (int(v) for v in c['id'][1:].split('-'))
-        level = 0 if i % 2 == 0 and j % 2 == 0 else 1 if (i + j) % 2 == 0 else 2
-        return (level, math.dist(c['xy'], start))
-    return sorted(cells, key=rank)
+    return sorted(cells, key=lambda c: (level(c), math.dist(c['xy'], start)))
 
 
 def walk(world_id, profile, folder, goal):
@@ -246,6 +248,8 @@ def main(argv=None):
     ap.add_argument('--spacing', type=float, default=0.4)
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--limit', type=int, default=None, help='record at most this many goals (in coverage order)')
+    ap.add_argument('--max-level', type=int, default=2, choices=(0, 1, 2),
+                    help='0: 2-spacing lattice, 1: plus its centres (a checkerboard), 2: every cell')
     args = ap.parse_args(argv)
     base = args.out / args.world
     base.mkdir(parents=True, exist_ok=True)
@@ -254,7 +258,7 @@ def main(argv=None):
     cells = candidate_goals(args.world, memory, args.spacing)
     write_json(base / 'goals.json', {'world': args.world, 'profile': args.profile, 'profile_label': PROFILES[args.profile]['label'],
                                      'spacing_m': args.spacing, 'cells': cells})
-    todo = order([c for c in cells if c['ok']], WORLDS[args.world]['start_xy'])[:args.limit]
+    todo = order([c for c in cells if c['ok'] and level(c) <= args.max_level], WORLDS[args.world]['start_xy'])[:args.limit]
     print(f'{args.world}: {len(todo)} goals of {len(cells)} cells', flush=True)
     results, lock = {}, threading.Lock()
 

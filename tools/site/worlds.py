@@ -18,12 +18,12 @@ WORLDS = {
                'blurb': 'Three staggered walls: the route weaves, and the far side is hidden until the robot moves.'},
     'corridor': {'source': 'flow-corridor', 'title': 'Corridor and overhead beam', 'start_xy': [0.0, 0.0], 'start_yaw_rad': 0.0,
                  'blurb': 'A corridor with a beam overhead. The map keeps overhead cells apart from obstacles.'},
-    'doorway': {'source': 'worlds/doorway.json', 'title': 'Offset doorway', 'start_xy': [0.0, -1.0],
+    'doorway': {'source': 'worlds/doorway.json', 'title': 'Doorway', 'start_xy': [0.0, -1.0],
                 'start_yaw_rad': 0.4363323129985824,
-                'blurb': 'A 0.8 m doorway, offset from the start. Tight for a 0.6 m wide robot; not every walk makes it.'},
+                'blurb': 'A 2 m wall across the room with one 0.8 m door, offset from the start. The far side is hidden until the robot is in the doorway.'},
     'clutter': {'source': 'worlds/clutter.json', 'title': 'Cluttered room', 'start_xy': [0.0, 0.0],
                 'start_yaw_rad': 1.5707963267948966,
-                'blurb': 'Nine boxes of different heights, some low enough to step over.'},
+                'blurb': 'Nine 1.2 m boxes, table height. Their top edges are where the robot\'s map can file a low ceiling (a finding below).'},
 }
 
 

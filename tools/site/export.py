@@ -46,6 +46,15 @@ def _decimate(points, limit):
     return [points[int(k * step)] for k in range(limit)]
 
 
+def _public_path(path):
+    """Repository-relative names for the public data: no local home or data-root paths."""
+    path = str(path or '')
+    for root in ('/home/linjiw/code/', str(ROOT.parent) + '/'):
+        if path.startswith(root):
+            return path[len(root):]
+    return Path(path).name
+
+
 def _cell_changes(changed, codes, heights):
     """Changed cells as gaps between flat indices and one value each: the code (0 or 1), or code * 1000 + height in
     cm for low obstacles, obstacles and overhead cells (2-4), whose height the site draws."""
@@ -77,8 +86,8 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
         q += _ints(qpos[:3], 1000) + _ints(qpos[3:7], 1e4) + _ints(qpos[7:36], 1000)
         est += _ints((f.get('estimate') or {}).get('position', qpos[:3])[:2], 1000)
         h = f.get('health') or {}
-        tilt.append(int(round((h.get('tilt_rad') or 0) * 1000)))
-        force.append(int(round(h.get('contact_force_n') or 0)))
+        tilt.append(None if h.get('tilt_rad') is None else int(round(h['tilt_rad'] * 1000)))
+        force.append(None if h.get('contact_force_n') is None else int(round(h['contact_force_n'])))
         dist.append(None if h.get('goal_dist_m') is None else int(round(h['goal_dist_m'] * 100)))
         times.append(round(float(f['time']), 3))
         phase = (f.get('navigation') or {}).get('phase')
@@ -149,8 +158,11 @@ def world_index(world_id, base, runs_out):
             'walks': runs_out,
             'settings': {k: request[k] for k in ('planner', 'latency', 'odometry', 'actuators', 'map_mode', 'goal_radius_m',
                                                  'prescan_s', 'initial_prescan_s', 'leg_timeout_s', 'seed')},
-            'provenance': {'policy': meta.get('policy_profile'), 'artifacts': meta.get('provenance', {}).get('artifacts'),
-                           'repositories': meta.get('provenance', {}).get('repositories'),
+            'provenance': {'policy': meta.get('policy_profile'),
+                           'artifacts': [dict(a, path=_public_path(a.get('path'))) for a in meta.get('provenance', {}).get('artifacts') or []
+                                         if 'research-data' not in str(a.get('path'))],
+                           'repositories': [{'name': _public_path(r.get('path')), 'head': r.get('head_at_read'), 'dirty': r.get('dirty_at_read')}
+                                            for r in meta.get('provenance', {}).get('repositories') or []],
                            'limitations': meta.get('limitations'), 'node_rules': meta.get('node_rules')}}
 
 
@@ -167,7 +179,10 @@ def export_world(world_id, recordings, out):
         data = walk_data(world_id, folder.name, folder / 'run', base_codes, base_heights)
         text = json.dumps(data, separators=(',', ':'))
         (out / world_id / 'g' / f'{folder.name}.json').write_text(text)
+        types = {e['type'] for e in data['events']}
         walks[folder.name] = {'outcome': data['outcome'], 'duration_s': data['duration_s'], 'final_dist_m': data['final_dist_m'],
+                              'final_dist_estimate_m': data['final_dist_estimate_m'], 'max_contact_n': data['max_contact_n'],
+                              'deferred': 'stand_deferred' in types, 'forced': 'stand_forced' in types,
                               'path_m': data['path_m'], 'reason': data['reason'], 'bytes': len(text),
                               'sha256': hashlib.sha256(text.encode()).hexdigest()[:16]}
     index = world_index(world_id, base, walks)
@@ -175,36 +190,144 @@ def export_world(world_id, recordings, out):
     return index
 
 
+def _grid_at(index_map, walk, t):
+    """The robot's map (codes, heights) at time t of a walk: the start map plus every change up to t."""
+    n = index_map['n']
+    codes = np.frombuffer(base64.b64decode(index_map['codes']), np.uint8).copy()
+    heights = np.frombuffer(base64.b64decode(index_map['height_cm']), np.uint8).copy()
+    for step in walk['map']:
+        if step['t'] > t + 1e-9:
+            break
+        idx = 0
+        for gap, v in zip(step['g'], step['v']):
+            idx += gap
+            codes[idx], heights[idx] = (v // 1000, v % 1000) if v >= 1000 else (v, 0)
+    return codes.reshape(n, n), heights.reshape(n, n)
+
+
+def _box_distance(xy, box):
+    """Distance from a point to a box footprint (0 inside)."""
+    c, h = np.asarray(box['center_xy'], float), np.asarray(box['half_xy'], float)
+    yaw = box.get('yaw', 0.0)
+    d = np.asarray(xy, float) - c
+    local = np.array([np.cos(yaw) * d[0] + np.sin(yaw) * d[1], -np.sin(yaw) * d[0] + np.cos(yaw) * d[1]])
+    return float(np.linalg.norm(np.maximum(np.abs(local) - h, 0)))
+
+
+def deferral_cause(index, walk):
+    """Why a walk's stand was deferred, classified from the recorded map and the room's boxes (conservatively).
+
+    node.py defers when its memory holds a ceiling below 1.35 m within 0.8 m. The site's map codes show such a
+    ceiling only over floor (code 4), so the cause is read from the room: a real beam below 1.35 m nearby is a true
+    low ceiling; a 0.8-1.35 m box nearby is the table-edge effect (STATUS #11); low overhead cells with no box within
+    0.5 m are phantom ceilings (STATUS #15, the robot's own arms); anything else stays unclassified."""
+    ev = next((e for e in walk['events'] if e['type'] == 'stand_deferred'), None)
+    if ev is None:
+        return None
+    k = max(0, min(walk['n'] - 1, int(np.searchsorted(walk['time'], ev['t'], side='right')) - 1))
+    robot = np.array(walk['est'][k * 2:k * 2 + 2], float) / 1000
+    m = index['map']
+    codes, heights = _grid_at(m, walk, ev['t'])
+    lo, res, n = np.asarray(m['lo'], float), m['res_m'], m['n']
+    ij = np.round((robot - lo) / res).astype(int)
+    w = int(np.ceil(0.8 / res))
+    cells = [lo + np.array([i, j]) * res
+             for i in range(max(ij[0] - w, 0), min(ij[0] + w + 1, n)) for j in range(max(ij[1] - w, 0), min(ij[1] + w + 1, n))
+             if codes[i, j] == 4 and heights[i, j] < 135]
+    boxes = index['boxes']
+    beams = [b for b in boxes if 0.3 < b['z_bottom'] < 1.35]
+    tables = [b for b in boxes if 0.8 <= b['z_top'] <= 1.35 and b['z_bottom'] <= 0.3]
+    if any(_box_distance(robot, b) <= 0.8 for b in beams):
+        cause = 'real-overhead'
+    elif any(_box_distance(robot, b) <= 0.9 for b in tables):
+        cause = 'table-edge'
+    elif cells and all(min(_box_distance(c, b) for b in boxes) > 0.5 for c in cells):
+        cause = 'phantom'
+    else:
+        cause = 'unclassified'
+    return {'t': ev['t'], 'cells': len(cells), 'cause': cause}
+
+
 def featured(out, worlds):
-    """One recorded example per finding on the site (site/js/findings.js), chosen from the walks' own events."""
+    """One recorded example per finding on the site (site/js/findings.js), chosen by cause from the walks' data."""
+    indexes = {w: json.loads((out / w / 'index.json').read_text()) for w in worlds}
     walks = []
     for w in worlds:
         for f in sorted((out / w / 'g').glob('g*.json')):
-            d = json.loads(f.read_text())
-            types = {e['type'] for e in d['events']}
-            min_z = min((min(p['z']) for p in d['plans'] if p['z']), default=None)
-            walks.append({'world': w, 'goal': d['goal_id'], 'outcome': d['outcome'], 'types': types, 'xy': d['goal'],
-                          'min_plan_z_cm': min_z, 'duration_s': d['duration_s'] or 0})
-    pick = {}
-    deferred = [x for x in walks if 'stand_deferred' in x['types']]
-    if deferred:
-        x = min(deferred, key=lambda x: (x['world'] not in ('clutter', 'doorway'), x['duration_s']))
-        pick['edge-ceiling'] = {'world': x['world'], 'goal': x['goal'], 'label': 'Watch a deferred stand',
-                                'note': f"{len(deferred)} of {len(walks)} recorded walks deferred their stand at least once."}
-    door = [x for x in walks if x['world'] == 'doorway' and x['xy'] and x['xy'][0] > 2.3]
-    bad = [x for x in door if x['outcome'] != 'arrived']
-    if door:
-        x = min(bad, key=lambda x: x['duration_s']) if bad else max(door, key=lambda x: x['xy'][0])
-        pick['doorway'] = {'world': 'doorway', 'goal': x['goal'], 'label': 'Watch one that did not make it' if bad else 'Watch it go through',
-                           'note': f"{sum(x['outcome'] == 'arrived' for x in door)} of {len(door)} goals beyond the door arrived."}
-    beam = [x for x in walks if x['world'] == 'corridor' and x['outcome'] == 'arrived' and x['xy'] and x['xy'][0] > 2.6
-            and abs(x['xy'][1]) < 0.5 and x['min_plan_z_cm'] is not None]
-    if beam:
-        x = min(beam, key=lambda x: x['min_plan_z_cm'])
-        pick['beam'] = {'world': 'corridor', 'goal': x['goal'], 'label': 'Watch it duck',
-                        'note': f"Lowest planned pelvis height on this walk: {x['min_plan_z_cm'] / 100:.2f} m (standing: about 0.79 m)."}
-    (out / 'featured.json').write_text(json.dumps(pick, indent=1))
-    return pick
+            walks.append((w, json.loads(f.read_text())))
+    pick, facts = {}, {'walks': len(walks)}
+    causes = {'table-edge': [], 'phantom': [], 'real-overhead': [], 'unclassified': []}
+    for w, d in walks:
+        c = deferral_cause(indexes[w], d)
+        if c:
+            causes[c['cause']].append((w, d, c))
+    facts['deferred'] = {k: len(v) for k, v in causes.items()}
+    for key, cause, label in (('edge-ceiling', 'table-edge', 'Watch a deferral at a table edge'),
+                              ('phantom', 'phantom', 'Watch a deferral with nothing overhead')):
+        if causes[cause]:
+            w, d, c = min(causes[cause], key=lambda x: x[1]['duration_s'] or 0)
+            pick[key] = {'world': w, 'goal': d['goal_id'], 'label': label,
+                         'note': f"{len(causes[cause])} of {len(walks)} recorded walks deferred a stand this way "
+                                 f"(classified from the recorded map and the room's boxes)."}
+    # The door: walks to the far side that cross the wall line through the 0.8 m door.
+    if 'doorway' in indexes:
+        far, through, clean = 0, 0, 0
+        best = None
+        for w, d in walks:
+            if w != 'doorway' or not d['goal'] or d['goal'][0] <= 2.3:
+                continue
+            far += 1
+            xs = [d['q'][k * 36] / 1000 for k in range(d['n'])]
+            ys = [d['q'][k * 36 + 1] / 1000 for k in range(d['n'])]
+            crossing = next((ys[k] for k in range(1, d['n']) if xs[k - 1] < 2.0 <= xs[k]), None)
+            door = crossing is not None and abs(crossing) < 0.4
+            through += door
+            ok = d['outcome'] == 'arrived' and (d['max_contact_n'] or 0) <= 100
+            clean += door and ok
+            if door and (best is None or (ok and not best[1])):
+                best = (d, ok)
+        facts['doorway'] = {'far_goals': far, 'through_door': through, 'through_clean': clean}
+        if best:
+            d, ok = best
+            pick['doorway'] = {'world': 'doorway', 'goal': d['goal_id'], 'label': 'Watch it go through',
+                               'note': f"{through} of {far} recorded walks to the far side went through the door; {clean} of them arrived without contact over 100 N."}
+    # The beam: pelvis height under the beam's footprint against the same walk elsewhere.
+    beams = [b for b in indexes.get('corridor', {}).get('boxes', []) if b['z_bottom'] > 0.3]
+    if beams:
+        b = beams[0]
+        dips = []
+        for w, d in walks:
+            if w != 'corridor':
+                continue
+            under, other = [], []
+            for k in range(d['n']):
+                x, y, z = (d['q'][k * 36 + a] / 1000 for a in range(3))
+                (under if _box_distance([x, y], b) == 0 else other).append(z)
+            if under and other:
+                dips.append((float(np.median(other) - min(under)), d, min(under), float(np.median(other))))
+        facts['beam'] = {'walks_under': len(dips), 'ducked_5cm': sum(x[0] >= 0.05 for x in dips),
+                         'beam_bottom_m': b['z_bottom']}
+        if dips:
+            clean = [x for x in dips if x[1]['outcome'] == 'arrived' and (x[1]['max_contact_n'] or 0) <= 100]
+            dip, d, zu, zo = max(clean or dips, key=lambda x: x[0])
+            pick['beam'] = {'world': 'corridor', 'goal': d['goal_id'], 'label': 'Watch it pass under',
+                            'note': f"{len(dips)} recorded walks passed under the beam; {facts['beam']['ducked_5cm']} lowered the pelvis by 5 cm "
+                                    f"or more there. This one: {zu:.2f} m under the beam against {zo:.2f} m elsewhere."}
+    # Contact: the room where walks touch walls most, and one of its walks with a clear strike.
+    touched = [(w, d) for w, d in walks if (d['max_contact_n'] or 0) > 100]
+    by_room = {}
+    for w, d in walks:
+        r = by_room.setdefault(w, [0, 0]); r[0] += 1; r[1] += (d['max_contact_n'] or 0) > 100
+    facts['contact'] = {w: {'walks': a, 'over_100n': b} for w, (a, b) in by_room.items()}
+    if touched:
+        room = max(by_room, key=lambda w: by_room[w][1] / by_room[w][0])
+        mine = sorted((d for w, d in touched if w == room), key=lambda d: d['max_contact_n'])
+        if mine:
+            d = mine[len(mine) // 2]
+            pick['contact'] = {'world': room, 'goal': d['goal_id'], 'label': 'Watch a walk that touches',
+                               'note': f"This walk peaks at {d['max_contact_n']:.0f} N and is still reported as {d['outcome']} by the node."}
+    (out / 'featured.json').write_text(json.dumps({'examples': pick, 'facts': facts}, indent=1))
+    return pick, facts
 
 
 def main(argv=None):
@@ -220,7 +343,9 @@ def main(argv=None):
         outcomes = {}
         for walk in index['walks'].values():
             outcomes[walk['outcome']] = outcomes.get(walk['outcome'], 0) + 1
-        catalog.append({'id': w, 'title': index['title'], 'blurb': index['blurb'], 'walks': len(index['walks']), 'outcomes': outcomes})
+        catalog.append({'id': w, 'title': index['title'], 'blurb': index['blurb'], 'walks': len(index['walks']), 'outcomes': outcomes,
+                        'contact': sum((x['max_contact_n'] or 0) > 100 for x in index['walks'].values()),
+                        'off_by_truth': sum(x['outcome'] == 'arrived' and (x['final_dist_m'] or 0) > 0.6 for x in index['walks'].values())})
         print(w, len(index['walks']), outcomes)
     (args.out / 'worlds.json').write_text(json.dumps({'v': SCHEMA, 'worlds': catalog}, indent=1))
     print('featured', featured(args.out, [c['id'] for c in catalog]))
