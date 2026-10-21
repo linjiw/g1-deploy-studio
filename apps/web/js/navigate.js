@@ -95,12 +95,12 @@ function resolvePending() {
   nav.pendingSeq = null;
   if (reply.status === 'rejected') nav.notice = { kind: 'warning', text: `${label(reply.cmd)} refused: ${reply.reason}` };
   else {
-    nav.notice = { kind: 'ok', text: { goal: 'Goal staged. Press Go to walk there.', go: 'Walking.', stand: 'Settling to a stand.', end: 'Ending the session…', clear: 'Goal cleared.' }[reply.cmd] ?? 'Done.' };
+    nav.notice = { kind: 'ok', text: { goal: 'Goal staged. Press Go to walk there.', go: 'Walking.', stand: 'Settling to a stand.', takeover: 'Taken over: standing now.', end: 'Ending the session…', clear: 'Goal cleared.' }[reply.cmd] ?? 'Done.' };
     if (reply.cmd === 'goal') nav.pick = null;
   }
   emit('navigate:overlay');
 }
-const label = cmd => ({ goal: 'Goal', go: 'Go', stand: 'Stand', end: 'End', clear: 'Clear' }[cmd] ?? cmd);
+const label = cmd => ({ goal: 'Goal', go: 'Go', stand: 'Stand', takeover: 'Take over', end: 'End', clear: 'Clear' }[cmd] ?? cmd);
 
 async function command(cmd, extra = {}) {
   if (!nav.job || nav.busy) return;
@@ -292,7 +292,7 @@ function facts(job) {
 // rebuilding on every poll would swallow clicks on Stand while the robot walks.
 function structureKey(job) {
   const n = navState();
-  return JSON.stringify([job?.id, job?.status, n?.phase, n?.paused, n?.can, n?.goal?.seq, n?.fallen, n?.pending_stand,
+  return JSON.stringify([job?.id, job?.status, n?.phase, n?.paused, n?.can, n?.goal?.seq, n?.fallen, n?.pending_stand, n?.holding_plan_end,
     (n?.legs ?? []).map(l => [l.index, l.outcome]), (n?.streams ?? []).map(s => s.status), nav.pick, nav.notice, nav.busy, nav.showTruth]);
 }
 
@@ -315,7 +315,7 @@ export function renderLive() {
       <div class="nav-phase"><span class="outcome ${tone}">${escape(phaseText)}</span>${n?.paused && !real ? '<span class="tiny">simulation paused</span>' : ''}</div>
       ${!n ? '<p class="tiny">Loading the planner and SONIC on the CPU (about 10–30 s)…</p>' : ''}
       <div class="nav-facts">${facts(job)}</div>
-      ${n?.pending_stand ? `<div class="callout warning">Stand deferred under a low ceiling (${escape(n.pending_stand)}); the current plan plays out first, as node.py does.</div>` : ''}
+      ${n?.pending_stand ? `<div class="callout warning">Stand deferred: the robot's map shows something overhead below head height within 0.8 m, so node.py lets the current plan play out first${n.holding_plan_end ? '. The plan has ended and the robot holds its last pose' : ''}. ${real ? 'On the robot: remote D-up only if nothing is overhead.' : 'Take over to stand it now (the remote\'s D-up). <button id="nav-takeover" class="link-button">Take over</button>'}</div>` : ''}
       ${n?.fallen ? '<div class="callout warning">E-stop: the robot tilted past the supervisor limit. On the robot the runner switches to damping. End the session to keep the recording.</div>' : ''}
       ${(n?.streams ?? []).filter(s => s.status === 'stale' || s.status === 'unavailable').map(s => `<div class="callout warning">${escape(s.label)}: ${escape(s.status)}${finite(s.age_s) ? ` · ${num(s.age_s, 1)} s old` : ''}</div>`).join('')}
     </section>
@@ -358,6 +358,7 @@ function bindLive(root) {
   root.querySelector('#nav-send')?.addEventListener('click', () => nav.pick && command('goal', { xy: nav.pick.xy }));
   root.querySelector('#nav-go')?.addEventListener('click', () => command('go'));
   root.querySelector('#nav-stand')?.addEventListener('click', () => command('stand'));
+  root.querySelector('#nav-takeover')?.addEventListener('click', () => command('takeover'));
   root.querySelector('#nav-end')?.addEventListener('click', () => command('end'));
   root.querySelector('#nav-truth')?.addEventListener('change', e => { nav.showTruth = e.target.checked; emit('navigate:layers'); });
 }

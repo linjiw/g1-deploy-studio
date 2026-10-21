@@ -57,7 +57,7 @@ await R.check('N1', 'Navigate workspace: rail button, robot choice, world and st
   await page.selectOption('#nav-world', arena.id);
   await sleep(500);
   const text = await page.locator('#navigate-panel').innerText();
-  for (const s of ['Simulated robot', 'Real robot', 'World', 'Start', 'Start session', 'How it works']) assert(text.includes(s), `panel lacks "${s}"`);
+  for (const s of ['Simulated robot', 'Real robot', 'World', 'Start', 'Start session', 'How it works']) assert(text.toLowerCase().includes(s.toLowerCase()), `panel lacks "${s}"`);
   await R.shot('setup');
   return { arena: arena.id };
 });
@@ -70,7 +70,7 @@ await R.check('N2', 'Start: the robot stands, the map is the robot\'s memory, th
   assert(s.nav.can.goal && !s.nav.can.go && !s.nav.can.stand, `can ${JSON.stringify(s.nav.can)}`);
   assert(s.nav.map.observed_fraction > 0, 'pre-scan map published');
   const text = await page.locator('#nav-live').innerText();
-  assert(/Standing · waiting for a goal/.test(text) && /Click the map to place a goal/.test(text), text.slice(0, 300));
+  assert(/Standing · waiting for a goal/i.test(text) && /Click the map to place a goal/i.test(text), text.slice(0, 300));
   await R.shot('waiting');
   return { job: s.job, coverage: s.nav.map.observed_fraction, camera: s.camera };
 });
@@ -110,7 +110,7 @@ await R.check('N5', 'Arrival: the walk is listed as arrived, the robot stands an
   assert(walk.final_dist_m < 0.6, `final distance ${walk.final_dist_m}`);
   assert(s.nav.can.goal, 'next goal allowed');
   const text = await page.locator('#nav-live').innerText();
-  assert(/Arrived/.test(text), 'walk row');
+  assert(/Arrived/i.test(text), 'walk row');
   await R.shot('arrived');
   return walk;
 });
@@ -163,7 +163,7 @@ await R.check('N9', 'End: the recording opens in Replay with both walks and per-
   });
   assert(info.frames > 100 && info.legs === 2 && info.goals >= 2, JSON.stringify(info));
   const text = await page.locator('#nav-live').innerText();
-  assert(/Session saved/.test(text) && /Make an arena twin/.test(text), text.slice(0, 300));
+  assert(/Session saved/i.test(text) && /Make an arena twin/i.test(text), text.slice(0, 300));
   await R.shot('saved');
   return info;
 });

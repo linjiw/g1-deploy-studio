@@ -233,10 +233,6 @@ def _run(req, output, inbox, started):
         m, _ = memory.ego_map(xy, yaw, pcfg.datum_offset_m, pcfg.support_clip_m or 0.8)
         return m
 
-    def grid():
-        return {'support': memory.support, 'ceiling': memory.ceiling, 'lo': np.asarray(memory.lo, dtype=float),
-                'res': float(memory.res), 'n': int(memory.n), 'basis': 'planner memory'}
-
     def ceiling_near(xy, radius_m=0.8, below_m=1.35):  # node.py StudentNode.ceiling_near
         c = memory.ceiling
         ij = np.round((np.asarray(xy) - memory.lo) / memory.res).astype(int)
@@ -319,6 +315,8 @@ def _run(req, output, inbox, started):
         standing = S['paused'] and S['phase'] in ('WAIT', 'ARRIVED', 'STOPPED') and not S['fallen'] and not S['ending']
         return {'goal': standing, 'go': standing and S['staged'] is not None,
                 'stand': S['phase'] in ('PRESCAN', 'RUN') and S['pending_stand'] is None and not S['ending'],
+                # The operator's remote D-up: SONIC stands now, whatever the node defers (approximated by the stand chunk).
+                'takeover': (S['phase'] in ('PRESCAN', 'RUN') or S['pending_stand'] is not None) and not S['paused'] and not S['fallen'],
                 'end': not S['ending']}
 
     def snapshot(force=False):
@@ -383,6 +381,8 @@ def _run(req, output, inbox, started):
                 'map': {'basis': 'planner memory', 'seq': S['map_seq'], 'observed_fraction': perception.get('observed_fraction'),
                         'updated_s': perception.get('time'), 'file': 'memory.npz'},
                 'check': S['check'], 'pending_stand': S['pending_stand'], 'end_reason': S['end_reason'],
+                'holding_plan_end': bool(S['pending_stand'] is not None and not S['active'][0].get('stand')
+                                         and S['tick'] - S['active'][1] >= len(S['active'][0]['qpos'])),
                 'motion_s': S['motion_ticks'] * DT, 'max_motion_s': req['max_motion_s']}
 
     def publish(status='running', force=False):
@@ -411,9 +411,9 @@ def _run(req, output, inbox, started):
                               'time_s': S['tick'] * DT, **({'xy': cmd.get('xy')} if cmd.get('xy') is not None else {})})
         event('command', f"{cmd.get('cmd')} {status}" + (f': {reason}' if reason else ''), seq=cmd.get('seq'), status=status)
 
-    def stand(reason):  # node.py stand(), including the ceiling deferral
+    def stand(reason, force=False):  # node.py stand(), including the ceiling deferral (force: the remote's D-up)
         q = np.asarray(S['q'], dtype=np.float64)
-        if ceiling_near(q[:2]):
+        if not force and ceiling_near(q[:2]):
             if S['pending_stand'] is None:
                 event('stand_deferred', f'stand deferred under a low ceiling ({reason})', reason=reason)
             S['pending_stand'] = reason
@@ -472,7 +472,8 @@ def _run(req, output, inbox, started):
                 return reply(cmd, 'rejected', str(exc))
             from studio import goal_check
             robot = np.asarray(S['q'][:2], dtype=float)
-            result = goal_check.check_goal(grid(), robot, xy, arrival_radius_m=req['goal_radius_m'], basis='planner memory')
+            live = goal_check.grid_from_arrays(memory.support, memory.ceiling, memory.lo, memory.res, basis='planner memory')
+            result = goal_check.check_goal(live, robot, xy, arrival_radius_m=req['goal_radius_m'], basis='planner memory')
             S['check'] = result
             if not result['ok']:
                 blocking = '; '.join(c['label'] for c in result['checks'] if c['status'] == 'block')
@@ -499,6 +500,15 @@ def _run(req, output, inbox, started):
             if S['leg']:
                 S['leg']['stop_reason'] = 'operator'
             stand('operator')
+            return reply(cmd, 'applied')
+        if name == 'takeover':
+            if not can()['takeover']:
+                return reply(cmd, 'rejected', 'The robot is standing already')
+            S['phase'] = 'STOPPED'
+            if S['leg']:
+                S['leg']['stop_reason'] = 'operator takeover (remote D-up)'
+            event('takeover', 'operator takeover: SONIC stands now (remote D-up; not near anything overhead on a real robot)')
+            stand('takeover', force=True)
             return reply(cmd, 'applied')
         if name == 'end':
             S['ending'], S['end_reason'] = True, 'operator ended the session'

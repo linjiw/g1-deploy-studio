@@ -46,7 +46,7 @@ NAV_PLANNER = {'quick': {'candidates': 2, 'ode_steps': 4, 'label': 'Quick · K 2
                'balanced': {'candidates': 8, 'ode_steps': 6, 'label': 'Balanced · K 8, ODE 6 · about 0.3x real time'},
                'deployed': {'candidates': 16, 'ode_steps': 10, 'label': 'Deployed budget · K 16, ODE 10 · about 0.15x real time'}}
 NAV_ODOMETRY = ('truth', 'lio', 'drift')
-NAV_COMMANDS = ('goal', 'clear', 'go', 'stand', 'end')
+NAV_COMMANDS = ('goal', 'clear', 'go', 'stand', 'takeover', 'end')
 NAV_WALL_S = 3600.0
 MAX_NAV_COMMANDS = 2000
 ROBOT_LINK_ENDPOINTS = ('odom', 'cloud', 'pose', 'debug', 'control')
@@ -1019,6 +1019,7 @@ class Workbench:
         (above 0.25 m: the route avoids it), 4 overhead (a ceiling seen below 2 m). `height_cm` is the observed
         support height (or the ceiling underside for code 4), 0-255 cm."""
         import base64
+        import numpy as np
         with self.lock:
             job = self._active_session(key)
             grid = self._session_grid(job, final=job['status'] not in ACTIVE_STATES)

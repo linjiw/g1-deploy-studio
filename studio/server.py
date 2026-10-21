@@ -576,6 +576,10 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": str(error)}, status=422)
         except TypeError as error:
             self.respond({"error": f"Invalid request value: {error}"}, status=422)
+        except Exception as error:  # never drop the connection on an unexpected server error
+            import traceback
+            traceback.print_exc()
+            self.respond({"error": f"Internal error: {type(error).__name__}"}, status=500)
 
     POST_ROUTES = ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel',
                    '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin', '/api/nav/connect')
@@ -631,6 +635,10 @@ class Handler(BaseHTTPRequestHandler):
         except TypeError as error:
             # Malformed JSON value types are invalid input, never a dropped connection.
             self.respond({'error': f'Invalid request value: {error}'}, status=422)
+        except Exception as error:
+            import traceback
+            traceback.print_exc()
+            self.respond({'error': f'Internal error: {type(error).__name__}'}, status=500)
 
 
 def main():
