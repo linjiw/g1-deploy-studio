@@ -202,6 +202,35 @@ def decode_debug(message: bytes, topic: bytes = b"g1_debug"):
     }
 
 
+def decode_packed_topic(message: bytes, topic: bytes):
+    """Validated NumPy arrays of a packed `cloud` or `odom` message, without decimation.
+
+    This is the wire the LIO bridge (`g1deploy/adapters/ros2_lio_bridge.py`) and the
+    simulator send: `odom` = pos [3], quat_wxyz [4] (+ lin_w, ang_w, stamp [1]);
+    `cloud` = points [N,3], origin [3], stamp [1]. The frame and the stamp's clock
+    are not on the wire; callers label them from their configuration.
+    """
+    if topic not in (b"cloud", b"odom"):
+        raise ProtocolError("packed topic must be cloud or odom")
+    header, fields = decode_packed(message, topic)
+    stamp = fields.get("stamp")
+    if stamp is not None and stamp.shape != (1,):
+        raise ProtocolError("stamp must have shape [1]")
+    if topic == b"cloud":
+        points = fields.get("points")
+        if points is None or points.ndim != 2 or points.shape[1] != 3:
+            raise ProtocolError("cloud points must have shape [N,3]")
+        if "origin" in fields and fields["origin"].shape != (3,):
+            raise ProtocolError("cloud origin must have shape [3]")
+    else:
+        for name, shape in (("pos", (3,)), ("quat_wxyz", (4,))):
+            if name not in fields or fields[name].shape != shape:
+                raise ProtocolError(f"odom {name} must have shape {shape}")
+        if float((fields["quat_wxyz"] ** 2).sum()) < 1e-12:
+            raise ProtocolError("zero odometry quaternion")
+    return header, fields
+
+
 def decode_packet(message: bytes, topic: bytes, *, receipt_monotonic=None, receipt_unix=None,
                   source_id="unspecified", session_id="capture"):
     """Attach receipt clocks and source provenance without assuming clock sync."""
@@ -212,28 +241,16 @@ def decode_packet(message: bytes, topic: bytes, *, receipt_monotonic=None, recei
     elif topic in (b"g1_debug", b"robot_config"):
         payload = decode_debug(message, topic)
     else:
-        header, fields = decode_packed(message, topic)
+        header, fields = decode_packed_topic(message, topic)
         stamp = fields.get("stamp")
-        if stamp is not None and stamp.shape != (1,):
-            raise ProtocolError("stamp must have shape [1]")
         decimation = None
         if topic == b"cloud":
-            points = fields.get("points")
-            if points is None or points.ndim != 2 or points.shape[1] != 3:
-                raise ProtocolError("cloud points must have shape [N,3]")
+            points = fields["points"]
             original_count = len(points)
             stride = max(1, math.ceil(original_count / 5000))
             fields["points"] = points[::stride]
             decimation = {"input_points": original_count, "output_points": len(fields["points"]),
                           "method": "uniform_stride", "stride": stride}
-            if "origin" in fields and fields["origin"].shape != (3,):
-                raise ProtocolError("cloud origin must have shape [3]")
-        else:
-            for name, shape in (("pos", (3,)), ("quat_wxyz", (4,))):
-                if name not in fields or fields[name].shape != shape:
-                    raise ProtocolError(f"odom {name} must have shape {shape}")
-            if float((fields["quat_wxyz"] ** 2).sum()) < 1e-12:
-                raise ProtocolError("zero odometry quaternion")
         payload = {"schema": f"flow.{topic.decode()}.v1", "sequence": None,
                    "source_timestamp": None if stamp is None else float(stamp[0]),
                    # The simulator packs simulation seconds in `stamp`; the

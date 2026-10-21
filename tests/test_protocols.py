@@ -10,7 +10,7 @@ import msgpack
 import numpy as np
 
 from studio.protocols import (HEADER_SIZE, ISAAC_JOINTS, MJ_JOINTS, ProtocolError,
-                              decode_debug, decode_packet, decode_pose)
+                              decode_debug, decode_packed_topic, decode_packet, decode_pose)
 
 SOURCE = Path("/home/linjiw/code/g1-student-deploy/g1deploy")
 
@@ -102,6 +102,31 @@ class ActualSourceParityTests(unittest.TestCase):
         event = decode_packet(packet, b"odom")
         self.assertEqual(event["payload"]["fields"]["pos"], [1., 2., 3.])
         self.assertEqual(event["frame_id"], "source_world_unverified")
+
+    def test_lio_bridge_wire_fields_round_trip_exactly(self):
+        # The exact field sets ros2_lio_bridge.py packs (odom tick / on_cloud), through the source packer.
+        rng = np.random.default_rng(7)
+        odom = self.source.pack([("pos", np.array([1.25, -0.5, 0.78])),
+                                 ("quat_wxyz", np.array([0.9238795, 0., 0., 0.3826834])),
+                                 ("lin_w", np.array([0.3, 0.1, 0.])), ("ang_w", np.zeros(3)),
+                                 ("stamp", np.array([4321.125]))], topic=b"odom")
+        cloud = self.source.pack([("points", rng.normal(size=(20000, 3)).astype(np.float32)),
+                                  ("origin", np.array([1.2, -0.4, 1.21])),
+                                  ("stamp", np.array([4321.2]))], topic=b"cloud")
+        for packet, topic in ((odom, b"odom"), (cloud, b"cloud")):
+            header, fields = decode_packed_topic(packet, topic)
+            source_header, original = self.source.unpack(packet, topic=topic)
+            with self.subTest(topic=topic):
+                self.assertEqual(header, source_header)
+                self.assertEqual(list(fields), list(original))
+                for name, arr in original.items():
+                    self.assertEqual(fields[name].dtype, arr.dtype)
+                    np.testing.assert_array_equal(fields[name], arr)
+        self.assertEqual(len(decode_packed_topic(cloud, b"cloud")[1]["points"]), 20000)  # no decimation here
+        self.assertEqual(len(decode_packet(cloud, b"cloud")["payload"]["fields"]["points"]), 5000)
+        for bad, topic in ((odom[:-8], b"odom"), (cloud, b"odom"), (odom, b"pose")):
+            with self.subTest(bad=topic), self.assertRaises(ProtocolError):
+                decode_packed_topic(bad, topic)
 
     def test_cloud_and_odom_stamp_cannot_identify_source_clock(self):
         # Explicit protocol fixtures: simulator and LIO use this same packed
