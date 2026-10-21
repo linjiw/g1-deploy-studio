@@ -334,6 +334,13 @@ export function renderFrameScene(state) {
     upto.push(measured.position);
     setPolyline(view.lines.travelled, upto, 0.025);
     if (f.plan?.waypoint) view.waypoint.position.set(f.plan.waypoint[0], f.plan.waypoint[1], 0.015);
+    // Navigation sessions change goals over time: the marker shows the goal at the cursor.
+    const goal = f.navigation?.goal_xy;
+    if (Array.isArray(goal)) {
+      if (!view.markers.goal) { view.markers.goal = navMarker('GOAL', 0xefbb70, 0.4); view.content.add(view.markers.goal); }
+      view.markers.goal.position.set(goal[0], goal[1], 0);
+      view.markers.goal.userData.hidden = false;
+    } else if (f.navigation && view.markers.goal) view.markers.goal.userData.hidden = true;
     view.key.position.set(measured.position[0] + 3, measured.position[1] - 4, 7);
     view.key.target.position.set(measured.position[0], measured.position[1], 0);
     view.renderer.shadowMap.needsUpdate = true;
@@ -370,7 +377,7 @@ export function applyLayers(state = {}) {
   if (view.waypoint) view.waypoint.visible = L.future && !!f?.plan?.waypoint;
   if (view.environment) view.environment.visible = L.environment;
   if (view.mapLayer) view.mapLayer.visible = L.perception && !!view.session?.perception?.available;
-  for (const marker of Object.values(view.markers)) marker.visible = L.navigation;
+  for (const marker of Object.values(view.markers)) marker.visible = L.navigation && !marker.userData.hidden;
   if (view.robotAxes) view.robotAxes.visible = L.frames && hasPose(m);
   view.worldAxes.visible = L.frames;
   view.sensorLayer.visible = L.sensors;
@@ -426,6 +433,18 @@ export function cameraView(kind, state, reset = false) {
     view.camera.position.set(root[0] + Math.cos(back) * 3.6, root[1] + Math.sin(back) * 3.6, 2.4);
   }
   view.controls.update(); markDirty();
+}
+
+// Straight-down view showing `half` metres around `center` (Navigate: the robot's 12 x 12 m memory).
+export function topView(center, half = 5) {
+  view.camera_mode = 'top';
+  const height = half / Math.tan(THREE.MathUtils.degToRad(view.camera.fov / 2)) / Math.min(1, Math.max(0.3, view.camera.aspect));
+  view.scene.fog.density = Math.min(0.02, 1 / Math.max(1, height));
+  view.controls.maxDistance = Math.max(80, height * 2); view.camera.far = Math.max(300, height * 3); view.camera.updateProjectionMatrix();
+  view.controls.target.set(center[0], center[1], 0);
+  view.followAnchor.set(center[0], center[1], center[2] ?? 0.75);
+  view.camera.position.set(center[0], center[1] - 0.001, height);
+  view.controls.enableRotate = false; view.controls.update(); markDirty();
 }
 
 export function sceneBounds(extraPoints = []) {
@@ -522,6 +541,67 @@ export function setArenaPreview(arena, markers = {}) {
     s.getObjectByName('heading').rotation.z = markers.yaw ?? 0; view.arenaGroup.add(s);
   }
   if (markers.goal) { const g = navMarker('GOAL', 0xefbb70, 0.3); g.position.set(markers.goal[0], markers.goal[1], 0); view.arenaGroup.add(g); }
+  markDirty();
+}
+
+// ----- Navigate overlay: the goal being checked, its path, the staged/active goal and past walks.
+// It lives outside the session content so it survives loading the live session or its recording.
+const PICK_COLOR = { pending: 0x9fb3c4, pass: 0x5fd39b, warn: 0xefbb70, block: 0xf08c85 };
+export function setNavOverlay(o = null) {
+  if (!view.scene) return;
+  if (!view.navGroup) { view.navGroup = new THREE.Group(); view.navGroup.name = 'navigate'; view.scene.add(view.navGroup); }
+  disposeGroup(view.navGroup);
+  view.navGroup.visible = !!o;
+  if (!o) { markDirty(); return; }
+  for (const w of o.walks ?? []) {
+    if (!Array.isArray(w.xy)) continue;
+    const ok = w.outcome === 'arrived';
+    const m = navMarker(`${w.index} ${ok ? '✓' : '·'}`, ok ? 0x5fd39b : 0x9fb3c4, 0.16);
+    m.position.set(w.xy[0], w.xy[1], 0); view.navGroup.add(m);
+  }
+  if (Array.isArray(o.goal)) {
+    const g = navMarker(o.staged ? 'GOAL · STAGED' : 'GOAL', 0xefbb70, o.radius ?? 0.4);
+    g.position.set(o.goal[0], o.goal[1], 0); view.navGroup.add(g);
+  }
+  if (Array.isArray(o.path) && o.path.length > 1) {
+    const line = polyline(o.pickStatus === 'block' ? 0xf08c85 : 0x56d9d0, 0.95, o.path.length + 1);
+    setPolyline(line, o.path, 0.04); view.navGroup.add(line);
+  }
+  if (Array.isArray(o.pick)) {
+    const color = PICK_COLOR[o.pickStatus] ?? PICK_COLOR.pending;
+    const p = navMarker(o.pickStatus === 'block' ? 'NOT HERE' : 'NEW GOAL', color, o.radius ?? 0.4);
+    p.position.set(o.pick[0], o.pick[1], 0); view.navGroup.add(p);
+  }
+  markDirty();
+}
+
+// The robot's map as a floor texture: one texel per memory cell, never-observed cells transparent.
+const MAP_RGBA = { 1: [38, 92, 96, 165], 2: [239, 187, 112, 215], 3: [240, 120, 112, 235], 4: [196, 160, 217, 215] };
+export function setNavMap(map = null) {
+  if (!view.scene) return;
+  if (!map) { if (view.navMap) view.navMap.visible = false; markDirty(); return; }
+  const n = map.n;
+  if (!view.navMap || view.navMap.userData.n !== n) {
+    if (view.navMap) { view.navMap.geometry.dispose(); view.navMap.material.map.dispose(); view.navMap.material.dispose(); view.scene.remove(view.navMap); }
+    const texture = new THREE.DataTexture(new Uint8Array(n * n * 4), n, n, THREE.RGBAFormat);
+    texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.LinearFilter;
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false }));
+    mesh.renderOrder = 1; mesh.userData.n = n; mesh.name = 'robot-map';
+    view.scene.add(mesh); view.navMap = mesh;
+  }
+  const mesh = view.navMap, data = mesh.material.map.image.data;
+  // Source arrays are grid[i][j], i along x: texel column i, row j (DataTexture rows run along +y).
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const code = map.codes[i * n + j], rgba = MAP_RGBA[code], k = (j * n + i) * 4;
+    if (!rgba) { data[k + 3] = 0; continue; }
+    const shade = code === 3 ? Math.min(1, 0.65 + map.height[i * n + j] / 250) : 1;
+    data[k] = rgba[0] * shade; data[k + 1] = rgba[1] * shade; data[k + 2] = rgba[2] * shade; data[k + 3] = rgba[3];
+  }
+  mesh.material.map.needsUpdate = true;
+  const size = n * map.res_m;
+  mesh.scale.set(size, size, 1);
+  mesh.position.set(map.lo[0] + (n - 1) * map.res_m / 2, map.lo[1] + (n - 1) * map.res_m / 2, 0.006);
+  mesh.visible = true;
   markDirty();
 }
 

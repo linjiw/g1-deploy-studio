@@ -16,3 +16,4 @@ logs/
 *.trt
 config/local.json
 .claude/worktrees/
+config/robot_link.json

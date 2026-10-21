@@ -39,7 +39,43 @@ ACTIVE_STATES = ('starting', 'running', 'cancelling')
 TERMINAL_STATES = ('completed', 'failed', 'cancelled')
 HISTORY_FIELDS = ('id', 'status', 'scenario_id', 'scenario', 'started_unix_s', 'finished_unix_s',
                   'exit_code', 'error', 'result_session_id', 'recovered', 'ownership', 'suite_id',
-                  'policy_id', 'policy_identity', 'teardown_warning', 'original_status')
+                  'policy_id', 'policy_identity', 'teardown_warning', 'original_status', 'kind', 'navigation')
+NAV_PLANNER = {'quick': {'candidates': 2, 'ode_steps': 4, 'label': 'Quick · K 2, ODE 4 (CPU)'},
+               'balanced': {'candidates': 8, 'ode_steps': 6, 'label': 'Balanced · K 8, ODE 6'},
+               'deployed': {'candidates': 16, 'ode_steps': 10, 'label': 'Deployed budget · K 16, ODE 10 (slow on CPU)'}}
+NAV_ODOMETRY = ('truth', 'lio', 'drift')
+NAV_COMMANDS = ('goal', 'clear', 'go', 'stand', 'end')
+NAV_WALL_S = 3600.0
+MAX_NAV_COMMANDS = 2000
+ROBOT_LINK_ENDPOINTS = ('odom', 'cloud', 'pose', 'debug', 'control')
+ROBOT_WALL_S = 4 * 3600.0
+
+
+def robot_link_config_path():
+    """Machine-local robot link configuration (ignored by Git): config/robot_link.json or $STUDIO_ROBOT_LINK."""
+    return Path(os.environ.get('STUDIO_ROBOT_LINK') or ROOT/'config/robot_link.json')
+
+
+def read_robot_link_config():
+    """Validated loopback endpoints for the robot link, or (None, reason)."""
+    from studio.recorder import validate_endpoint
+    path = robot_link_config_path()
+    if not path.is_file():
+        return None, f'No robot link is configured ({path.name} not found). Copy config/robot_link.example.json to config/robot_link.json on the deploy PC.'
+    try:
+        config = read_json(path, 64*1024)
+        endpoints = config.get('endpoints') if isinstance(config, dict) else None
+        if not isinstance(endpoints, dict) or 'odom' not in endpoints or 'control' not in endpoints:
+            raise ValueError('endpoints must name at least odom and control')
+        clean = {}
+        for key, value in endpoints.items():
+            if key not in ROBOT_LINK_ENDPOINTS:
+                raise ValueError(f'unknown endpoint {key!r}')
+            if value:
+                clean[key] = validate_endpoint(value)
+    except (OSError, ValueError, TypeError) as error:
+        return None, f'Robot link configuration {path.name} is invalid: {error}'
+    return dict(config, endpoints=clean, path=str(path)), None
 DEVELOPMENT_SCENES = (
     ('flow-detour', 'detour', 20261015, 'Flow arena · wall detour',
      'A standing wall blocks the direct route. Select a goal on either side to inspect avoidance.'),
@@ -535,9 +571,11 @@ class Workbench:
     def _register_result(self, job):
         summary = self._optional_json(job['output']/'run/result.json', 1024*1024) or {}
         scenario = job.get('scenario', {})
+        navigation = job.get('kind') in ('navigation', 'robot')
         self.catalog.register(job['id'], job['output']/'run/session.json',
                               f"{scenario.get('label', 'saved CPU simulation')}",
-                              extra={'group': 'CPU rehearsals', 'status': job['status'],
+                              extra={'group': 'Navigation sessions' if navigation else 'CPU rehearsals', 'status': job['status'],
+                                     'kind': job.get('kind', 'rehearsal'),
                                      'outcome': (summary.get('report') or {}).get('outcome') or ('runtime_error' if job['status'] == 'failed' else None),
                                      'policy_id': job.get('policy_id') or scenario.get('policy_id') or DEFAULT_POLICY_ID,
                                      'started_unix_s': job.get('started_unix_s'), 'map_id': scenario.get('map_id'),
@@ -751,16 +789,7 @@ class Workbench:
                                        'identity_sha256': policy_identity['identity_sha256'],
                                        **({'bundle_id': profile['bundle_id']} if profile.get('bundle_id') else {})})
                 script = 'flow_policy_worker.py' if profile.get('loader') == 'flow-callback' else 'policy_worker.py'
-                atomic_json(output/'request.json', request)
-                env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', CUDA_VISIBLE_DEVICES='',
-                           OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2',
-                           NUMEXPR_NUM_THREADS='2', PYTHONPATH=str(ROOT))
-                with (output/'worker.log').open('wb') as log:
-                    process = subprocess.Popen([str(self.worker_python), '-u', str(ROOT/'studio'/script),
-                                                '--request', str(output/'request.json'), '--output', str(output/'run')],
-                                               cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
-                                               start_new_session=True, pass_fds=(lease_fd,))
-                job['process'] = process
+                job['process'] = self._launch(output, script, request, lease_fd)
                 self.catalog.register(key, output/'run/session.json', f"LIVE · {scenario['label']}", provider=lambda: self.session_data(key),
                                       extra={'group': 'CPU rehearsals', 'status': 'running', 'policy_id': profile['id'],
                                              'started_unix_s': job['started_unix_s'], 'map_id': scenario['map_id'],
@@ -779,6 +808,241 @@ class Workbench:
                     self._close_lease(job)
                 raise
             return self.job(key)
+
+    def _launch(self, output, script, request, lease_fd, python=None):
+        atomic_json(output/'request.json', request)
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', CUDA_VISIBLE_DEVICES='',
+                   OMP_NUM_THREADS='2', MKL_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2',
+                   NUMEXPR_NUM_THREADS='2', PYTHONPATH=str(ROOT))
+        with (output/'worker.log').open('wb') as log:
+            return subprocess.Popen([str(python or self.worker_python), '-u', str(ROOT/'studio'/script),
+                                     '--request', str(output/'request.json'), '--output', str(output/'run')],
+                                    cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                    start_new_session=True, pass_fds=(lease_fd,))
+
+    # ----- Navigation sessions: the simulated robot (studio/nav_worker.py), docs/NAVIGATE.md.
+    def start_navigation(self, document):
+        """An interactive session: the robot stands in a world and walks to goals the operator stages."""
+        from studio import policies, actuators
+        if not isinstance(document, dict):
+            raise ValueError('Navigation request must be an object')
+        map_id = ident(document.get('map_id', 'flat-ground'), 'map_id')
+        preset = NAV_PLANNER.get(document.get('planner', 'quick'))
+        if preset is None:
+            raise ValueError(f'planner must be one of {sorted(NAV_PLANNER)}')
+        odometry = document.get('odometry', 'truth')
+        if odometry not in NAV_ODOMETRY:
+            raise ValueError(f'odometry must be one of {list(NAV_ODOMETRY)}')
+        actuator_profile = actuators.validate(document.get('actuators', 'g1-current'))
+        seed = integer(document.get('seed', 0), 'seed', 0, 2**31-1)
+        initial_goal = document.get('initial_goal')
+        with self.lock:
+            if map_id not in self.maps:
+                raise KeyError('Unknown map')
+            world = self.maps[map_id]
+            if world.get('kind') != 'boxes' or not world.get('runnable', True):
+                raise ValueError('A navigation session needs a boxes world (an arena or a scene); scans have no collision geometry')
+            start_xy = vector(document.get('start_xy', [0, 0]), 'start XY', low=-50, high=50)
+            start_yaw = finite(document.get('start_yaw_rad', 0), 'start yaw', -math.pi, math.pi)
+            status = point_status(world, start_xy)
+            if status['status'] != 'configured_free':
+                raise ValueError(f"Start: {status['reason']}")
+            if initial_goal is not None:
+                initial_goal = vector(initial_goal, 'initial goal XY', low=-50, high=50)
+            profile = policies.get_profile(DEFAULT_POLICY_ID)
+            policy_identity = policies.identity(profile)
+            latency = self._latency(document.get('latency'), profile)
+            if not self.capabilities()['available']:
+                raise ValueError('CPU reference interpreter or SONIC model unavailable')
+            if not policy_identity['available']:
+                raise ValueError('Policy profile artifacts unavailable: ' + '; '.join(policy_identity['missing'])[:500])
+            if any(j['status'] in ACTIVE_STATES for j in self.jobs.values()):
+                raise ValueError('A simulation is already active; end it before starting a navigation session')
+            if any(s['status'] in SUITE_ACTIVE for s in self.suites.values()):
+                raise ValueError('A suite is running; cancel it or wait before starting a navigation session')
+            if len(list((self.root/'jobs').glob('job-*'))) >= MAX_JOBS:
+                raise ValueError('Job storage limit reached; archive owned runs before starting more')
+            lease_fd = self._acquire_lease()
+            key = 'job-' + uuid.uuid4().hex[:12]
+            output = self.root/'jobs'/key
+            label = f"Navigate · {world.get('label', map_id)}"
+            navigation = {'robot': 'simulated', 'label': label, 'map_id': map_id, 'map_label': world.get('label'),
+                          'start_xy': start_xy, 'start_yaw_rad': start_yaw, 'planner': document.get('planner', 'quick'),
+                          'planner_label': preset['label'], 'latency': latency, 'actuators': actuator_profile,
+                          'odometry': odometry, 'seed': seed, 'initial_goal': initial_goal}
+            job = {'id': key, 'status': 'starting', 'kind': 'navigation', 'navigation': navigation,
+                   'scenario': {'label': label, 'map_id': map_id}, 'scenario_id': None,
+                   'started_unix_s': time.time(), 'output': output, 'process': None, 'latest': None,
+                   'error': None, 'result_session_id': None, '_lease_fd': lease_fd, '_seq': 0,
+                   'ownership': 'owned child process', 'suite_id': None,
+                   'policy_id': profile['id'], 'policy_identity': policy_identity, 'wall_limit_s': NAV_WALL_S}
+            try:
+                output.mkdir()
+                os.ftruncate(lease_fd, 0)
+                os.write(lease_fd, key.encode())
+                self.jobs[key] = job
+                self._persist_job(job)
+                request = {'schema_version': 1, 'id': key, 'map': self.map(map_id), 'start_xy': start_xy,
+                           'start_yaw_rad': start_yaw, 'seed': seed,
+                           'planner': {k: preset[k] for k in ('candidates', 'ode_steps')}, 'latency': latency,
+                           'actuators': actuator_profile, 'odometry': odometry, 'initial_goal': initial_goal,
+                           'policy': {'identity_sha256': policy_identity['identity_sha256']}}
+                job['process'] = self._launch(output, 'nav_worker.py', request, lease_fd)
+                self.catalog.register(key, output/'run/session.json', f'LIVE · {label}', provider=lambda: self.session_data(key),
+                                      extra={'group': 'Navigation sessions', 'status': 'running', 'policy_id': profile['id'],
+                                             'started_unix_s': job['started_unix_s'], 'map_id': map_id,
+                                             'scenario_label': label, 'kind': 'navigation'})
+                threading.Thread(target=self._monitor, args=(key,), daemon=True).start()
+            except BaseException as exc:
+                if job['process'] is not None:
+                    self._terminate(job['process'])
+                    job['process'].wait()
+                job.update(status='failed', error=f'Worker launch failed: {type(exc).__name__}: {exc}', finished_unix_s=time.time())
+                try:
+                    if output.is_dir():
+                        self._persist_job(job)
+                finally:
+                    self._close_lease(job)
+                raise
+            return self.job(key)
+
+    def robot_link_status(self):
+        config, reason = read_robot_link_config()
+        if config is None:
+            return {'configured': False, 'reason': reason}
+        return {'configured': True, 'path': config['path'], 'fixture': bool(config.get('fixture')),
+                'endpoints': [{'id': k, 'endpoint': v} for k, v in config['endpoints'].items()],
+                'rules': ['Subscribes to loopback streams only', 'Sends goal and stand to node.py; never go or quit',
+                          'No DDS participant and no motor command path']}
+
+    def _active_session(self, key):
+        key = ident(key, 'session id')
+        job = self.jobs.get(key)
+        if job is None:
+            raise KeyError('Unknown session')
+        if job.get('kind') not in ('navigation', 'robot'):
+            raise ValueError('Not a navigation session')
+        return job
+
+    def nav_command(self, key, document):
+        """Queue one operator command for the session process (it validates and applies it, docs/NAVIGATE.md §4)."""
+        if not isinstance(document, dict):
+            raise ValueError('Command must be an object')
+        cmd = document.get('cmd')
+        if cmd not in NAV_COMMANDS:
+            raise ValueError(f'cmd must be one of {list(NAV_COMMANDS)}')
+        body = {'cmd': cmd}
+        if cmd == 'goal':
+            body['xy'] = vector(document.get('xy'), 'goal XY', low=-50, high=50)
+        with self.lock:
+            job = self._active_session(key)
+            process = job.get('process')
+            if job['status'] not in ('starting', 'running') or process is None or process.poll() is not None:
+                raise ValueError('The session is not running')
+            inbox = job['output']/'run/inbox'
+            if not inbox.is_dir():
+                raise ValueError('The session is still starting; try again in a moment')
+            if job.get('_seq', 0) >= MAX_NAV_COMMANDS:
+                raise ValueError('Command limit reached for this session')
+            job['_seq'] = job.get('_seq', 0) + 1
+            body.update(seq=job['_seq'], issued_unix_s=time.time())
+            atomic_json(inbox/f"{body['seq']:06d}.json", body)
+        return {'id': key, 'seq': body['seq'], 'cmd': cmd, 'status': 'queued'}
+
+    def _session_grid(self, job, final=False):
+        from studio import goal_check
+        names = ('memory-final.npz', 'memory.npz') if final else ('memory.npz', 'memory-final.npz')
+        path = next((job['output']/'run'/n for n in names if (job['output']/'run'/n).is_file()), None)
+        if path is None:
+            raise ValueError('No map yet: the session has not published its memory')
+        stat = path.stat()
+        cache = job.get('_grid_cache')
+        if cache and cache[0] == (str(path), stat.st_mtime_ns, stat.st_size):
+            return cache[1]
+        grid = goal_check.load_grid(path)
+        job['_grid_cache'] = ((str(path), stat.st_mtime_ns, stat.st_size), grid)
+        return grid
+
+    def nav_map(self, key):
+        """The session's map as compact cell codes for the browser's floor texture (what the robot knows).
+
+        Codes: 0 never observed, 1 floor, 2 low obstacle (0.05-0.25 m: the route steps over it), 3 obstacle
+        (above 0.25 m: the route avoids it), 4 overhead (a ceiling seen below 2 m). `height_cm` is the observed
+        support height (or the ceiling underside for code 4), 0-255 cm."""
+        import base64
+        with self.lock:
+            job = self._active_session(key)
+            grid = self._session_grid(job, final=job['status'] not in ACTIVE_STATES)
+            cached = job.get('_map_cache')
+            if cached and cached[0] is grid:
+                return cached[1]
+        support, ceiling = np.asarray(grid['support']), np.asarray(grid['ceiling'])
+        codes = np.zeros(support.shape, dtype=np.uint8)
+        seen = np.isfinite(support)
+        codes[seen] = 1
+        codes[seen & (support > 0.05)] = 2
+        codes[seen & (support > 0.25)] = 3
+        overhead = np.isfinite(ceiling) & (ceiling < 2.0)
+        codes[overhead & (codes < 2)] = 4
+        height = np.where(codes == 4, np.nan_to_num(ceiling, nan=0, posinf=0), np.nan_to_num(support, nan=0))
+        height_cm = np.clip(np.round(height * 100), 0, 255).astype(np.uint8)
+        # Row-major over [i (x), j (y)] exactly as the source arrays (grid[x][y]).
+        body = {'schema_version': 1, 'id': key, 'n': int(support.shape[0]), 'res_m': float(grid['res']),
+                'lo': [float(v) for v in grid['lo']], 'basis': grid.get('basis') or 'map',
+                'order': 'row-major [i, j], i along x, cell centre = lo + (i, j) * res',
+                'codes': base64.b64encode(codes.tobytes()).decode(), 'height_cm': base64.b64encode(height_cm.tobytes()).decode(),
+                'legend': {'0': 'never observed', '1': 'floor', '2': 'low obstacle (steps over)', '3': 'obstacle', '4': 'overhead'},
+                'observed_fraction': float(seen.mean() if seen.size else 0)}
+        with self.lock:
+            job['_map_cache'] = (grid, body)
+        return body
+
+    def nav_check(self, key, xy):
+        """Preview the goal checks on the session's current map (the session re-checks when the goal is staged)."""
+        from studio import goal_check
+        xy = vector(xy, 'goal XY', low=-50, high=50)
+        with self.lock:
+            job = self._active_session(key)
+            latest = job.get('latest') or self._optional_json(job['output']/'run/latest.json', 16*1024*1024) or {}
+            grid = self._session_grid(job)
+        frame = latest.get('frame') or {}
+        pose = frame.get('estimate') or frame
+        robot = (pose.get('position') or job.get('navigation', {}).get('start_xy') or [0, 0])[:2]
+        return goal_check.check_goal(grid, robot, xy, arrival_radius_m=.4, basis=grid.get('basis') or 'map')
+
+    def nav_twin(self, document):
+        """Fit boxes to a finished session's map and save them as a new arena (scan to twin, docs/NAVIGATE.md §6)."""
+        from studio import twin
+        if not isinstance(document, dict):
+            raise ValueError('Twin request must be an object')
+        with self.lock:
+            job = self._active_session(document.get('id'))
+            if job['status'] in ACTIVE_STATES:
+                raise ValueError('End the session first; the twin is made from its final map')
+            grid = self._session_grid(job, final=True)
+            navigation = dict(job.get('navigation') or {})
+            output = job['output']
+        summary = self._optional_json(output/'run/result.json', 1024*1024) or {}
+        legs = (summary.get('report') or {}).get('legs') or []
+        goal = next((leg.get('goal_xy') for leg in reversed(legs) if leg.get('goal_xy')), None)
+        request = self._optional_json(output/'request.json', 4*1024*1024) or {}
+        truth = ((request.get('map') or {}).get('boxes')) if job.get('kind') == 'navigation' else None
+        start = navigation.get('start_xy') or [0, 0]
+        label_text = f"Twin · {navigation.get('map_label') or navigation.get('label') or job['id']}"[:120]
+        arena = twin.twin_from_grid(grid, start_xy=start, start_yaw_rad=navigation.get('start_yaw_rad', 0.0),
+                                    goal_xy=goal, label=label_text, truth_boxes=truth)
+        quality = arena.get('quality')
+        if quality is None and truth is not None:
+            quality = twin.twin_quality(arena['boxes'], truth, grid)
+        description = (f"Fitted to the robot's map from session {job['id']} ({len(arena['boxes'])} boxes"
+                       + (f", footprint match {quality['occupancy_iou']*100:.0f} % of the true world" if quality else '') + ').')
+        saved = self.save_arena({'label': arena.get('label', label_text), 'boxes': arena['boxes'], 'bounds': arena.get('bounds'),
+                                 'presets': arena.get('presets') or [], 'description': description[:500]},
+                                provenance={'source': 'Scan to twin (studio.twin)', 'session_id': job['id'],
+                                            'map_basis': grid.get('basis'), 'method': (arena.get('provenance') or {}).get('method'),
+                                            'quality': quality, 'warnings': arena.get('warnings') or []})
+        return {'arena_id': saved['id'], 'label': saved['label'], 'boxes': len(saved['boxes']),
+                'presets': len(saved.get('presets') or []), 'quality': quality, 'warnings': arena.get('warnings') or []}
 
     def _monitor(self, key):
         job = self.jobs[key]
@@ -936,6 +1200,11 @@ class Workbench:
             result['latest'] = self._light_latest(job.get('latest'), perception_after) if light else job.get('latest')
             frame = (result['latest'] or {}).get('frame') or {}
             receipt = frame.get('receipt_time')
+            heartbeat = (job.get('latest') or {}).get('heartbeat') or {}
+            if heartbeat.get('clock_domain') == 'host-monotonic':
+                # Navigation sessions pause frames while the robot waits; liveness is the process heartbeat.
+                frame = {'receipt_clock_domain': 'host-monotonic'}
+                receipt = heartbeat.get('monotonic')
             age = None
             if job.get('process') is not None and frame.get('receipt_clock_domain') == 'host-monotonic' and isinstance(receipt, (int,float)) and math.isfinite(receipt):
                 delta = time.monotonic()-receipt
@@ -989,7 +1258,7 @@ class Workbench:
                 'graph': latest.get('graph', {'nodes': [], 'edges': []})}
 
     # ----- Arenas: operator-edited collision layouts with named start/goal presets.
-    def save_arena(self, document):
+    def save_arena(self, document, provenance=None):
         """Save an edited box arena as a new immutable map (never overwrites)."""
         if not isinstance(document, dict):
             raise ValueError('Arena must be a JSON object')
@@ -1010,9 +1279,9 @@ class Workbench:
                 raise ValueError(f'Arena limit reached ({MAX_ARENAS}); archive saved arenas first')
             key = 'arena-' + uuid.uuid4().hex[:12]
             data.update(id=key, presets=presets, description=description, origin='arena-editor',
-                        provenance={'source': 'Studio arena editor', 'created_unix_s': time.time(),
-                                    'base_map_id': base,
-                                    'base_map_sha256': self.maps[base]['sha256'] if base else None})
+                        provenance=dict({'source': 'Studio arena editor', 'created_unix_s': time.time(),
+                                         'base_map_id': base,
+                                         'base_map_sha256': self.maps[base]['sha256'] if base else None}, **(provenance or {})))
             atomic_json(self.root/'maps'/f'{key}.json', data)
             self.maps[key] = data
             return copy.deepcopy(data)
@@ -1258,7 +1527,7 @@ class Workbench:
         return row
 
     def runs_table(self):
-        keys = self._chronological()
+        keys = [k for k in self._chronological() if self.jobs[k].get('kind') not in ('navigation', 'robot')]
         rows = []
         for key in keys:
             try:

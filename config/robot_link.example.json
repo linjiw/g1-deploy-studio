@@ -1,0 +1,10 @@
+{
+  "comment": "Copy to config/robot_link.json (ignored by Git) on the deploy PC. Loopback endpoints only: Studio runs on the same PC as node.py, the SONIC runner and the LIO bridge. Studio subscribes to odom/cloud/pose/debug and sends only goal and stand to the node's control socket; Go stays with the operator.",
+  "endpoints": {
+    "odom": "tcp://127.0.0.1:5561",
+    "cloud": "tcp://127.0.0.1:5561",
+    "pose": "tcp://127.0.0.1:5556",
+    "debug": "tcp://127.0.0.1:5557",
+    "control": "tcp://127.0.0.1:5562"
+  }
+}

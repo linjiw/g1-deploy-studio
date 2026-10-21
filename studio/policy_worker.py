@@ -134,11 +134,8 @@ def _xy(value, name):
     return [_number(x, name, -50, 50) for x in value]
 
 
-def validate_request(request):
-    """Allowlisted physics inputs. A point cloud cannot silently become collision truth."""
-    if not isinstance(request, dict) or type(request.get('schema_version')) is not int or request.get('schema_version') != 1:
-        raise ValueError('request schema_version must be 1')
-    m = request.get('map')
+def clean_map(m):
+    """An explicit boxes collision map, world-aligned and bounded. A point cloud cannot silently become collision truth."""
     if not isinstance(m, dict) or m.get('kind') != 'boxes':
         raise ValueError('Physics tests require an explicit boxes collision map; scans support inspection only')
     if m.get('frame_id', 'world') != 'world':
@@ -159,7 +156,12 @@ def validate_request(request):
         clean_boxes.append({'center_xy': _xy(b.get('center_xy'), 'center_xy'), 'half_xy': half,
                             'yaw': _number(b.get('yaw', 0), 'yaw', -math.pi, math.pi),
                             'z_bottom': bottom, 'z_top': top})
-    planner = request.get('planner', {})
+    return {'id': str(m.get('id', 'map'))[:100], 'label': str(m.get('label', 'Collision map'))[:200],
+            'kind': 'boxes', 'frame_id': 'world', 'boxes': clean_boxes,
+            'source': str(m.get('source', 'operator-configured'))[:1000]}
+
+
+def validate_planner(planner):
     if not isinstance(planner, dict):
         raise ValueError('planner must be an object')
     settings = {}
@@ -168,6 +170,16 @@ def validate_request(request):
         if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= maximum:
             raise ValueError(f'planner.{name} must be an integer in 1..{maximum}')
         settings[name] = n
+    return settings
+
+
+def validate_request(request):
+    """Allowlisted physics inputs. A point cloud cannot silently become collision truth."""
+    if not isinstance(request, dict) or type(request.get('schema_version')) is not int or request.get('schema_version') != 1:
+        raise ValueError('request schema_version must be 1')
+    clean_map_document = clean_map(request.get('map'))
+    planner = request.get('planner', {})
+    settings = validate_planner(planner)
     seed = request.get('seed', 0)
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**31 - 1:
         raise ValueError('seed must be an integer in 0..2147483647')
@@ -197,9 +209,7 @@ def validate_request(request):
              'latency': validate_latency(request.get('latency')),
              # Requests saved before actuator profiles existed ran on the unpatched source model.
              'actuators': _actuators.validate(request.get('actuators', 'source')),
-             'map': {'id': str(m.get('id', 'map'))[:100], 'label': str(m.get('label', 'Collision map'))[:200],
-                     'kind': 'boxes', 'frame_id': 'world', 'boxes': clean_boxes,
-                     'source': str(m.get('source', 'operator-configured'))[:1000]}}
+             'map': clean_map_document}
     return clean
 
 

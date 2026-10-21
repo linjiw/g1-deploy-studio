@@ -489,6 +489,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(workbench.suite(key) if key else workbench.list_suites())
             if path == '/api/runs' and workbench:
                 return self.respond(workbench.runs_table())
+            if path == '/api/nav/check' and workbench:
+                key = query.get('id', [None])[0]
+                try:
+                    xy = [float(query.get('x', [''])[0]), float(query.get('y', [''])[0])]
+                except ValueError:
+                    raise ValueError('x and y must be numbers in metres') from None
+                return self.respond(workbench.nav_check(key, xy))
+            if path == '/api/nav/map' and workbench:
+                return self.respond(workbench.nav_map(query.get('id', [None])[0]))
+            if path == '/api/nav/robot' and workbench:
+                return self.respond(workbench.robot_link_status())
+            if path == '/api/nav/options' and workbench:
+                from studio.workbench import NAV_PLANNER, NAV_ODOMETRY
+                return self.respond({'planner': {k: v['label'] for k, v in NAV_PLANNER.items()}, 'odometry': list(NAV_ODOMETRY)})
             if path == '/api/policies' and workbench:
                 return self.respond(workbench.policy_catalog())
             if path == '/api/robot':
@@ -563,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": f"Invalid request value: {error}"}, status=422)
 
     POST_ROUTES = ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel',
-                   '/api/arenas', '/api/suites', '/api/suites/cancel')
+                   '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin')
 
     def do_POST(self):
         if not self.authorize_local():
@@ -598,6 +612,12 @@ class Handler(BaseHTTPRequestHandler):
                 result = workbench.start_suite(data)
             elif path == '/api/suites/cancel':
                 result = workbench.cancel_suite(data.get('id'))
+            elif path == '/api/nav/start':
+                result = workbench.start_navigation(data)
+            elif path == '/api/nav/command':
+                result = workbench.nav_command(data.get('id'), data)
+            elif path == '/api/nav/twin':
+                result = workbench.nav_twin(data)
             else:
                 result = workbench.cancel_job(data.get('id'))
             return self.respond(result, status=201)

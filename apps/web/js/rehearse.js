@@ -193,7 +193,8 @@ async function cancel() {
 
 export async function refreshActive() {
   const { jobs } = await request('/api/jobs');
-  const live = jobs.find(j => FOLLOW.includes(j.status));  // includes runs a restarted gateway does not own
+  // Includes runs a restarted gateway does not own; navigation sessions belong to the Navigate workspace.
+  const live = jobs.find(j => FOLLOW.includes(j.status) && !['navigation', 'robot'].includes(j.kind));
   if (live && !rh.job) { rh.job = live; poll(); }
   const { suites } = await request('/api/suites');
   const runningSuite = suites.find(s => ['queued', 'running', 'cancelling'].includes(s.status));

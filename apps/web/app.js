@@ -11,6 +11,7 @@ import { arena, initArena, renderPanel as renderArenaPanel, loadFromMap, fitAren
 import { rh, initRehearse, render as renderRehearse, selectMap as rehearseSelectMap, previewMarkers } from './js/rehearse.js';
 import { runs, initRuns, refreshRuns, drawCompare, selectedRuns, runColor } from './js/runs.js';
 import { renderSystemMap, renderRobotContract, KIND_LABEL, sessionKind } from './js/system.js';
+import { nav, initNavigate, render as renderNavigate, pickGoal, overlay as navOverlay } from './js/navigate.js';
 
 const state = {
   session: null, sessionId: null, frame: null, measuredFrame: null, frozenFrame: null, frameIndex: -1, time: 0,
@@ -23,6 +24,7 @@ state.freeze = on_ => { state.frozenFrame = on_ ? state.frame : null; renderFram
 
 const WORKSPACES = {
   replay: { title: 'Replay', eyebrow: '', panel: null, stage: '3d' },
+  navigate: { title: 'Navigate', eyebrow: "Goals on the robot's own map", panel: 'navigate', stage: '3d' },
   arena: { title: 'Navigation arena', eyebrow: 'Build · obstacles · start / goal presets', panel: 'arena', stage: 'arena' },
   rehearse: { title: 'Rehearse a policy', eyebrow: 'Isolated CPU simulation · hardware disabled', panel: 'rehearse', stage: '3d' },
   runs: { title: 'Runs', eyebrow: 'Compare outcomes and trajectories', panel: 'runs', stage: 'runs' },
@@ -194,7 +196,9 @@ function updateHud(sample) {
     $('source-badge').className = 'chip chip-measured'; $('source-badge').textContent = 'RECORDED ZMQ';
     return;
   }
-  const goal = meta.goal_xy, dist = goal ? Math.hypot(m.position[0] - goal[0], m.position[1] - goal[1]) : null;
+  // Navigation sessions carry the goal per frame (it changes from walk to walk).
+  const goal = f.navigation ? f.navigation.goal_xy : meta.goal_xy, dist = goal ? Math.hypot(m.position[0] - goal[0], m.position[1] - goal[1]) : null;
+  if (f.navigation) crit.goal_radius_m ??= meta.navigation?.goal_radius_m ?? meta.node_rules?.goal_radius_m ?? 0.4;
   const v = f.post_action?.root_linear_velocity_w;
   let speed = Array.isArray(v) ? Math.hypot(v[0], v[1]) : null, speedLabel = 'Speed';
   if (speed === null && !state.frozenFrame) {
@@ -214,7 +218,9 @@ function updateHud(sample) {
     + (exec ? hudItem('Exec check · est.', `${exec.ok ? 'ok' : 'fail'} · ${num(exec.clearance_m * 100, 1)} cm`, '', exec.ok ? 'good' : 'warn') : '')
     + (sample && !meta.privileged_map ? hudItem('Map age', (state.time - sample.time) * 1000, 'ms') : '');
   const age = h.state_age_ms;
-  $('navigation-caption').textContent = goal ? `Goal [${vector(goal, 2)}] m · ${crit.label ?? ''}` : '';
+  $('navigation-caption').textContent = f.navigation
+    ? `${f.navigation.walk ? `Walk ${f.navigation.walk}` : 'Standing'} · ${goal ? `goal [${vector(goal, 2)}] m` : 'no goal'} · ${String(f.navigation.phase ?? '').toLowerCase()}`
+    : goal ? `Goal [${vector(goal, 2)}] m · ${crit.label ?? ''}` : '';
   const truth = meta.mode === 'simulation' || meta.recording_kind === 'sonic-mujoco-lockstep';
   $('pose-caption').textContent = `${state.frozenFrame ? 'DIAGNOSTIC HELD STATE' : truth ? 'SIM-TRUTH' : 'RECORDED'} · xyz [${vector(m.position, 2)}] m · yaw ${num(yawOf(q), 2, 'rad')}${state.frozenFrame ? ` · ${num(age, 0, 'ms')} old` : ''}`;
   $('reference-caption').textContent = scene.view.layers.perception && sample ? (finite(sample.time) && state.session.perception?.frames ? `MAP · causal sample ${clock(sample.time)} · unknown cells stay empty` : 'MAP · final accumulated snapshot · capture time unavailable') : f.reference ? 'Cyan: SONIC reference now · amber: +0.4 s / +0.9 s · line: planner prediction' : 'No reference packets in this recording';
@@ -343,6 +349,8 @@ function appendLiveFrame(latest) {
     }
   }
   if (previous && frame.time === previous.time) frames[frames.length - 1] = frame; else frames.push(frame);
+  // A live session can start without a reference (a standing robot): enable the layers once data exists.
+  if (frame.reference && $('layer-reference').disabled) { $('layer-reference').disabled = false; $('layer-future').disabled = false; syncLayers(); }
   if (frames.length > 3000) frames.splice(0, frames.length - 3000);
   if (latest.perception?.available !== false && Number.isFinite(latest.perception?.time)) {
     if (!state.session.perception?.frames) state.session.perception = { available: true, kind: 'time-series', frames: [] };
@@ -361,6 +369,57 @@ function appendLiveFrame(latest) {
   const terminal = ['completed', 'failed', 'cancelled'].includes(latest.status);
   $('playback-state').textContent = terminal ? `RUN ${latest.status.toUpperCase()}` : latest.status === 'detached' ? 'RUN DETACHED · FOLLOWING FILES' : 'LIVE';
 }
+
+// ------------------------------------------------------------------ Navigate (live navigation sessions)
+const navAttach = { loading: null, opened: null, layers: null, mapKey: null, mapLoading: false };
+const bytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+async function refreshNavMap(job, force = false) {
+  const seq = job?.latest?.navigation?.map?.seq, key = `${job?.id}:${seq}:${job?.status}`;
+  if (!job || state.workspace !== 'navigate' || navAttach.mapLoading || (!force && key === navAttach.mapKey)) return;
+  navAttach.mapLoading = true;
+  try {
+    const map = await request(`/api/nav/map?id=${encodeURIComponent(job.id)}`);
+    navAttach.mapKey = key;
+    if (state.workspace === 'navigate') scene.setNavMap({ ...map, codes: bytes(map.codes), height: bytes(map.height_cm) });
+  } catch { /* no map yet: the session has not published its memory */ }
+  finally { navAttach.mapLoading = false; }
+}
+async function attachNav(job) {
+  if (!job?.latest?.frame) return;
+  if (state.sessionId !== job.id) {
+    if (navAttach.loading === job.id) return;
+    navAttach.loading = job.id;
+    const ok = await loadSession(job.id, { keepCamera: true }).finally(() => { navAttach.loading = null; });
+    if (!ok) return;
+    $('session-picker').value = job.id;
+    if (state.workspace === 'navigate') { navLayers(true); scene.topView(job.latest.frame.position, 5); }
+  }
+  if (state.sessionId === job.id && ['starting', 'running', 'cancelling'].includes(job.status))
+    appendLiveFrame({ ...job.latest, status: job.latest.status, runtime: job.runtime });
+  if (state.workspace === 'navigate') { scene.setNavOverlay(navOverlay()); refreshNavMap(job); }
+}
+function navLayers(entering) {
+  const env = $('layer-environment'), map = $('layer-perception');
+  if (entering) {
+    navAttach.layers ??= { environment: env.checked, perception: map.checked };
+    env.checked = nav.showTruth; if (!map.disabled) map.checked = true;
+  } else if (navAttach.layers) {
+    env.checked = navAttach.layers.environment; map.checked = navAttach.layers.perception; navAttach.layers = null;
+  }
+  syncLayers();
+}
+on('navigate:job', job => attachNav(job).catch(e => showError(e.message)));
+on('navigate:overlay', () => { if (state.workspace === 'navigate') scene.setNavOverlay(navOverlay()); });
+on('navigate:layers', () => { if (state.workspace === 'navigate') navLayers(true); $('layer-environment').checked = nav.showTruth; syncLayers(); });
+on('navigate:finished', async job => {
+  await refreshSessionList();
+  if (job.result_session_id && state.sessionId === job.id && navAttach.opened !== job.id) {
+    navAttach.opened = job.id;
+    const keep = state.time;
+    if (await loadSession(job.result_session_id, { keepCamera: true })) { $('session-picker').value = job.result_session_id; seek(keep); }
+  }
+  if (state.workspace === 'navigate') { scene.setNavOverlay(navOverlay()); navLayers(true); refreshNavMap(job, true); }
+});
 
 on('rehearse:job', job => { if (state.workspace === 'rehearse' || rh.attached === job.id) attachLive(job).catch(e => showError(e.message)); });
 on('rehearse:started', () => { rh.attached = null; $('workbench-error').hidden = true; });
@@ -466,6 +525,7 @@ async function setWorkspace(name) {
   if (previous === 'runs' && name !== 'runs') scene.setComparison([]);
   if (previous === 'arena' && name !== 'arena' && arena.preview3d) { arena.preview3d = false; scene.setArenaPreview(null); }
   if (name !== 'rehearse') setPreviewing(false);
+  if (previous === 'navigate' && name !== 'navigate') { scene.view.onPick = null; scene.setNavOverlay(null); scene.setNavMap(null); navAttach.mapKey = null; navLayers(false); }
   if (name !== 'rehearse' && name !== 'arena' && !rh.attached && scene.view.arenaGroup.visible) {
     scene.setArenaPreview(null);
     if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
@@ -483,6 +543,15 @@ async function setWorkspace(name) {
       const catalog = await ensureCatalog();
       if (!rh.catalog) await initRehearse(catalog); else renderRehearse();
       if (!rh.attached) emit('rehearse:preview', previewMarkers());
+    }
+    if (name === 'navigate') {
+      const catalog = await ensureCatalog();
+      catalog.nav_options ??= await request('/api/nav/options').catch(() => null);
+      if (!nav.catalog) await initNavigate(catalog); else { nav.catalog = catalog; renderNavigate(); }
+      scene.view.onPick = xy => pickGoal(xy);
+      navLayers(true);
+      scene.setNavOverlay(navOverlay());
+      if (nav.job) refreshNavMap(nav.job, true);
     }
     if (name === 'runs') {
       const catalog = await ensureCatalog();
@@ -617,6 +686,7 @@ async function initialize() {
     projectWorld: scene.projectWorld, seek, setPlaying, loadSession, cameraView, updateView, appendLiveFrame, setWorkspace,
     selectTab: name => selectTab(name, state), setRobotView,
     get arena() { return arena; }, get runs() { return runs; }, get rehearse() { return rh; }, selectedRuns,
+    get navigate() { return nav; }, pickGoal, get navOverlay() { return scene.view.navGroup?.children.length ?? 0; },
   };
   try {
     const sessions = await refreshSessionList();
@@ -639,7 +709,9 @@ async function initialize() {
     if (view.get('robot_view') === '1') setRobotView(true);
     if (view.get('workspace')) await setWorkspace(view.get('workspace'));
     // Reloaded while a run is live (any workspace): resume following it.
-    if (state.session?.metadata?.mode === 'simulation' && !rh.catalog) {
+    if (state.session?.metadata?.mode === 'simulation' && state.session.metadata.kind === 'navigation') {
+      if (state.workspace !== 'navigate') await setWorkspace('navigate');
+    } else if (state.session?.metadata?.mode === 'simulation' && !rh.catalog) {
       await initRehearse(await ensureCatalog());
       rh.attached = state.sessionId;
     }

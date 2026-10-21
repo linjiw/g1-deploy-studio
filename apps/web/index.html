@@ -35,6 +35,7 @@
   <main class="shell">
     <nav class="rail" aria-label="Workspaces">
       <button id="workspace-replay" data-workspace="replay" class="active" aria-pressed="true" title="Replay recordings and runs"><i>▶</i><span>Replay</span></button>
+      <button id="workspace-navigate" data-workspace="navigate" aria-pressed="false" title="Put goals on the robot's own map and watch it walk"><i>⌖</i><span>Navigate</span></button>
       <button id="workspace-arena" data-workspace="arena" aria-pressed="false" title="Build a navigation arena: obstacles, start, goal"><i>▦</i><span>Arena</span></button>
       <button id="workspace-rehearse" data-workspace="rehearse" aria-pressed="false" title="Run a policy in the isolated CPU simulation"><i>⚙</i><span>Rehearse</span></button>
       <button id="workspace-runs" data-workspace="runs" aria-pressed="false" title="Compare rehearsal outcomes"><i>☰</i><span>Runs</span></button>
@@ -46,6 +47,7 @@
       <header class="tool-header"><div><span class="eyebrow" id="tool-eyebrow"></span><h2 id="tool-title"></h2></div><button id="tool-close" class="ghost" aria-label="Close panel">✕</button></header>
       <div id="workbench-error" class="callout warning" role="alert" hidden></div>
       <div class="tool-body">
+        <div id="navigate-panel" data-panel="navigate" hidden></div>
         <div id="arena-panel" data-panel="arena" hidden></div>
         <div id="rehearse-panel" data-panel="rehearse" hidden></div>
         <div id="runs-panel" data-panel="runs" hidden></div>
