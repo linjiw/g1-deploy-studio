@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from studio.model import RobotModel
 
 ROOT = Path(__file__).resolve().parents[1]
-MAX_SESSION_BYTES = 64 * 1024 * 1024
+MAX_SESSION_BYTES = 128 * 1024 * 1024  # navigation sessions run for minutes; rehearsals stay far below
 CACHE_ENTRIES = 4
 # Encoded bytes plus decoded Python objects (about 4x the JSON size) per entry.
 CACHE_BUDGET_BYTES = 768 * 1024 * 1024
@@ -221,7 +221,7 @@ class Catalog:
         # JSON encoding validates finite values before any response is served.
         body = json.dumps(data, allow_nan=False, separators=(",", ":")).encode()
         if len(body) > MAX_SESSION_BYTES:
-            raise ValueError("Session exceeds 64 MiB browser replay limit; split recording")
+            raise ValueError(f"Session exceeds the {MAX_SESSION_BYTES // (1024 * 1024)} MiB browser replay limit; split recording")
         return data, Encoded(body, 'application/json')
 
     def entry(self, key):
@@ -521,10 +521,19 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/sessions":
                 return self.respond(catalog.listing())
             if path == "/api/safety":
+                link = workbench.robot_link_status() if workbench else {'configured': False}
+                live = bool(workbench) and any(j.get('kind') == 'robot' and j['status'] in ('starting', 'running', 'detached')
+                                               for j in list(workbench.jobs.values()))
                 return self.respond({"mode": "replay", "hardware_enabled": False, "publishers": [],
                                      "dds_participants": 0, "binding": self.server.server_address[0], "read_only": not bool(workbench),
-                                     "hardware_read_only": True, "simulation_jobs_enabled": bool(workbench),
-                                     "allowed_mutations": ['local scenarios', 'map imports', 'owned CPU simulation jobs'] if workbench else []})
+                                     "motor_command_path": False,
+                                     "robot_link": {"configured": bool(link.get('configured')), "connected": live,
+                                                    "node_commands": ['status', 'goal (checked, while standing)', 'stand'],
+                                                    "never": ['go', 'quit', 'rt/lowcmd', 'hand commands', 'any DDS write']},
+                                     "simulation_jobs_enabled": bool(workbench),
+                                     "allowed_mutations": ['local scenarios', 'map imports', 'owned CPU simulation jobs',
+                                                           'navigation sessions'] + (['robot link: goal and stand to node.py'] if link.get('configured') else [])
+                                     if workbench else []})
             if path in ("/api/session", "/api/model", "/api/kinematics", "/api/export"):
                 key = query.get("id", [next(iter(catalog.entries), None)])[0]
                 if key is None:

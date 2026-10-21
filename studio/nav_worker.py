@@ -40,6 +40,9 @@ ODOMETRY = {
               'noise': {'xy_rw_m': 0.04, 'yaw_rw_rad': 0.02, 'xy_white_m': 0.01, 'yaw_white_rad': 0.005}},
 }
 TILT_ESTOP_RAD = 0.75          # node.py --tilt-estop
+FALL_TILT_RAD = 1.0            # Studio's fall rule outside RUN (node.py checks tilt only while walking)
+RECORD_SNAPSHOT_S = 1.0        # map snapshots kept in the recording (live: every SNAPSHOT_PERIOD_S)
+MAP_MODES = ('keep', 'fresh')  # keep: one memory for the session (node.py); fresh: cleared at every Go
 MIN_PELVIS_Z_M = 0.35          # node.py --min-pelvis-z (plan sanity) and the fall floor here
 SETTLE_S, HOLD_S = 1.0, 3.0    # node.py stand(): settle to the default pose, then hold
 MAX_COMMANDS = 2000
@@ -79,8 +82,15 @@ def validate_request(request):
             'max_motion_s': _number(request.get('max_motion_s', 180), 'max_motion_s', 2, 600),
             'idle_timeout_s': _number(request.get('idle_timeout_s', 1200), 'idle_timeout_s', 5, 7200),
             'initial_goal': None if initial_goal is None else _xy(initial_goal, 'initial_goal'),
+            'map_mode': _map_mode(request.get('map_mode', 'keep')),
             'policy': {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle',
                        'identity_sha256': str((request.get('policy') or {}).get('identity_sha256') or '')[:64] or None}}
+
+
+def _map_mode(value):
+    if value not in MAP_MODES:
+        raise ValueError(f'map_mode must be one of {list(MAP_MODES)}')
+    return value
 
 
 def _r(np, values, digits=4):
@@ -287,6 +297,8 @@ def _run(req, output, inbox, started):
                                            "session's first plan is computed before the robot moves (run_episode); later walks "
                                            'start from the stand and pay the latency on their first plan too, as node.py does'},
                 'odometry': {'id': req['odometry'], **ODOMETRY[req['odometry']]},
+                'map_mode': {'id': req['map_mode'], 'basis': 'keep: one memory for the session, as node.py; fresh: cleared at every Go, '
+                             'as each evaluated rehearsal starts'},
                 'node_rules': {'goal_radius_m': req['goal_radius_m'], 'prescan_s': req['prescan_s'],
                                'tilt_estop_rad': TILT_ESTOP_RAD, 'stand': f'{SETTLE_S:g} s settle + {HOLD_S:g} s hold',
                                'stand_deferral': 'near a remembered ceiling below 1.35 m within 0.8 m (node.py)',
@@ -360,7 +372,9 @@ def _run(req, output, inbox, started):
              'mask_convention': 'grid[x][y]; absent cells unknown; finite cells only rendered', 'point_budget': LAYER_POINTS,
              'decimated': True, 'map_file': 'memory.npz'}
         S['perception'] = p
-        perceptions.append(p)
+        # Live views get every snapshot; the recording keeps one per RECORD_SNAPSHOT_S (frames point at the latest kept).
+        if force or not perceptions or t - perceptions[-1]['time'] >= RECORD_SNAPSHOT_S - 1e-9:
+            perceptions.append(p)
         S['map_dirty'] = True
 
     def write_map(force=False):
@@ -437,6 +451,22 @@ def _run(req, output, inbox, started):
         event('stand', f'stand ({reason})', reason=reason)
         return True
 
+    def clear_memory():
+        """map_mode 'fresh': forget everything before this walk, as each evaluated rehearsal starts (the node keeps it)."""
+        for name, value in (('support', np.nan), ('ceiling', np.nan)):
+            getattr(memory, name)[:] = value
+        memory.ground_mask[:] = False
+        memory.n_low[:] = 0
+        memory.n_ground[:] = 0
+        memory.zmin[:] = np.inf
+        memory.zmax[:] = -np.inf
+        memory.zmin_high[:] = np.inf
+        memory.free_low[:] = False
+        memory.pending = []
+        memory.stats.update({k: 0 for k in memory.stats})
+        memory.next_capture = S['tick'] * DT
+        event('map_cleared', 'map cleared for this walk (fresh-map mode; node.py keeps its memory)')
+
     def start_leg():
         goal = S['staged']
         S['goal'], S['staged'] = goal, None
@@ -502,6 +532,8 @@ def _run(req, output, inbox, started):
             if not can()['go']:
                 return reply(cmd, 'rejected', 'Stage a goal first; Go works only while the robot stands')
             start_leg()
+            if req['map_mode'] == 'fresh':
+                clear_memory()
             S['phase'], S['paused'] = 'PRESCAN', False
             S['prescan_until'] = S['tick'] + int(round(req['prescan_s'] / DT))
             event('prescan', f"pre-scan {req['prescan_s']:g} s")
@@ -670,6 +702,19 @@ def _run(req, output, inbox, started):
         if S['pending_stand'] is not None and S['deferred_since'] is not None and (tick - S['deferred_since']) * DT > DEFER_LIMIT_S:
             event('stand_forced', f'deferred stand forced after {DEFER_LIMIT_S:g} s (a Studio limit in simulation; node.py keeps deferring)')
             stand(S['pending_stand'], force=True)
+        settling = S['phase'] in ('ARRIVED', 'STOPPED') and not S['fallen']
+        if settling and (tilt > FALL_TILT_RAD or true_q[2] < MIN_PELVIS_Z_M):
+            reason = f'tilt {tilt:.2f} rad' if tilt > FALL_TILT_RAD else f'pelvis {true_q[2]:.2f} m'
+            event('fall', f"fell while settling: {reason} (Studio's fall rule; node.py checks tilt only while walking)", tilt=tilt)
+            S['fallen'] = True
+            if S['leg']:
+                end_leg('fell', reason)
+            elif S['legs']:
+                S['legs'][-1].update(outcome='fell', reason=f'after arrival: {reason}')
+            S['paused'] = True
+            S['ending'], S['end_reason'] = True, 'the robot fell while settling to a stand'
+            snapshot(force=True)
+            continue
         if S['phase'] in ('PRESCAN', 'RUN') and (tilt > TILT_ESTOP_RAD or true_q[2] < MIN_PELVIS_Z_M):
             reason = f'tilt {tilt:.2f} rad > {TILT_ESTOP_RAD}' if tilt > TILT_ESTOP_RAD else f'pelvis {true_q[2]:.2f} m'
             basis = 'node.py supervisor rule' if tilt > TILT_ESTOP_RAD else "Studio's fall rule (node.py has none)"
@@ -771,6 +816,8 @@ def _run(req, output, inbox, started):
         publish()
 
     # ---------------------------------------------------------------- end of session
+    if motion_wall_started is not None:  # ended while moving: count the last stretch (review D12)
+        S['motion_wall'] += time.monotonic() - motion_wall_started
     if not frames:  # ended before any walk: the recording holds the standing pose, never an empty timeline
         frames.append(dict(initial_frame, sequence=0))
     if S['leg']:

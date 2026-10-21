@@ -451,6 +451,12 @@ on('navigate:finished', async job => {
     navAttach.opened = job.id;
     const keep = state.time;
     if (await loadSession(job.result_session_id, { keepCamera: true })) { $('session-picker').value = job.result_session_id; seek(keep); }
+    else {
+      // Never leave the picker naming a recording the view did not open (validation D3).
+      if (state.sessionId) $('session-picker').value = state.sessionId;
+      nav.notice = { kind: 'warning', text: 'The recording could not be opened in Replay; see the error banner. It is kept on disk.' };
+      renderNavigate();
+    }
   }
   if (state.workspace === 'navigate') { scene.setNavOverlay(navOverlay()); navLayers(true); refreshNavMap(job, true); }
 });

@@ -1,6 +1,6 @@
 # Arena, rehearsal, suites and runs
 
-Workflow: build an arena, rehearse a policy on its presets, then compare the runs. Everything runs in the owned CPU worker. No hardware, DDS or ZMQ interface is opened.
+Workflow: build an arena, rehearse a policy on its presets, then compare the runs. Everything runs in the owned CPU worker. No hardware, DDS or ZMQ interface is opened by the workbench; the only robot-facing piece is Navigate's robot link ([NAVIGATE.md](NAVIGATE.md)), which sends node.py a checked goal and stand, never Go or motor commands.
 
 ## 1. Arena
 
@@ -103,6 +103,6 @@ Bundle-profile runs also record causal LiDAR and maps at 5 Hz. WX runs record no
 
 `GET /api/workbench`, `/api/map?id=`, `/api/scenarios`, `/api/jobs[?id=&light=1&perception_after=]`, `/api/suites[?id=]`, `/api/runs`, `/api/policies`, `/api/robot`, `/api/sensors?session=&time=[&masks=1]`, `/api/session?id=` (gzip + ETag), `/api/version`.
 
-`POST /api/scenarios`, `/api/arenas`, `/api/maps/import`, `/api/jobs`, `/api/jobs/cancel`, `/api/suites`, `/api/suites/cancel`. No other mutation or control endpoint exists.
+`POST /api/scenarios`, `/api/arenas`, `/api/maps/import`, `/api/jobs`, `/api/jobs/cancel`, `/api/suites`, `/api/suites/cancel`, and Navigate's `/api/nav/start`, `/api/nav/command`, `/api/nav/twin`, `/api/nav/connect` ([NAVIGATE.md](NAVIGATE.md)). No other mutation or control endpoint exists, and none reaches a motor.
 
 A scenario request without `policy_id` uses the frozen bundle. That is a stable API default, while the UI preselects the adopted profile; scripts should always pass `policy_id`. Without `actuators`, a new request uses `g1-current`.

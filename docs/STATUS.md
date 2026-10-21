@@ -12,7 +12,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 | Capability | Fidelity | Status | Evidence |
 |---|---|---|---|
 | Replay of recorded sessions: SONIC lockstep, C++/DDS tutorial, ZMQ capture, owned runs | L0 | Verified | [ACCEPTANCE](ACCEPTANCE.md), [REVALIDATION](REVALIDATION.md) |
-| Owned CPU rehearsal: Flow WX-RF (adopted block, pinned `23326aa`) and the frozen bundle, real SONIC ONNX on MuJoCo | L1 | Verified | [POLICIES](POLICIES.md), [ROBUSTNESS](ROBUSTNESS.md) |
+| Owned CPU rehearsal: Flow WX-RF (pinned `23326aa`; Flow has since adopted **WXD**, 2026-10-20 19:45, not yet pinned in Studio) and the frozen bundle, real SONIC ONNX on MuJoCo | L1 | Verified | [POLICIES](POLICIES.md), [ROBUSTNESS](ROBUSTNESS.md) |
 | Planner latency with *measured* or *predict* anchoring | L2 / L2≈ | Verified | ROBUSTNESS Addenda B–C |
 | G1 actuator-limit profiles per hardware revision (`g1-current` default, `g1-rev1`, `source`) | — | Verified (unit tests + real workers) | [ROBOT_CONTRACT](ROBOT_CONTRACT.md), ROBUSTNESS Addenda D–E |
 | Arena editor, seeded random goals, suites, Runs report with Wilson intervals | — | Verified | [WORKBENCH](WORKBENCH.md), REVALIDATION |
@@ -52,6 +52,8 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 10 | Software-WebGL playback is render-limited | Environment | Flagged in the UI (RENDER-LIMITED), and real time is kept; GPU browsers are unaffected |
 | 11 | node.py defers its stand next to obstacles 0.8–1.35 m tall: `CloudMemory` files their top edge as a low ceiling. When the plan runs out the robot holds its last pose (simulation: leaned on a pillar at 107 N, drifted 1 m in 70 s) | Deploy repo owner | Decide the fallback (stand after the plan ends, or ignore ceilings attached to a solid obstacle). Studio blocks goals there and explains the deferral ([NAVIGATE](NAVIGATE.md) §5) |
 | 12 | Robot link against the real node.py (L3 first, then the robot) | Operator | Run L3 (issue 1) and connect Navigate to it with `config/robot_link.json`; then the M5 safety review |
+| 15 | Phantom ceilings from the robot's own arms accumulate in node.py's memory over a session (self-returns past the self-filter; one high return makes an overhead cell). Seen in simulation: false goal refusals, stalls, deferred stands, falls without contact | Deploy repo owner | A minimum count for overhead cells, a wider hand margin or decay. Studio offers a fresh-map mode for comparison ([NAVIGATE](NAVIGATE.md) §5) |
+| 16 | Flow adopted WXD (WX + DP2 keys) on 2026-10-20; Studio pins WX-RF | Studio | Pin WXD as a new profile when needed; WX-family blocks plan from exact boxes, so Navigate (bundle) is unaffected |
 | 14 | Robot link thresholds not measured on hardware: a standing G1 must read below 0.05 m/s and 0.05 rad/s on LIO for 0.5 s, and the node's position must match LIO within 0.1 m, before a goal is sent | Operator | Measure on the first M5 session; `limits.still_*` in `config/robot_link.json` |
 | 13 | Proposals U1–U3 for g1-student-deploy: absolute odom goals, a telemetry stream with the planner's live map, loopback-only binds | Deploy repo owner | Proposed in [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §7; Studio works without them |
 

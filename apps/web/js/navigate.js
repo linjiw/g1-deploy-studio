@@ -5,14 +5,15 @@ import { $, escape, num, request, emit, on, finite } from './util.js';
 
 export const nav = {
   catalog: null, robot: 'simulated', mapId: null, map: null, presetIndex: 0,
-  settings: { planner: 'quick', latency: 'none', actuators: 'g1-current', odometry: 'truth', seed: 0 },
+  settings: { planner: 'quick', latency: 'none', actuators: 'g1-current', odometry: 'truth', map_mode: 'keep', seed: 0 },
   job: null, timer: null, pick: null, busy: false, lastPerception: -Infinity, pendingSeq: null, notice: null,
   showTruth: false, robotLink: null, finished: null, mapBounds: null, endRequestedAt: null,
 };
 
 const ACTIVE = ['starting', 'running', 'cancelling'];
-// A robot link a previous gateway started keeps running ('detached'): it can still be watched and ended.
-const followed = job => job && (ACTIVE.includes(job.status) || (job.kind === 'robot' && job.status === 'detached'));
+// A session or robot link a previous gateway started keeps running ('detached'): it can still be watched and ended.
+const followed = job => job && (ACTIVE.includes(job.status) || (['robot', 'navigation'].includes(job.kind) && job.status === 'detached'));
+const MAP_MODES = { keep: "Keep · one map for the session (node.py)", fresh: 'Fresh · cleared at every Go (as each rehearsal)' };
 const LATENCY = {
   none: { label: 'None (lockstep)', value: { ms: 0, anchor: 'measured' } },
   robot: { label: '160 ms · deploy PC budget, predictive', value: { ms: 160, anchor: 'predict' } },
@@ -135,7 +136,8 @@ async function startSession() {
   nav.busy = true; nav.notice = null; nav.finished = null; render();
   try {
     const body = { map_id: nav.mapId, start_xy: q.start_xy, start_yaw_rad: q.start_yaw_rad ?? 0, planner: nav.settings.planner,
-      latency: LATENCY[nav.settings.latency].value, actuators: nav.settings.actuators, odometry: nav.settings.odometry, seed: nav.settings.seed };
+      latency: LATENCY[nav.settings.latency].value, actuators: nav.settings.actuators, odometry: nav.settings.odometry,
+      map_mode: nav.settings.map_mode, seed: nav.settings.seed };
     nav.job = await request('/api/nav/start', body);
     nav.lastPerception = -Infinity; nav.pick = null;
     emit('navigate:started', nav.job);
@@ -211,6 +213,8 @@ function setupForm() {
         <label class="field"><span>Planner latency</span><select id="nav-latency">${Object.entries(LATENCY).map(([k, v]) => option(k, v.label, k === nav.settings.latency)).join('')}</select></label>
         <label class="field"><span>Hardware limits</span><select id="nav-actuators">${Object.entries(ACTUATORS).map(([k, v]) => option(k, v, k === nav.settings.actuators)).join('')}</select></label>
         <label class="field"><span>Odometry</span><select id="nav-odometry">${Object.entries(ODOMETRY).map(([k, v]) => option(k, v, k === nav.settings.odometry)).join('')}</select></label>
+        <label class="field"><span>Map memory</span><select id="nav-map-mode">${Object.entries(MAP_MODES).map(([k, v]) => option(k, v, k === nav.settings.map_mode)).join('')}</select></label>
+        <p class="tiny">The node keeps one memory, and returns from the robot's own arms can pile up in it as phantom low ceilings over long sessions (docs/NAVIGATE.md §5). Fresh clears it before each walk.</p>
         <label class="field narrow"><span>Seed</span><input id="nav-seed" type="number" min="0" step="1" value="${nav.settings.seed}"></label>
       </details>
       <p class="tiny">Policy: the frozen Flow student (deploy bundle), the one policy that plans from the robot's own LiDAR. Simulated time pauses while the robot waits for you.</p>
@@ -246,7 +250,7 @@ function sessionHelp() {
 function bindSetup(root) {
   root.querySelector('#nav-world')?.addEventListener('change', e => selectWorld(e.target.value).catch(err => { nav.notice = { kind: 'warning', text: err.message }; render(); }));
   root.querySelector('#nav-start')?.addEventListener('change', e => { nav.presetIndex = Number(e.target.value); });
-  for (const [id, key] of [['nav-planner', 'planner'], ['nav-latency', 'latency'], ['nav-actuators', 'actuators'], ['nav-odometry', 'odometry']])
+  for (const [id, key] of [['nav-planner', 'planner'], ['nav-latency', 'latency'], ['nav-actuators', 'actuators'], ['nav-odometry', 'odometry'], ['nav-map-mode', 'map_mode']])
     root.querySelector(`#${id}`)?.addEventListener('change', e => { nav.settings[key] = e.target.value; });
   root.querySelector('#nav-seed')?.addEventListener('change', e => { nav.settings.seed = Math.max(0, Math.floor(Number(e.target.value) || 0)); });
   root.querySelector('#nav-start-session')?.addEventListener('click', startSession);
@@ -363,7 +367,7 @@ export function renderLive() {
     <section class="panel-section nav-status">
       <div class="nav-phase"><span class="outcome ${tone}">${escape(phaseText)}</span>${n?.paused && !real ? '<span class="tiny">simulation paused</span>' : ''}</div>
       ${!n ? `<p class="tiny">${real ? 'Connecting to the deploy PC streams…' : 'Loading the planner and SONIC on the CPU (about 10–30 s)…'}</p>` : ''}
-      ${job.status === 'detached' ? '<div class="callout warning">This robot link was started by a previous gateway and is still running. Watch it here; End stops it.</div>' : ''}
+      ${job.status === 'detached' ? `<div class="callout warning">This ${real ? 'robot link' : 'session'} was started by a previous gateway and is still running. ${real ? 'Watch it here; ' : ''}End stops it${real ? '' : ' and keeps its recording'}.</div>` : ''}
       <div class="nav-facts">${facts(job)}</div>
       ${n?.pending_stand ? (real
         ? `<div class="callout danger">The node is deferring its stand (${escape(n.pending_stand)}): its map shows something overhead below head height near the robot, so the robot keeps playing its last plan. Use the remote's D-up only if nothing is overhead; Select is the E-stop.</div>`
@@ -409,8 +413,8 @@ function walksList(legs) {
 
 function walkRow(l) {
   const outcome = l.outcome ?? 'walking';
-  const tone = { arrived: 'outcome-good', walking: 'outcome-live', stopped: 'outcome-warn', timeout: 'outcome-warn', estop: 'outcome-bad', session_end: 'outcome-muted' }[outcome] ?? 'outcome-muted';
-  const text = { arrived: 'Arrived', walking: 'Walking', stopped: 'Stopped', timeout: 'Timed out', estop: 'E-stop', session_end: 'Session ended' }[outcome] ?? outcome;
+  const tone = { arrived: 'outcome-good', walking: 'outcome-live', stopped: 'outcome-warn', timeout: 'outcome-warn', estop: 'outcome-bad', fell: 'outcome-bad', session_end: 'outcome-muted' }[outcome] ?? 'outcome-muted';
+  const text = { arrived: 'Arrived', walking: 'Walking', stopped: 'Stopped', timeout: 'Timed out', estop: 'E-stop', fell: 'Fell', session_end: 'Session ended' }[outcome] ?? outcome;
   return `<li><span class="outcome ${tone}">${escape(text)}</span><span>to (${num(l.goal_xy?.[0], 1)}, ${num(l.goal_xy?.[1], 1)})</span>
     <small>${finite(l.final_dist_m) ? `${num(l.final_dist_m, 2)} m off${finite(l.final_dist_true_m) && l.distance_basis && l.distance_basis !== 'Simulator truth' ? ` (estimate; ${num(l.final_dist_true_m, 2)} m true)` : ''} · ` : ''}${l.goal_source && l.goal_source !== 'studio' ? `goal ${escape(l.goal_source)} · ` : ''}${finite(l.duration_s) ? `${num(l.duration_s, 1)} s · ` : ''}${finite(l.path_m) ? `${num(l.path_m, 1)} m walked` : ''}${l.max_contact_n > 5 ? ` · contact ${num(l.max_contact_n, 0)} N` : ''}${l.reason ? ` · ${escape(l.reason)}` : ''}</small></li>`;
 }

@@ -100,7 +100,9 @@ class ResearchStatusTests(CacheIsolation):
 
     def test_heading_variants(self):
         cases = {'## 1. Current best (adopted): WX+RF_2, adopted 2026-10-16 (commit 4ba73cb)': ('WX+RF_2', '2026-10-16'),
-                 '## 1. Current best (adopted):GAS-v1, adopted 2026-10-20 08:00:01 (commit 0123456789abcdef)': ('GAS-v1', '2026-10-20 08:00:01')}
+                 '## 1. Current best (adopted):GAS-v1, adopted 2026-10-20 08:00:01 (commit 0123456789abcdef)': ('GAS-v1', '2026-10-20 08:00:01'),
+                 # The tracker's style since 2026-10-20: a description and a plan reference, no commit.
+                 '## 1. Current best (adopted): WXD = WX + DP2 keys, adopted 2026-10-20 19:45 (`research/ROUND_DP2_PLAN.md`)': ('WXD', '2026-10-20 19:45')}
         for heading, (block, when) in cases.items():
             with self.subTest(heading=heading):
                 status = policies.flow_research_status(self.write(f'intro\n{heading}\n'))

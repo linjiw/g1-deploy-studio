@@ -13,7 +13,7 @@
 5. It arrives and stands; simulated time pauses while it waits. Place the next goal: the map keeps everything it saw.
 6. **End session.** The recording opens in Replay with every walk. **Make an arena twin** fits boxes to the robot's map and saves them as an arena you can edit, rehearse and print as a build sheet.
 
-Advanced settings: planner budget (quick is about real time on this CPU; the deployed budget is about 0.15× real time), planner latency (160 ms is the deploy PC budget, with predictive anchoring), hardware limits (G1 revision) and odometry drift (LIO-level or poor).
+Advanced settings: planner budget (quick is about real time on an idle host and slows to 0.4–0.7× as the map grows; the deployed budget is 0.16× idle and as low as 0.03× on a loaded host), planner latency (160 ms is the deploy PC budget, with predictive anchoring), hardware limits (G1 revision), odometry drift (LIO-level or poor) and the map memory: **keep** one memory for the session as node.py does, or **fresh**, cleared at every Go as each evaluated rehearsal starts (see the phantom-ceiling finding below). A session records at most 180 s of motion (about 60 MB); End always ends it, also during a deferred stand, and the recording opens in Replay.
 
 **Real robot** (on the deploy PC, next to the robot, under the operator procedure):
 
@@ -118,9 +118,11 @@ Every command produces an entry in `navigation.commands` and an event in the rec
 | reachable | no route | over 30 % of the route crosses never-observed cells; start escaped from occupancy |
 | distance | — | beyond `max_distance_m` when set |
 
-Reachability is Flow's `SensorRoute` exactly: occupied = observed support above 0.25 m, dilated by a 0.35 m disc, never-observed cells within 0.1 m of a seen obstacle also occupied (`grow_unknown_m`, the node's configuration), other unseen cells free. It was compared with the scipy source on 25 recorded node dumps (200 routes, no mismatch).
+Reachability is Flow's `SensorRoute` exactly: occupied = observed support above 0.25 m, dilated by a 0.35 m disc, never-observed cells within 0.1 m of a seen obstacle also occupied (`grow_unknown_m`, the node's configuration), other unseen cells free. It was compared with the scipy source on 25 recorded node dumps (200 routes in the development comparison, no mismatch; the repository's opt-in test checks 50).
 
 **A finding from these checks (2026-10-21).** The source perception (`CloudMemory`) can file the top edge of an obstacle 0.8–1.35 m tall (a 1.0 m pillar in simulation; 0.83–0.96 m cells in the recorded `g5-dds/detour-100` run) as an overhead ceiling. node.py then defers its stand next to it, and when the current plan runs out the robot holds the plan's last pose. In simulation it leaned on the pillar (107 N) and drifted about 1 m over 70 s before the stand was issued. Studio blocks goals there, explains a deferred stand and, for the simulated robot, offers the remote's takeover. On a real course, tables and boxes in that height range need the same care; the deploy repository owns the fix.
+
+**A second finding (validation, 2026-10-21): phantom ceilings from the robot's own body.** In long sessions the planner memory gains ceiling cells at 0.88–1.27 m within about 0.2 m of where the robot stood or walked, also in empty worlds (14–19 cells on flat ground). They are self-returns from the arms that escape the self-filter (3 cm capsule margin, 4 cm for hands) through range noise, and a single high return is enough to make an overhead cell (the solid rule needs three low returns; the overhead rule needs none). Because the memory never forgets, they accumulate. The validation saw false goal refusals, stalls (`stop_max_clearance`), deferred stands and falls without contact next to them; with fresh memory the same walks fell 0 of 4 times instead of 3 of 4. node.py keeps one memory per process on the robot too, so this needs the deploy repository's attention (a minimum count for overhead cells, a wider hand margin, or decay). Studio exposes it, explains deferrals, and offers the **fresh** map mode for comparison.
 
 ## 6. Twin
 

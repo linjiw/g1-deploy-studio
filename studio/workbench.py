@@ -53,6 +53,7 @@ ROBOT_LINK_ENDPOINTS = ('odom', 'cloud', 'pose', 'debug', 'control')
 ROBOT_WALL_S = 4 * 3600.0
 ROBOT_MAX_GOAL_M = 3.0          # default test distance on the robot (HARDWARE.md ladder: 2-3 m at H5)
 SESSION_TERM_GRACE_S = 20.0     # a navigation session or robot link writes its recording on SIGTERM
+SESSION_READ_BYTES = 160 * 1024 * 1024
 
 
 def robot_link_config_path():
@@ -874,6 +875,9 @@ class Workbench:
         odometry = document.get('odometry', 'truth')
         if odometry not in NAV_ODOMETRY:
             raise ValueError(f'odometry must be one of {list(NAV_ODOMETRY)}')
+        map_mode = document.get('map_mode', 'keep')
+        if map_mode not in ('keep', 'fresh'):
+            raise ValueError("map_mode must be 'keep' (one memory, as node.py) or 'fresh' (cleared at every Go)")
         actuator_profile = actuators.validate(document.get('actuators', 'g1-current'))
         seed = integer(document.get('seed', 0), 'seed', 0, 2**31-1)
         # The worker's rehearsal-parity mode (a goal and Go at t = 0, unchecked) is for tests that run it directly;
@@ -910,7 +914,7 @@ class Workbench:
             navigation = {'robot': 'simulated', 'label': label, 'map_id': map_id, 'map_label': world.get('label'),
                           'start_xy': start_xy, 'start_yaw_rad': start_yaw, 'planner': document.get('planner', 'quick'),
                           'planner_label': preset['label'], 'latency': latency, 'actuators': actuator_profile,
-                          'odometry': odometry, 'seed': seed, 'initial_goal': initial_goal}
+                          'odometry': odometry, 'map_mode': map_mode, 'seed': seed}
             job = {'id': key, 'status': 'starting', 'kind': 'navigation', 'navigation': navigation,
                    'scenario': {'label': label, 'map_id': map_id}, 'scenario_id': None,
                    'started_unix_s': time.time(), 'output': output, 'process': None, 'latest': None,
@@ -926,7 +930,7 @@ class Workbench:
                 request = {'schema_version': 1, 'id': key, 'map': self.map(map_id), 'start_xy': start_xy,
                            'start_yaw_rad': start_yaw, 'seed': seed,
                            'planner': {k: preset[k] for k in ('candidates', 'ode_steps')}, 'latency': latency,
-                           'actuators': actuator_profile, 'odometry': odometry, 'initial_goal': initial_goal,
+                           'actuators': actuator_profile, 'odometry': odometry, 'map_mode': map_mode,
                            'policy': {'identity_sha256': policy_identity['identity_sha256']}}
                 job['process'] = self._launch(output, 'nav_worker.py', request, lease_fd)
                 self.catalog.register(key, output/'run/session.json', f'LIVE · {label}', provider=lambda: self.session_data(key),
@@ -1051,7 +1055,8 @@ class Workbench:
         with self.lock:
             job = self._active_session(key)
             process = job.get('process')
-            detached_link = job.get('kind') == 'robot' and job['status'] == 'detached' and cmd == 'end'
+            # A session a previous gateway started keeps running ('detached'): it still obeys an `end` in its inbox.
+            detached_link = job['status'] == 'detached' and cmd == 'end'
             if not detached_link and (job['status'] not in ('starting', 'running') or process is None or process.poll() is not None):
                 raise ValueError('The session is not running')
             inbox = job['output']/'run/inbox'
@@ -1160,11 +1165,14 @@ class Workbench:
         label_text = f"Twin · {navigation.get('map_label') or navigation.get('label') or job['id']}"[:120]
         arena = twin.twin_from_grid(grid, start_xy=start, start_yaw_rad=navigation.get('start_yaw_rad', 0.0),
                                     goal_xy=goal, label=label_text, truth_boxes=truth)
+        if not arena['boxes']:
+            raise ValueError("The robot's map shows no obstacles, so a twin would be empty; use the flat-ground world instead")
         quality = arena.get('quality')
-        if quality is None and truth is not None:
+        if quality is None and truth:
             quality = twin.twin_quality(arena['boxes'], truth, grid)
+        iou = (quality or {}).get('occupancy_iou')
         description = (f"Fitted to the robot's map from session {job['id']} ({len(arena['boxes'])} boxes"
-                       + (f", footprint match {quality['occupancy_iou']*100:.0f} % of the true world" if quality else '') + ').')
+                       + (f", footprint match {iou*100:.0f} % of the true world" if isinstance(iou, (int, float)) else '') + ').')
         saved = self.save_arena({'label': arena.get('label', label_text), 'boxes': arena['boxes'], 'bounds': arena.get('bounds'),
                                  'presets': arena.get('presets') or [], 'description': description[:500]},
                                 provenance={'source': 'Scan to twin (studio.twin)', 'session_id': job['id'],
@@ -1375,7 +1383,9 @@ class Workbench:
         job = self.jobs[key]
         final = job['output']/'run/session.json'
         if final.exists() and job['status'] in ('completed', 'failed'):
-            return read_json(final)
+            # Navigation sessions run for minutes: their recordings are bounded at the source (about 60 MB) but exceed
+            # the rehearsal reader's 64 MiB default.
+            return read_json(final, SESSION_READ_BYTES if job.get('kind') in ('navigation', 'robot') else 64 * 1024 * 1024)
         latest = job['latest']
         if not latest or not latest.get('frame') or not latest.get('metadata'):
             raise ValueError('Simulation is initializing; state and model are not available yet')

@@ -80,8 +80,10 @@ def git_identity(root, max_age_s=5.0):
     return dict(result)
 
 
-_ADOPTED = re.compile(r'^## 1\. Current best \(adopted\):\s*(?P<block>[A-Za-z0-9_+-]+),\s*adopted\s+'
-                      r'(?P<when>[0-9-]+(?: [0-9:]+)?)\s*\(commit (?P<commit>[0-9a-f]{6,40})\)', re.M)
+# Two heading styles exist: "WX, adopted 2026-10-16 16:13 (commit 4ba73cb)" and, since 2026-10-20,
+# "WXD = WX + DP2 keys, adopted 2026-10-20 19:45 (`research/ROUND_DP2_PLAN.md`)" (no commit named).
+_ADOPTED = re.compile(r'^## 1\. Current best \(adopted\):\s*(?P<block>[A-Za-z0-9_+-]+)(?:\s*=\s*(?P<desc>[^,\n]+?))?,\s*adopted\s+'
+                      r'(?P<when>[0-9-]+(?: [0-9:]+)?)(?:\s*\((?:commit (?P<commit>[0-9a-f]{6,40})|(?P<ref>[^)\n]*))\))?', re.M)
 _UPDATED = re.compile(r'^\*\*Last update\.\*\*\s*(?P<text>.+)$', re.M)
 
 
@@ -95,12 +97,18 @@ def flow_research_status(path=BEST_MODEL):
     except (OSError, ValueError) as error:
         return {'available': False, 'reason': f'{type(error).__name__}: {error}', 'source': str(path)}
     match = _ADOPTED.search(text)
+    if match:
+        line = text[match.start():text.find('\n', match.start()) if '\n' in text[match.start():] else len(text)]
+        if '(commit' in line and not match['commit']:
+            match = None  # a commit is named but malformed: never guess the adopted revision
     updated = _UPDATED.search(text)
     return {'available': bool(match), 'source': str(path),
             'source_sha256': hashlib.sha256(text.encode()).hexdigest(),
             'adopted_block': match['block'] if match else None,
             'adopted_at': match['when'] if match else None,
             'adopted_commit': match['commit'] if match else None,
+            'adopted_description': (match['desc'] or '').strip() or None if match else None,
+            'adopted_reference': (match['ref'] or '').strip('` ') or None if match else None,
             'last_update': updated['text'].strip()[:240] if updated else None,
             'basis': 'Parsed from the Flow research tracker heading; adoption is a research decision, not deployment qualification.',
             'reason': None if match else 'Adopted-block heading not found'}
