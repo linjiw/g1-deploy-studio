@@ -209,6 +209,41 @@ def _limit_boxes(boxes, max_boxes, warnings):
     return boxes
 
 
+SLIVER_M = 0.06          # a fitted piece this thin (along either side) is a fringe of a bigger box
+SLIVER_GROWTH = 1.3      # absorbing it may grow the union bounding box to at most this × the two areas
+
+
+def _absorb_slivers(boxes, warnings):
+    """Fold thin fringe pieces into the same-layer box they touch when the union stays compact (review L11).
+
+    Greedy rectangles leave 2-5 cm strips along a box's edge where the LiDAR saw its corners unevenly. An operator
+    editing the twin wants one box per obstacle; the merged box covers both pieces (conservative)."""
+    boxes, absorbed = list(boxes), 0
+    changed = True
+    while changed:
+        changed = False
+        for i, box in enumerate(boxes):
+            # Ground obstacles only: overhead slabs are seen from below in thin strips that are real beam footprint.
+            if min(box['half_xy']) * 2 > SLIVER_M + 1e-9 or _layer_of(box) != 'ground':
+                continue
+            layer, best = _layer_of(box), None
+            for k, other in enumerate(boxes):
+                if k == i or _layer_of(other) != layer or _gap(box, other) > 0.051:
+                    continue
+                union = _merge(other, box)
+                if _area(union) <= SLIVER_GROWTH * (_area(other) + _area(box)) and (best is None or _area(other) > _area(boxes[best])):
+                    best = k
+            if best is not None:
+                boxes[best] = _merge(boxes[best], box)
+                del boxes[i]
+                absorbed += 1
+                changed = True
+                break
+    if absorbed:
+        warnings.append(f'{absorbed} thin fringe pieces (under {SLIVER_M * 100:.0f} cm) were folded into the box they touch.')
+    return boxes
+
+
 def _fit_rectangles(grid, *, threshold, height_tol_m, tall_m, min_area_m2, thickness, start, clear_start_m,
                     warnings):
     support, ceiling, lo, res, n = grid['support'], grid['ceiling'], np.asarray(grid['lo']), grid['res'], grid['n']
@@ -312,6 +347,7 @@ def twin_from_grid(grid, *, start_xy, start_yaw_rad, goal_xy=None, label=None, m
         boxes = _fit_rectangles(grid, threshold=obstacle_threshold_m, height_tol_m=height_tol_m, tall_m=tall_m,
                                 min_area_m2=min_area_m2, thickness=ceiling_thickness_m, start=start,
                                 clear_start_m=clear_start_m, warnings=warnings)
+        boxes = _absorb_slivers(boxes, warnings)
     else:
         boxes = _source_boxes(grid, warnings)
     fitted = len(boxes)

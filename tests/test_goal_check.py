@@ -202,7 +202,8 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(statuses(under)['overhead'], 'block')
         self.assertIn('standing up there drives the head into it', under['checks'][3]['detail'])
         self.assertEqual(statuses(check_goal(grid, [0, 0], [1.25, 0]))['overhead'], 'block')  # 0.75 m: in window
-        self.assertEqual(statuses(check_goal(grid, [0, 0], [1.1, 0]))['overhead'], 'pass')    # 0.9 m: outside
+        self.assertEqual(statuses(check_goal(grid, [0, 0], [1.1, 0]))['overhead'], 'warn')    # 0.9 m: arrival ring
+        self.assertEqual(statuses(check_goal(grid, [0, 0], [0.7, 0]))['overhead'], 'pass')    # 1.3 m: outside both
         self.assertEqual(statuses(check_goal(grid, [0, 0], [-3.0, 0]))['overhead'], 'pass')   # 1.5 m >= 1.35 m
         self.assertEqual(statuses(check_goal(grid, [0, 0], [-0.75, -2.75]))['overhead'], 'pass')
         # node.py uses a square window: a corner cell 0.75 m along both axes (1.06 m away) still counts.
@@ -210,9 +211,10 @@ class CheckTests(unittest.TestCase):
         ceiling[cells(lo, res, 241, 0.75, 0.75, 0.75, 0.75)] = 1.0
         self.assertEqual(statuses(check_goal(grid_of(support, ceiling, lo, res), [-2, -2], [0, 0]))['overhead'],
                          'block')
-        # A route under the beam to a clear goal passes and says the policy must duck.
-        through = check_goal(grid, [0, 0], [3.5, 0])
-        self.assertEqual(statuses(through)['reachable'], 'pass')
+        # A route under the beam to a clear goal warns: the policy must duck, and a stand there would be deferred.
+        through = check_goal(grid, [0, 0], [3.6, 0])
+        self.assertEqual(statuses(through)['reachable'], 'warn')
+        self.assertTrue(through['ok'])
         self.assertIn('must duck', through['checks'][4]['detail'])
 
     def test_reachable_goes_around_a_wall_and_blocks_behind_a_closed_one(self):
@@ -247,7 +249,8 @@ class CheckTests(unittest.TestCase):
         self.support[cells(self.lo, self.res, 241, 1.5, 1.7, -6.0, 6.0)] = 0.2      # steppable across the map
         self.ceiling[cells(self.lo, self.res, 241, 2.5, 2.7, -6.0, 6.0)] = 1.0      # overhead across the map
         result = check_goal(self.grid(), [0, 0], [4.0, 0])
-        self.assertEqual(statuses(result)['reachable'], 'pass')
+        self.assertEqual(statuses(result)['reachable'], 'warn')   # under the 1.0 m overhead band: duck, no stand there
+        self.assertTrue(result['ok'])
         self.assertAlmostEqual(result['path_m'], 4.0)
 
     def test_unknown_fraction_is_the_share_of_route_length_in_unseen_cells(self):
@@ -574,7 +577,9 @@ class RecordedMemoryTests(unittest.TestCase):
         start = grid['lo'] + (grid['n'] - 1) * grid['res'] / 2
         goal = node_goal(run)
         result = check_goal(grid, start, goal)
-        self.assertEqual(statuses(result)['reachable'], 'pass')
+        # The route may pass the wall's low 'ceiling' cells (its top edge filed as overhead): then it warns.
+        self.assertIn(statuses(result)['reachable'], ('pass', 'warn'))
+        self.assertIsNotNone(result['path_m'])
         self.assertGreater(result['path_m'], result['straight_m'] + 0.2)
         wall = check_goal(grid, start, [2.27, 0.1])   # the true wall centre
         self.assertEqual(statuses(wall)['free'], 'block')

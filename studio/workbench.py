@@ -51,6 +51,8 @@ NAV_WALL_S = 3600.0
 MAX_NAV_COMMANDS = 2000
 ROBOT_LINK_ENDPOINTS = ('odom', 'cloud', 'pose', 'debug', 'control')
 ROBOT_WALL_S = 4 * 3600.0
+ROBOT_MAX_GOAL_M = 3.0          # default test distance on the robot (HARDWARE.md ladder: 2-3 m at H5)
+SESSION_TERM_GRACE_S = 20.0     # a navigation session or robot link writes its recording on SIGTERM
 
 
 def robot_link_config_path():
@@ -477,6 +479,30 @@ class Workbench:
         self._reload_jobs()
         self._reload_suites()
 
+    def _robot_lock_path(self):
+        return self.root / '.robot_link.lock'
+
+    def _acquire_robot_lock(self):
+        fd = os.open(self._robot_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise ValueError('A robot link is already running on this data root (possibly started by a previous gateway); '
+                             'End it in Navigate first') from None
+        return fd
+
+    def _robot_lock_held(self):
+        fd = os.open(self._robot_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return False
+            except BlockingIOError:
+                return True
+        finally:
+            os.close(fd)
+
     def _lease_held(self):
         """Probe kernel state, never infer ownership from a saved PID or timestamp."""
         fd = os.open(self.root / '.worker.lock', os.O_RDWR | os.O_CREAT, 0o600)
@@ -524,6 +550,11 @@ class Workbench:
         """Read completion receipts only. An old PID never grants signal ownership."""
         output = job['output']
         result = self._optional_json(output/'run/result.json', 1024*1024)
+        if job.get('kind') == 'robot' and not result and self._robot_lock_held():
+            # A robot link a previous gateway started is still running: it obeys an `end` file in its inbox (review M7).
+            job.update(status='detached', error='A robot link started by a previous gateway is still running; End stops it.',
+                       ownership='recovered robot link; stopped through its inbox only')
+            return
         if result and result.get('status') == 'completed' and (output/'run/session.json').is_file():
             job.update(status='completed', result_session_id=job['id'], error=None)
             if not self._lease_held():
@@ -574,8 +605,10 @@ class Workbench:
         summary = self._optional_json(job['output']/'run/result.json', 1024*1024) or {}
         scenario = job.get('scenario', {})
         navigation = job.get('kind') in ('navigation', 'robot')
-        self.catalog.register(job['id'], job['output']/'run/session.json',
-                              f"{scenario.get('label', 'saved CPU simulation')}",
+        label = scenario.get('label', 'saved CPU simulation')
+        if job.get('kind') == 'robot':
+            label = 'Robot session · protocol fixture' if (summary.get('report') or {}).get('fixture') else 'Robot session · deploy PC'
+        self.catalog.register(job['id'], job['output']/'run/session.json', label,
                               extra={'group': 'Navigation sessions' if navigation else 'CPU rehearsals', 'status': job['status'],
                                      'kind': job.get('kind', 'rehearsal'),
                                      'outcome': (summary.get('report') or {}).get('outcome') or ('runtime_error' if job['status'] == 'failed' else None),
@@ -766,8 +799,11 @@ class Workbench:
             policy_identity = policies.identity(profile)
             if not policy_identity['available'] or not profile.get('available', True):
                 raise ValueError('Policy profile artifacts unavailable: ' + '; '.join(policy_identity['missing'])[:500])
-            if any(j['status'] in ACTIVE_STATES for j in self.jobs.values()):
-                raise ValueError('A simulation job is already active')
+            active = next((j for j in self.jobs.values() if j['status'] in ACTIVE_STATES), None)
+            if active is not None:
+                raise ValueError('A robot link is connected; end it in Navigate first' if active.get('kind') == 'robot'
+                                 else 'A navigation session is running; end it in Navigate first' if active.get('kind') == 'navigation'
+                                 else 'A simulation job is already active')
             active_suite = next((s for s in self.suites.values() if s['status'] in SUITE_ACTIVE), None)
             if active_suite and active_suite['id'] != suite_id:
                 raise ValueError(f"Suite {active_suite['id']} is running; cancel it or wait before starting another run")
@@ -840,7 +876,9 @@ class Workbench:
             raise ValueError(f'odometry must be one of {list(NAV_ODOMETRY)}')
         actuator_profile = actuators.validate(document.get('actuators', 'g1-current'))
         seed = integer(document.get('seed', 0), 'seed', 0, 2**31-1)
-        initial_goal = document.get('initial_goal')
+        # The worker's rehearsal-parity mode (a goal and Go at t = 0, unchecked) is for tests that run it directly;
+        # the public API never offers it (review L7).
+        initial_goal = None
         with self.lock:
             if map_id not in self.maps:
                 raise KeyError('Unknown map')
@@ -852,8 +890,6 @@ class Workbench:
             status = point_status(world, start_xy)
             if status['status'] != 'configured_free':
                 raise ValueError(f"Start: {status['reason']}")
-            if initial_goal is not None:
-                initial_goal = vector(initial_goal, 'initial goal XY', low=-50, high=50)
             profile = policies.get_profile(DEFAULT_POLICY_ID)
             policy_identity = policies.identity(profile)
             latency = self._latency(document.get('latency'), profile)
@@ -879,7 +915,7 @@ class Workbench:
                    'scenario': {'label': label, 'map_id': map_id}, 'scenario_id': None,
                    'started_unix_s': time.time(), 'output': output, 'process': None, 'latest': None,
                    'error': None, 'result_session_id': None, '_lease_fd': lease_fd, '_seq': 0,
-                   'ownership': 'owned child process', 'suite_id': None,
+                   'ownership': 'owned child process', 'suite_id': None, 'term_grace_s': SESSION_TERM_GRACE_S,
                    'policy_id': profile['id'], 'policy_identity': policy_identity, 'wall_limit_s': NAV_WALL_S}
             try:
                 output.mkdir()
@@ -915,7 +951,8 @@ class Workbench:
         config, reason = read_robot_link_config()
         if config is None:
             return {'configured': False, 'reason': reason}
-        return {'configured': True, 'path': config['path'], 'fixture': bool(config.get('fixture')),
+        return {'configured': True, 'file': Path(config['path']).name,
+                'max_goal_distance_m': float((config.get('limits') or {}).get('max_goal_distance_m', ROBOT_MAX_GOAL_M)),
                 'endpoints': [{'id': k, 'endpoint': v} for k, v in config['endpoints'].items()],
                 'rules': ['Subscribes to loopback streams only', 'Sends goal and stand to node.py; never go or quit',
                           'No DDS participant and no motor command path']}
@@ -926,18 +963,25 @@ class Workbench:
         if config is None:
             raise ValueError(reason)
         with self.lock:
-            if any(j['status'] in ACTIVE_STATES for j in self.jobs.values()):
-                raise ValueError('End the active session or simulation before connecting to the robot')
+            if any(j['status'] in ACTIVE_STATES or (j.get('kind') == 'robot' and j['status'] == 'detached') for j in self.jobs.values()):
+                raise ValueError('End the active session, robot link or simulation before connecting to the robot')
+            if any(s['status'] in SUITE_ACTIVE for s in self.suites.values()):
+                raise ValueError('A suite is running; cancel it or wait before connecting to the robot')
             if len(list((self.root/'jobs').glob('job-*'))) >= MAX_JOBS:
                 raise ValueError('Job storage limit reached; archive owned runs before starting more')
+            # One robot link per data root, held by the link process itself (it survives a gateway restart).
+            lock_fd = self._acquire_robot_lock()
             key = 'job-' + uuid.uuid4().hex[:12]
             output = self.root/'jobs'/key
-            label = 'Robot session · deploy PC' + (' (protocol fixture)' if config.get('fixture') else '')
+            label = 'Robot session'
+            limits = dict(config.get('limits') or {})
             job = {'id': key, 'status': 'starting', 'kind': 'robot', 'scenario': {'label': label, 'map_id': None}, 'scenario_id': None,
-                   'navigation': {'robot': 'real', 'label': label, 'endpoints': config['endpoints'], 'fixture': bool(config.get('fixture'))},
+                   'navigation': {'robot': 'real', 'label': label, 'endpoints': config['endpoints'],
+                                  'limits': {'max_goal_distance_m': float(limits.get('max_goal_distance_m', ROBOT_MAX_GOAL_M))}},
                    'started_unix_s': time.time(), 'output': output, 'process': None, 'latest': None, 'error': None,
                    'result_session_id': None, '_seq': 0, 'ownership': 'owned child process (robot link)', 'suite_id': None,
-                   'policy_id': None, 'policy_identity': None, 'wall_limit_s': ROBOT_WALL_S}
+                   'policy_id': None, 'policy_identity': None, 'wall_limit_s': ROBOT_WALL_S, '_lease_fd': lock_fd,
+                   'term_grace_s': SESSION_TERM_GRACE_S}
             try:
                 output.mkdir()
                 self.jobs[key] = job
@@ -950,7 +994,7 @@ class Workbench:
                 with (output/'worker.log').open('wb') as log:
                     job['process'] = subprocess.Popen([sys.executable, '-u', '-m', 'studio.robot_link', '--config', str(output/'request.json'),
                                                        '--output', str(output/'run')], cwd=ROOT, env=env, stdout=log,
-                                                      stderr=subprocess.STDOUT, start_new_session=True)
+                                                      stderr=subprocess.STDOUT, start_new_session=True, pass_fds=(lock_fd,))
                 self.catalog.register(key, output/'run/session.json', f'LIVE · {label}', provider=lambda: self.session_data(key),
                                       extra={'group': 'Navigation sessions', 'status': 'running', 'started_unix_s': job['started_unix_s'],
                                              'scenario_label': label, 'kind': 'robot', 'robot': 'real'})
@@ -960,8 +1004,11 @@ class Workbench:
                     self._terminate(job['process'])
                     job['process'].wait()
                 job.update(status='failed', error=f'Robot link launch failed: {type(exc).__name__}: {exc}', finished_unix_s=time.time())
-                if output.is_dir():
-                    self._persist_job(job)
+                try:
+                    if output.is_dir():
+                        self._persist_job(job)
+                finally:
+                    self._close_lease(job)
                 raise
             return self.job(key)
 
@@ -992,18 +1039,20 @@ class Workbench:
             if cmd == 'clear':
                 raise ValueError('node.py has no command to clear a goal; stage a new one instead')
             if cmd == 'goal':
-                # The robot link sends what the gateway checked; a blocked goal never reaches the node.
+                # Fail closed (review H2): only a goal that passed the check on a map reaches the robot link, and the
+                # link refuses anything without check.ok True as well.
                 try:
                     body['check'] = self.nav_check(key, body['xy'])
                 except (ValueError, FileNotFoundError) as error:
-                    body['check'] = {'ok': None, 'note': f'not checked: {error}'}
-                if body['check'].get('ok') is False:
+                    raise ValueError(f'Goal not sent: it could not be checked ({error})') from None
+                if body['check'].get('ok') is not True:
                     blocking = '; '.join(c['label'] for c in body['check']['checks'] if c['status'] == 'block')
-                    raise ValueError(f'Goal refused before sending: {blocking}')
+                    raise ValueError(f'Goal refused before sending: {blocking or "the check did not pass"}')
         with self.lock:
             job = self._active_session(key)
             process = job.get('process')
-            if job['status'] not in ('starting', 'running') or process is None or process.poll() is not None:
+            detached_link = job.get('kind') == 'robot' and job['status'] == 'detached' and cmd == 'end'
+            if not detached_link and (job['status'] not in ('starting', 'running') or process is None or process.poll() is not None):
                 raise ValueError('The session is not running')
             inbox = job['output']/'run/inbox'
             if not inbox.is_dir():
@@ -1077,7 +1126,18 @@ class Workbench:
         frame = latest.get('frame') or {}
         pose = frame.get('estimate') or frame
         robot = (pose.get('position') or job.get('navigation', {}).get('start_xy') or [0, 0])[:2]
-        return goal_check.check_goal(grid, robot, xy, arrival_radius_m=.4, basis=grid.get('basis') or 'map')
+        if job.get('kind') != 'robot':
+            return goal_check.check_goal(grid, robot, xy, arrival_radius_m=.4, basis=grid.get('basis') or 'map')
+        # Real robot: the test's distance limit blocks (the ladder's first walks are 2-3 m), never only warns.
+        limit = float(((job.get('navigation') or {}).get('limits') or {}).get('max_goal_distance_m', ROBOT_MAX_GOAL_M))
+        result = goal_check.check_goal(grid, robot, xy, arrival_radius_m=.4, max_distance_m=limit, basis=grid.get('basis') or 'map')
+        for c in result['checks']:
+            if c['id'] == 'distance' and c['status'] == 'warn' and (result.get('straight_m') or 0) > limit:
+                c.update(status='block', label='Beyond the test distance',
+                         detail=f"{result['straight_m']:.2f} m away; this robot session allows goals up to {limit:.1f} m "
+                                '(limits.max_goal_distance_m in config/robot_link.json).')
+        result['ok'] = not any(c['status'] == 'block' for c in result['checks'])
+        return result
 
     def nav_twin(self, document):
         """Fit boxes to a finished session's map and save them as a new arena (scan to twin, docs/NAVIGATE.md §6)."""
@@ -1086,7 +1146,7 @@ class Workbench:
             raise ValueError('Twin request must be an object')
         with self.lock:
             job = self._active_session(document.get('id'))
-            if job['status'] in ACTIVE_STATES:
+            if job['status'] in ACTIVE_STATES or job['status'] == 'detached':
                 raise ValueError('End the session first; the twin is made from its final map')
             grid = self._session_grid(job, final=True)
             navigation = dict(job.get('navigation') or {})
@@ -1141,9 +1201,11 @@ class Workbench:
                 except OSError:
                     size = 0  # concurrent atomic file replacement; retry next poll
                 limit = job.get('wall_limit_s', 180)
+                what = 'robot link' if job.get('kind') == 'robot' else 'navigation session' if job.get('kind') == 'navigation' else 'simulation'
                 if time.monotonic()-started > limit or size > MAX_OUTPUT_BYTES:
-                    job['error'] = f'Owned simulation exceeded {limit:.0f} s wall-time / 256 MiB output limit'
-                    self._terminate(process)
+                    job['error'] = (f'Owned {what} exceeded its {limit:.0f} s wall-time limit' if time.monotonic()-started > limit
+                                    else f'Owned {what} exceeded the {MAX_OUTPUT_BYTES // (1024 * 1024)} MiB output limit')
+                    self._terminate(process, job.get('term_grace_s', 3))
                     break
                 time.sleep(.2)
             process.wait()
@@ -1202,14 +1264,14 @@ class Workbench:
                                       extra={'group': 'CPU rehearsals', 'status': job['status']})
 
     @staticmethod
-    def _terminate(process):
+    def _terminate(process, grace_s=3):
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 return
             try:
-                process.wait(timeout=3)
+                process.wait(timeout=grace_s)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -1227,8 +1289,8 @@ class Workbench:
                 raise ValueError('Job is no longer an active process owned by this gateway')
             job['status'] = 'cancelling'
             self._persist_job(job)
-        # Signal and wait outside the workbench lock (up to 3 s), so other requests keep flowing.
-        self._terminate(process)
+        # Signal and wait outside the workbench lock, so other requests keep flowing.
+        self._terminate(process, job.get('term_grace_s', 3))
         return self.job(key)
 
     @staticmethod
@@ -1389,8 +1451,11 @@ class Workbench:
                     raise ValueError(f"{checked['label']}: " + '; '.join(checked['validation']['issues']))
             if any(s['status'] in SUITE_ACTIVE for s in self.suites.values()):
                 raise ValueError('A scenario suite is already running')
-            if any(j['status'] in ACTIVE_STATES for j in self.jobs.values()):
-                raise ValueError('A simulation job is already active')
+            active = next((j for j in self.jobs.values() if j['status'] in ACTIVE_STATES), None)
+            if active is not None:
+                raise ValueError('A robot link is connected; end it in Navigate first' if active.get('kind') == 'robot'
+                                 else 'A navigation session is running; end it in Navigate first' if active.get('kind') == 'navigation'
+                                 else 'A simulation job is already active')
             if len(list((self.root/'jobs').glob('job-*'))) + len(ids) > MAX_JOBS:
                 raise ValueError('Job storage limit would be exceeded; archive owned runs first')
             if len(self.suites) >= MAX_SUITES:

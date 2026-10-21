@@ -45,6 +45,9 @@ SETTLE_S, HOLD_S = 1.0, 3.0    # node.py stand(): settle to the default pose, th
 MAX_COMMANDS = 2000
 SNAPSHOT_PERIOD_S = 0.5
 LAYER_POINTS = 1500
+LIDAR_POINTS = 800             # per recorded snapshot (raw and filtered); the map layers keep LAYER_POINTS
+DEFER_LIMIT_S = 20.0           # Studio's bound on a deferred stand in simulation (node.py keeps deferring)
+_TERM = {'flag': False}        # SIGTERM from the gateway (cancel or a limit): end now and keep the recording
 
 
 def validate_request(request):
@@ -72,7 +75,8 @@ def validate_request(request):
             'prescan_s': _number(request.get('prescan_s', 0.5), 'prescan_s', 0, 3),
             'initial_prescan_s': _number(request.get('initial_prescan_s', 1.0), 'initial_prescan_s', 0, 3),
             'leg_timeout_s': _number(request.get('leg_timeout_s', 60), 'leg_timeout_s', 2, 300),
-            'max_motion_s': _number(request.get('max_motion_s', 300), 'max_motion_s', 2, 900),
+            # 180 s of motion keeps a recording near 60 MB (about 5 KB per 20 ms frame plus map snapshots).
+            'max_motion_s': _number(request.get('max_motion_s', 180), 'max_motion_s', 2, 600),
             'idle_timeout_s': _number(request.get('idle_timeout_s', 1200), 'idle_timeout_s', 5, 7200),
             'initial_goal': None if initial_goal is None else _xy(initial_goal, 'initial_goal'),
             'policy': {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle',
@@ -141,6 +145,8 @@ def execute(request, output):
 
 
 def _run(req, output, inbox, started):
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: _TERM.update(flag=True))
     import numpy as np
     import onnxruntime as ort
     ort.disable_telemetry_events()
@@ -277,8 +283,9 @@ def _run(req, output, inbox, started):
                                               anchor_mode=anchor_mode, inflight=1, task_boxes_to_planner=False),
                 'fidelity': 'L2' if lat_ticks else 'L1',
                 'latency_model': {'ms': req['latency']['ms'], 'anchor': anchor_mode,
-                                  'basis': 'source lockstep: a replan requested at tick t drives SONIC from t + latency; '
-                                           'the first plan of each walk is computed while standing'},
+                                  'basis': 'source lockstep: a replan requested at tick t drives SONIC from t + latency. The '
+                                           "session's first plan is computed before the robot moves (run_episode); later walks "
+                                           'start from the stand and pay the latency on their first plan too, as node.py does'},
                 'odometry': {'id': req['odometry'], **ODOMETRY[req['odometry']]},
                 'node_rules': {'goal_radius_m': req['goal_radius_m'], 'prescan_s': req['prescan_s'],
                                'tilt_estop_rad': TILT_ESTOP_RAD, 'stand': f'{SETTLE_S:g} s settle + {HOLD_S:g} s hold',
@@ -300,7 +307,8 @@ def _run(req, output, inbox, started):
          'fallen': False, 'ending': False, 'end_reason': None, 'last_command_wall': time.monotonic(),
          'map_seq': 0, 'map_written': -math.inf, 'map_dirty': True, 'last_write': -math.inf, 'check': None,
          'executing': None, 'motion_ticks': 0, 'snapshot_time': -math.inf, 'perception': None,
-         'q': start_q.copy()}  # the planner's latest pose estimate (float64, as node.py's state)
+         'q': start_q.copy(),  # the planner's latest pose estimate (float64, as node.py's state)
+         'deferred_since': None}
     frames, perceptions, plans = [], [], []
     executing_starts = []  # (start tick, plan row index) per plan that drove SONIC
 
@@ -309,7 +317,8 @@ def _run(req, output, inbox, started):
 
     def leg_dict(leg):
         return {k: leg.get(k) for k in ('index', 'goal_xy', 'staged_at_s', 'go_at_s', 'start_xy', 'end_s', 'outcome',
-                                        'duration_s', 'path_m', 'final_dist_m', 'max_contact_n', 'plans', 'reason')}
+                                        'duration_s', 'path_m', 'final_dist_m', 'final_dist_true_m', 'distance_basis',
+                                        'max_contact_n', 'plans', 'reason')}
 
     def can():
         standing = S['paused'] and S['phase'] in ('WAIT', 'ARRIVED', 'STOPPED') and not S['fallen'] and not S['ending']
@@ -337,7 +346,8 @@ def _run(req, output, inbox, started):
              'frame_id': 'world', 'synchronized': True,
              'label': 'Planner memory from simulated MID-360 ray casts · synchronized',
              'source': 'g1deploy.perception.cloud_memory.MjRayMemory',
-             'raw_lidar': _r(np, _points(np, current['raw']), 3), 'filtered_lidar': _r(np, _points(np, current['filtered']), 3),
+             'raw_lidar': _r(np, _points(np, current['raw'], LIDAR_POINTS), 3),
+             'filtered_lidar': _r(np, _points(np, current['filtered'], LIDAR_POINTS), 3),
              'raw_lidar_basis': 'Simulated ray returns registered in world',
              'filtered_lidar_basis': 'Source range gate and named-joint capsule body self-filter',
              'raw_points_count': len(current['raw']), 'filtered_points_count': len(current['filtered']),
@@ -416,10 +426,11 @@ def _run(req, output, inbox, started):
         if not force and ceiling_near(q[:2]):
             if S['pending_stand'] is None:
                 event('stand_deferred', f'stand deferred under a low ceiling ({reason})', reason=reason)
+                S['deferred_since'] = S['tick']
             S['pending_stand'] = reason
             S['pending'] = []
             return False
-        S['pending_stand'] = None
+        S['pending_stand'] = S['deferred_since'] = None
         S['pending'] = []
         S['active'] = stand_plan(q, S['tick'])
         S['stand_tick'] = S['tick']
@@ -452,8 +463,10 @@ def _run(req, output, inbox, started):
         if leg is None:
             return
         q = frames[-1]['estimate']['position'] if frames else start_q[:3].tolist()
+        truth = frames[-1]['position'] if frames else start_q[:3].tolist()
         leg.update(outcome=outcome, reason=reason, end_s=S['tick'] * DT, duration_s=(S['tick'] - leg['start_tick']) * DT,
-                   final_dist_m=float(math.dist(q[:2], leg['goal_xy'])), path_m=round(leg['path_m'], 3))
+                   final_dist_m=float(math.dist(q[:2], leg['goal_xy'])), final_dist_true_m=float(math.dist(truth[:2], leg['goal_xy'])),
+                   distance_basis=ODOMETRY[req['odometry']]['label'], path_m=round(leg['path_m'], 3))
         S['legs'].append(leg)
         S['leg'] = None
         event('walk_end', f"walk {leg['index']}: {outcome}" + (f' ({reason})' if reason else ''), outcome=outcome)
@@ -512,22 +525,28 @@ def _run(req, output, inbox, started):
             return reply(cmd, 'applied')
         if name == 'end':
             S['ending'], S['end_reason'] = True, 'operator ended the session'
-            if S['phase'] in ('PRESCAN', 'RUN'):
+            if S['phase'] in ('PRESCAN', 'RUN') or S['pending_stand'] is not None:
                 S['phase'] = 'STOPPED'
-                stand('session end')
+                if S['leg']:
+                    S['leg']['stop_reason'] = 'session end'
+                # Ending never waits on a deferred stand (node.py's quit exits at once): the simulated robot stands now.
+                stand('session end', force=True)
             return reply(cmd, 'applied')
         return reply(cmd, 'rejected', f'Unknown command {name!r}')
 
     def request_plan(q, tick):
         leg = S['leg']
         first = leg.pop('first_plan_pending', False)
+        # node.py: only a plan requested with no active stream starts at once; later walks start from the stand chunk
+        # and their first plan lands after the latency, predicted from the stand (run_episode has only one walk).
+        immediate = first and leg['index'] == 1
         route, goal_fn = S['route'], S['goal_fn']
         route.refresh(q[:2], tick * DT)
         wp, heading, remaining = route.waypoint(q[:2], lookahead)
         guide = sm.memory_boxes(memory, grow_overhead_m=pcfg.guide_grow_overhead_m) \
             if pcfg.guide_w > 0 and pcfg.guide_source == 'sensor' else None
         active = S['active']
-        predictive = anchor_mode == 'predict' and lat_ticks > 0 and not first
+        predictive = anchor_mode == 'predict' and lat_ticks > 0 and not immediate
         plan_hist = predicted_history(history, active, tick, lat_ticks, planner.history + 2) if predictive else history
         anchor_at = tick + lat_ticks if predictive else tick
         prev = None if first or active[0].get('stand') else (active[0], anchor_at - active[1])
@@ -543,7 +562,7 @@ def _run(req, output, inbox, started):
         plans.append(row)
         leg['plans'] += 1
         event('replan', plan['rule'], latency_ms=latency * 1000)
-        if lat_ticks == 0 or first:
+        if lat_ticks == 0 or immediate:
             S['active'] = anchor
             S['executing'] = (len(plans) - 1, tick)
             executing_starts.append((tick, len(plans) - 1))
@@ -604,6 +623,10 @@ def _run(req, output, inbox, started):
             if len(S['commands']) < MAX_COMMANDS:
                 apply(cmd)
             publish(force=True)
+        if _TERM['flag']:
+            S['ending'], S['end_reason'] = True, S['end_reason'] or 'stopped by the gateway (cancel or a limit)'
+            event('terminated', 'stopped by the gateway; the recording keeps every simulated tick so far')
+            break
         if S['ending'] and S['paused']:
             break
         if S['paused']:
@@ -636,9 +659,21 @@ def _run(req, output, inbox, started):
         w, x, y, z = true_q[3:7]
         tilt = math.acos(max(-1.0, min(1.0, 1 - 2 * (x * x + y * y))))
         leg = S['leg']
+        # Limits that hold in every moving phase, not only while planning.
+        if not S['ending'] and S['motion_ticks'] * DT >= req['max_motion_s']:
+            S['ending'], S['end_reason'] = True, f"session motion limit {req['max_motion_s']:.0f} s"
+            event('limit', S['end_reason'])
+            if leg:
+                leg['stop_reason'] = 'session motion limit'
+            S['phase'] = 'STOPPED'
+            stand('session limit', force=True)
+        if S['pending_stand'] is not None and S['deferred_since'] is not None and (tick - S['deferred_since']) * DT > DEFER_LIMIT_S:
+            event('stand_forced', f'deferred stand forced after {DEFER_LIMIT_S:g} s (a Studio limit in simulation; node.py keeps deferring)')
+            stand(S['pending_stand'], force=True)
         if S['phase'] in ('PRESCAN', 'RUN') and (tilt > TILT_ESTOP_RAD or true_q[2] < MIN_PELVIS_Z_M):
             reason = f'tilt {tilt:.2f} rad > {TILT_ESTOP_RAD}' if tilt > TILT_ESTOP_RAD else f'pelvis {true_q[2]:.2f} m'
-            event('estop', f'E-stop: {reason} (node supervisor; on the robot the runner switches to damping)', tilt=tilt)
+            basis = 'node.py supervisor rule' if tilt > TILT_ESTOP_RAD else "Studio's fall rule (node.py has none)"
+            event('estop', f'E-stop: {reason} ({basis}; on the robot the runner switches to damping)', tilt=tilt)
             S['phase'], S['fallen'] = 'STOPPED', True
             end_leg('estop', reason)
             S['paused'] = True
@@ -658,11 +693,6 @@ def _run(req, output, inbox, started):
                 S['phase'] = 'STOPPED'
                 leg['stop_reason'] = f"walk timeout {req['leg_timeout_s']:.0f} s"
                 stand('timeout')
-            elif S['motion_ticks'] * DT >= req['max_motion_s']:
-                S['phase'] = 'STOPPED'
-                leg['stop_reason'] = 'session motion limit'
-                S['ending'], S['end_reason'] = True, f"session motion limit {req['max_motion_s']:.0f} s"
-                stand('session limit')
             elif S['pending_stand'] is None and not S['pending'] and (leg.get('first_plan_pending') or tick - S['last_request'] >= replan):
                 request_plan(q, tick)
         if S['pending_stand'] is not None:
@@ -677,10 +707,15 @@ def _run(req, output, inbox, started):
         post = sim.measure()
         reference = decode_reference(tgt, true_q)
         reference.pop('raw', None)
-        for row in reference['window']:
+        for k, row in enumerate(reference['window']):
             row.pop('velocity', None)
-            for key in ('joints', 'position', 'quaternion_wxyz'):
-                row[key] = _r(np, row[key])
+            row['position'], row['quaternion_wxyz'] = _r(np, row['position'], 3), _r(np, row['quaternion_wxyz'], 4)
+            if k in (4, 9):  # the replay's future ghosts; row 0 equals reference.joints
+                row['joints'] = _r(np, row['joints'], 3)
+            else:
+                row.pop('joints', None)
+        reference['joints'] = _r(np, reference['joints'], 4)
+        reference['window_joints'] = 'rows 4 and 9 only (the +0.4 s and +0.9 s ghosts); row 0 is reference.joints'
         if plan.get('stand'):
             plan_view = {'time': anchor_tick * DT, 'age_s': (tick - anchor_tick) * DT, 'rule': 'stand', 'future': [],
                          'future_basis': 'settle-to-stand chunk (node.py stand)', 'latency_ms': None}
@@ -689,6 +724,7 @@ def _run(req, output, inbox, started):
             row = plans[index]
             plan_view = dict(_plan(row, start_tick * DT, t), requested_at_s=row['tick'] * DT, executing_since_s=start_tick * DT,
                              walk=row['walk'])
+            plan_view['future'] = _r(np, plan_view['future'], 2)
         else:
             plan_view = None
         if leg is not None:

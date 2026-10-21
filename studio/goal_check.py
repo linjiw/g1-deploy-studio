@@ -557,29 +557,42 @@ def check_goal(grid, robot_xy, goal_xy, *, robot_radius_m=0.30, arrival_radius_m
                                      f'No seen obstacle within {_metres(max(inflate_m, robot_radius_m))} of the goal.'
                                      + unseen_note))
 
-    # overhead: node.py ceiling_near (square window of ceil(radius / res) cells around the goal cell)
-    kc = int(np.ceil(overhead_radius_m / res))
-    c0, c1 = max(goal_cell[0] - kc, 0), min(goal_cell[0] + kc + 1, n)
-    d0, d1 = max(goal_cell[1] - kc, 0), min(goal_cell[1] + kc + 1, n)
-    window = ceiling[c0:c1, d0:d1] if c0 < c1 and d0 < d1 else np.empty((0, 0))
-    low_ceiling = np.isfinite(window) & (window < head_height_m)
-    if low_ceiling.any():
-        ci, cj = np.nonzero(low_ceiling)
+    # overhead: node.py ceiling_near, a square window of ceil(radius / res) cells. At the goal itself it blocks: a stand
+    # there is deferred while the robot stays. The node evaluates it where it stands the robot up, anywhere inside the
+    # arrival radius, so the ring out to radius + arrival radius warns (review M4).
+    def ceiling_window(radius):
+        k = int(np.ceil(radius / res))
+        a0, a1 = max(goal_cell[0] - k, 0), min(goal_cell[0] + k + 1, n)
+        b0, b1 = max(goal_cell[1] - k, 0), min(goal_cell[1] + k + 1, n)
+        if a0 >= a1 or b0 >= b1:
+            return None
+        window = ceiling[a0:a1, b0:b1]
+        ci, cj = np.nonzero(np.isfinite(window) & (window < head_height_m))
+        if not len(ci):
+            return None
         heights = window[ci, cj]
-        reach_xy = np.hypot(lo[0] + (ci + c0) * res - goal[0], lo[1] + (cj + d0) * res - goal[1])
+        reach = np.hypot(lo[0] + (ci + a0) * res - goal[0], lo[1] + (cj + b0) * res - goal[1])
+        return float(heights.min()), float(reach.min())
+    edge_note = lambda h: (" A ceiling this low is often the top edge of a table, box or pillar that the robot's map "
+                           'files as overhead; node.py defers its stand all the same.' if h < 1.1 else '')
+    inner = ceiling_window(overhead_radius_m) if goal_in_grid else None
+    outer = ceiling_window(overhead_radius_m + arrival_radius_m) if goal_in_grid and inner is None else None
+    if inner is not None:
         checks.append(_check('overhead', 'block', 'Low overhead obstacle',
-                             f'An overhead obstacle {_metres(float(heights.min()))} above the floor is '
-                             f'{_metres(float(reach_xy.min()))} from the goal (head height {_metres(head_height_m)}): '
-                             'standing up there drives the head into it, so the node defers the stand.'
-                             + (' A ceiling this low is often the top edge of a table, box or pillar that the robot\'s map '
-                                'files as overhead; node.py defers its stand all the same.'
-                                if float(heights.min()) < 1.1 else '')))
+                             f'An overhead obstacle {_metres(inner[0])} above the floor is {_metres(inner[1])} from the '
+                             f'goal (head height {_metres(head_height_m)}): standing up there drives the head into it, '
+                             'so the node defers the stand and the robot holds its last pose.' + edge_note(inner[0])))
+    elif outer is not None:
+        checks.append(_check('overhead', 'warn', 'Overhead obstacle near the arrival',
+                             f'An overhead obstacle {_metres(outer[0])} above the floor is {_metres(outer[1])} from the '
+                             f'goal: if the robot stands up on its side of the {_metres(arrival_radius_m)} arrival '
+                             'radius, the node defers the stand until it moves clear.' + edge_note(outer[0])))
     elif not goal_in_grid:
         checks.append(_check('overhead', 'warn', 'Not checked', 'The goal is outside the map; overhead space is unknown.'))
     else:
         checks.append(_check('overhead', 'pass', 'No low overhead obstacle',
                              f'No overhead obstacle below {_metres(head_height_m)} seen within '
-                             f'{_metres(overhead_radius_m)} of the goal.'))
+                             f'{_metres(overhead_radius_m + arrival_radius_m)} of the goal.'))
 
     # reachable
     path, path_m, unknown_fraction = None, None, None
@@ -616,12 +629,14 @@ def check_goal(grid, robot_xy, goal_xy, *, robot_radius_m=0.30, arrival_radius_m
                 notes.append(f"The robot stands inside the route's {_metres(inflate_m)} obstacle margin; as Flow's "
                              f"SensorRoute does, the route starts from the nearest free cell "
                              f"{_metres(plan['start_shift_m'])} away.")
+            low_route = None
             if len(cells):
                 under = ceiling[clipped[inside, 0], clipped[inside, 1]]
                 under = under[np.isfinite(under) & (under < head_height_m)]
                 if under.size:
-                    notes.append(f'The route passes under an overhead obstacle at {_metres(float(under.min()))}; '
-                                 'the policy must duck.')
+                    low_route = float(under.min())
+                    notes.append(f'The route passes under an overhead obstacle at {_metres(low_route)}; the policy must '
+                                 'duck, and a stand (Stand, a lost LiDAR) there is deferred by the node.')
             if not plan.get('pruned', True):
                 notes.append('Path shortening stopped at its work bound; the length is of the unshortened path.')
             summary = (f'Route {_metres(path_m)}; {100 * unknown_fraction:.0f} % of it crosses space the robot has '
@@ -629,6 +644,8 @@ def check_goal(grid, robot_xy, goal_xy, *, robot_radius_m=0.30, arrival_radius_m
             if unknown_fraction > UNKNOWN_WARN_FRACTION:
                 status, title = 'warn', 'Route crosses unseen space'
                 notes.insert(0, 'The route treats unseen space as free.')
+            elif low_route is not None:
+                status, title = 'warn', 'Route passes under a low overhead obstacle'
             elif plan['start_shift_m']:
                 status, title = 'warn', 'Reachable from inside the obstacle margin'
             else:

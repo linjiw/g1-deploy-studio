@@ -127,7 +127,7 @@ class NavWorkerIntegrationTests(unittest.TestCase):
         latest = s.wait(self.standing, what='the first stand')
         n = latest['navigation']
         self.assertEqual(n['phase'], 'WAIT')
-        self.assertEqual(n['can'], {'goal': True, 'go': False, 'stand': False, 'end': True})
+        self.assertEqual(n['can'], {'goal': True, 'go': False, 'stand': False, 'takeover': False, 'end': True})
         self.assertIsNotNone(latest['frame'])                   # the standing pose is shown before any tick
         self.assertTrue((s.output / 'memory.npz').is_file())    # the pre-scan map is published
         # Go without a goal and a goal inside the pillar are refused; nothing moves.
@@ -167,6 +167,51 @@ class NavWorkerIntegrationTests(unittest.TestCase):
             self.assertIn(kind, kinds)
         # Paused waiting time is not simulated: motion time equals the recorded frames.
         self.assertAlmostEqual(session['metadata']['test_result']['motion_s'], len(session['frames']) * 0.02, places=6)
+
+    def test_end_never_waits_on_a_deferred_stand(self):
+        """Review H5: Stand next to a 1.0 m pillar (its top edge reads as a low ceiling) defers the stand; End must still
+        end promptly with a complete recording, and the session limits hold in every moving phase."""
+        pillar = {'id': 'tall-pillar', 'label': 'Tall pillar', 'kind': 'boxes', 'frame_id': 'world',
+                  'boxes': [{'center_xy': [1.6, 0.0], 'half_xy': [0.25, 0.25], 'yaw': 0, 'z_bottom': 0, 'z_top': 1.0}]}
+        s = Session(Path(self.tmp.name) / 'nav', request(map=pillar))
+        self.addCleanup(s.close)
+        s.wait(self.standing, what='the first stand')
+        self.assertEqual(s.reply(s.send('goal', xy=[3.3, 0.6]), 1)['status'], 'applied')
+        s.send('go')
+        s.wait(lambda l: (l['frame'] or {}).get('position', [0])[0] > 1.25, 120, 'beside the pillar')
+        s.send('stand')
+        try:
+            s.wait(lambda l: l['navigation'].get('pending_stand'), 5, 'the deferral')
+            deferred = True
+        except AssertionError:
+            deferred = False
+        started = time.monotonic()
+        s.send('end')
+        s.wait(lambda l: l.get('status') == 'completed', 90, 'completion after End')
+        self.assertLess(time.monotonic() - started, 90)
+        s.process.wait(30)
+        session = json.loads((s.output / 'session.json').read_text())
+        kinds = [e['type'] for e in session['events']]
+        self.assertIn('ended', kinds)
+        self.assertLess(session['metadata']['test_result']['motion_s'], 60)
+        print(f'\nend-during-stand: stand deferred={deferred}; events {sorted(set(kinds))}', flush=True)
+        self.assertTrue(deferred, 'the scenario no longer defers the stand; move the stand closer to the pillar')
+        self.assertIn('stand_deferred', kinds)
+
+    def test_sigterm_keeps_the_recording(self):
+        s = Session(Path(self.tmp.name) / 'nav', request(map=PILLAR))
+        self.addCleanup(s.close)
+        s.wait(self.standing, what='the first stand')
+        s.send('goal', xy=[1.0, 0.0])
+        s.send('go')
+        s.wait(lambda l: l['navigation']['phase'] == 'RUN', 60, 'walking')
+        s.process.terminate()
+        s.process.wait(60)
+        result = json.loads((s.output / 'result.json').read_text())
+        self.assertEqual(result['status'], 'completed')
+        session = json.loads((s.output / 'session.json').read_text())
+        self.assertIn('terminated', [e['type'] for e in session['events']])
+        self.assertGreater(len(session['frames']), 1)
 
     def test_parity_with_the_source_rehearsal_until_arrival(self):
         """With a goal at t = 0, walking is the bundle worker's source run_episode, frame for frame."""
