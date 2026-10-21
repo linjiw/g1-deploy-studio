@@ -1,0 +1,41 @@
+# The public site: site/ + three.js + the recorded walks and the tour video from a pinned release
+# (tools/site/release.json; the data is generated, see docs/SITE.md). Static files only: nothing runs a policy.
+name: Pages
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'tools/site/build.sh', 'tools/site/fetch_release.sh', 'tools/site/release.json', 'package-lock.json', '.github/workflows/pages.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --omit=dev
+      - name: Fetch the site data and media (checksums pinned in tools/site/release.json)
+        run: tools/site/fetch_release.sh _data _media
+      - run: tools/site/build.sh _site _data _media
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
