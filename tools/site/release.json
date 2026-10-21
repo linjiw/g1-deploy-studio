@@ -1,0 +1,8 @@
+{
+ "repository": "linjiw/g1-deploy-studio",
+ "tag": "site-v1",
+ "assets": {
+  "site-data.tar.gz": "7776c1806037307375b65927101ed3b35caa0bf0b55de52475b6a376d6cbd265",
+  "site-media.tar.gz": "65e6e6d59f1981135c536feddd573324c55f19b7e0d471a7d787b543f8458f67"
+ }
+}

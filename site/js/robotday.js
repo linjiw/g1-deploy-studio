@@ -86,7 +86,7 @@ export async function initRobotDay(root) {
       const d = Math.hypot(g[0] - world.start_xy[0], g[1] - world.start_xy[1]);
       add(label, d <= MAX_GOAL_M ? 'pass' : 'block', d <= MAX_GOAL_M ? `${fmt(d)} m from the robot; inside the assumed memory (±6 m around (0.00, 0.00))` : `${fmt(d)} m from the robot: beyond the ${MAX_GOAL_M.toFixed(1)} m limit`);
     }
-    if (f.has('ceiling')) add('Stand not deferred', 'block', `inferred from node status: the node is deferring its stand (a low ceiling near the robot): the robot holds the plan's last pose until it is clear. Take over with the remote's D-up only if nothing is directly above the robot${D.walk ? '' : ' (as after a walk that ended near a low ceiling)'}`);
+    if (f.has('ceiling')) add('Stand not deferred', 'block', `inferred from node status: the node is deferring its stand (a low ceiling near the robot): the robot holds the plan's last pose until it is clear, and can still drift. Take over with the remote's D-up only if nothing is directly above the robot${D.walk ? '' : ' (as after a walk that ended near a low ceiling)'}`);
     else if (walking()) add('Stand not deferred', 'warn', `the robot is walking (node phase ${phaseAt()})`);
     else add('Stand not deferred', 'pass', D.walk ? `node phase ${phaseAt()}, standing = true` : 'node phase WAIT (no stand pending)');
     return items;

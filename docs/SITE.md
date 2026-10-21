@@ -16,7 +16,7 @@ Owner decision, 2026-10-21 (STATUS decisions):
 
 | Section | What it is | Source of truth |
 |---|---|---|
-| Send the robot somewhere | Five rooms. Click the floor: the six goal checks Studio runs on the map the robot has at the start mark (`studio/goal_check.py`, precomputed for every grid cell); a passing spot snaps to the nearest recorded goal. **Send goal**, then **Go** (or `g`): the recorded walk plays with the robot (simulator truth), its own estimate, its LiDAR returns, the planner's map growing cell by cell, the plan it is tracking and its path. Each walk is graded from its data: *arrived*, *arrived with contact* (over 100 N), *arrived by its estimate, off by truth* (more than 0.6 m), or the node's outcome | `tools/site/record_goals.py` → `studio/nav_worker.py` |
+| Send the robot somewhere | Five rooms. Click the floor: the six goal checks Studio runs on the map the robot has at the start mark (`studio/goal_check.py`, precomputed for every grid cell); a passing spot snaps to the nearest recorded goal. **Send goal**, then **Go** (or `g`): the recorded walk plays with the robot (simulator truth), its own estimate, its LiDAR returns, the planner's map growing cell by cell, the plan it is tracking and its path. Each walk is graded from its data: *arrived*, *arrived with contact* (over 100 N), *arrived by its estimate, off by truth* (more than 0.6 m by truth), *arrived, then moved away* (more than 0.6 m by truth and by its estimate at the end, as after a deferred stand that drifts), or the node's outcome | `tools/site/record_goals.py` → `studio/nav_worker.py` |
 | How the pieces fit | The robot-day topology, clickable: who reads and writes which stream, and what Studio may send | `docs/REAL_WORLD_DEPLOYMENT.md` §3 |
 | A day with the real robot | Build, start, connect, pick and send, the operator's `g`, review. The checklist uses the robot link's rules and wording; five switches inject the faults it guards against | `studio/robot_link.py` `_ready` |
 | What rehearsing found | The perception findings (STATUS #11, #15), policy behaviour measured in these recordings (contact by room, door passages, pelvis height under the beam), and the review fixes. The measured cards are written from the data, and their example walks are chosen by cause (`tools/site/export.py` `featured`) | `docs/STATUS.md`, `docs/REVIEW-20261021-NAVIGATE.md` |
@@ -52,3 +52,9 @@ The worker records the planner's memory as display codes at every 1 s snapshot w
 ## Updating
 
 Record or re-export, `tools/site/package.sh <site-data> <media> <dir> site-vN`, create the release with the two archives, update `tools/site/release.json`, push to `main`. A change to `site/` alone redeploys with the same data.
+
+| Release | Date | Walks | Coverage | Archives |
+|---|---|---|---|---|
+| `site-v1` | 2026-10-21 | 415: wall detour 107, alternating walls 106, corridor 66, doorway 72, cluttered room 64 | Levels 0 and 1 in the first two rooms, level 0 in the others | data 17 MB (61 MB unpacked, with the mesh licence and NOTICE), media 25 MB |
+
+The batch can keep recording the remaining levels at the lowest priority for a later release; nothing on the published site changes until `tools/site/release.json` names a new tag.

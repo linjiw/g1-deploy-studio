@@ -374,7 +374,7 @@ export function renderLive() {
       <div class="nav-facts">${facts(job)}</div>
       ${n?.pending_stand ? (real
         ? `<div class="callout danger">The node is deferring its stand (${escape(n.pending_stand)}): its map shows something overhead below head height near the robot, so the robot keeps playing its last plan. Use the remote's D-up only if nothing is overhead; Select is the E-stop.</div>`
-        : `<div class="callout warning">Stand deferred: the robot's map shows something overhead below head height within 0.8 m, so node.py lets the current plan play out first${n.holding_plan_end ? '. The plan has ended and the robot holds its last pose' : ''}. Take over to stand it now (the remote's D-up); Studio forces it after 20 s. <button id="nav-takeover" class="link-button">Take over</button></div>`) : ''}
+        : `<div class="callout warning">Stand deferred: the robot's map shows something overhead below head height within 0.8 m, so node.py lets the current plan play out first${n.holding_plan_end ? '. The plan has ended and the robot holds its last pose; it can still drift' : ''}. Take over to stand it now (the remote's D-up); Studio forces it after 20 s. <button id="nav-takeover" class="link-button">Take over</button></div>`) : ''}
       ${n?.fallen ? '<div class="callout warning">E-stop: the robot tilted past the supervisor limit. On the robot the runner switches to damping. End the session to keep the recording.</div>' : ''}
       ${(n?.streams ?? []).filter(s => (s.status === 'stale' || s.status === 'unavailable')
           // The node streams plans only while walking: a quiet pose stream while standing is expected.

@@ -251,7 +251,23 @@ def deferral_cause(index, walk):
     else:
         cause = 'unclassified'
     stood = next((e['t'] for e in walk['events'] if e['type'] in ('stand', 'stand_forced') and e['t'] > ev['t']), walk['time'][-1])
-    return {'t': ev['t'], 'cells': len(cells), 'cause': cause, 'held_s': round(float(stood - ev['t']), 2)}
+    k1 = max(0, int(np.searchsorted(walk['time'], stood, side='right')) - 1)
+    moved = math.dist(walk['q'][k * 36:k * 36 + 2], walk['q'][k1 * 36:k1 * 36 + 2]) / 1000  # simulator truth, while deferred
+    return {'t': ev['t'], 'cells': len(cells), 'cause': cause, 'held_s': round(float(stood - ev['t']), 2), 'moved_m': round(moved, 2)}
+
+
+def _ending(d):
+    """How an example walk ends when it is not clean, so the note under it never hides contact, drift or a fall."""
+    parts = []
+    if (d['max_contact_n'] or 0) > 100:
+        parts.append(f"peaks at {d['max_contact_n']:.0f} N of contact")
+    if d['final_dist_m'] is not None and d['final_dist_m'] > 0.6:
+        parts.append(f"ends {d['final_dist_m']:.2f} m from the goal (simulator truth)")
+    if d['outcome'] != 'arrived':
+        parts.append(f"is reported as {d['outcome']}" + (f" ({d['reason']})" if d['reason'] else ''))
+    if not parts:
+        return ''
+    return ' The walk ' + (', '.join(parts[:-1]) + ' and ' + parts[-1] if len(parts) > 1 else parts[0]) + '.'
 
 
 def featured(out, worlds):
@@ -272,14 +288,27 @@ def featured(out, worlds):
         if c:
             causes[c['cause']].append((w, d, c))
     facts['deferred'] = {k: len(v) for k, v in causes.items()}
+    every = [x for v in causes.values() for x in v]
+    if every:
+        w, d, c = max(every, key=lambda x: x[2]['moved_m'])
+        facts['deferral_drift'] = {'walks': len(every), 'over_0_5m': sum(x[2]['moved_m'] > 0.5 for x in every),
+                                   'max_m': c['moved_m'], 'max_held_s': c['held_s']}
+        if c['moved_m'] > 0.5:
+            pick['drift'] = {'world': w, 'goal': d['goal_id'], 'label': 'Watch it walk away',
+                             'note': f"In this one the robot arrives at {c['t']:.1f} s and moves {c['moved_m']:.2f} m in the "
+                                     f"{c['held_s']:.1f} s its stand is deferred" + (', until Studio forces it.' if any(e['type'] == 'stand_forced' for e in d['events']) else '.')
+                                     + _ending(d)}
     for key, cause, label in (('edge-ceiling', 'table-edge', 'Watch a deferral at a table edge'),
                               ('phantom', 'phantom', 'Watch a deferral with nothing overhead')):
         if causes[cause]:
-            w, d, c = max(causes[cause], key=lambda x: x[2]['held_s'])
+            # The longest wait; among equal waits the one that stays put, so the drift example stays its own card.
+            w, d, c = max(causes[cause], key=lambda x: (x[2]['held_s'], -x[2]['moved_m']))
             if c['held_s'] >= 0.5:
                 pick[key] = {'world': w, 'goal': d['goal_id'], 'label': label,
                              'note': f"{len(causes[cause])} of {len(walks)} recorded walks deferred a stand this way (classified from "
-                                     f"the recorded map and the room's boxes). In this one the stand waits {c['held_s']:.1f} s, from {c['t']:.1f} s."}
+                                     f"the recorded map and the room's boxes). In this one the stand waits {c['held_s']:.1f} s, from {c['t']:.1f} s"
+                                     + (', until Studio forces it (a 20 s limit in simulation).' if any(e['type'] == 'stand_forced' for e in d['events']) else '.')
+                                     + _ending(d)}
     # The door: walks to the far side that cross the wall line through the 0.8 m door.
     if 'doorway' in indexes:
         far, through, clean, elsewhere = 0, 0, 0, 0

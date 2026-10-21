@@ -17,6 +17,12 @@ function cards(featured, catalog) {
       text: "Single high returns from the robot's arms become overhead cells in a memory that never forgets. Over a long session the validator saw stalls, deferred stands and falls follow.",
       status: `In the deploy repository (STATUS #15). Studio's simulated robot offers a fresh-map mode to compare.${deferred.phantom ? ` In these short walks: ${deferred.phantom} deferred their stand with nothing that low nearby.` : ''}` },
   ];
+  const dr = f.deferral_drift;
+  if (dr && dr.over_0_5m) {
+    out.push({ id: 'drift', kind: 'robot', tag: 'Robot side · measured here', title: 'A deferred stand can walk away',
+      text: `While node.py defers a stand it does not stand: it lets the last plan play out and then holds that plan's final frame. In ${dr.over_0_5m} of ${dr.walks} recorded walks with a deferred stand the robot still moved more than 0.5 m while it waited, up to ${dr.max_m.toFixed(1)} m in ${dr.max_held_s.toFixed(0)} s. The node's outcome stays "arrived".`,
+      status: "On the robot node.py keeps deferring; Studio forces the stand after 20 s only in simulation. The operator stands the robot with the remote's D-up, only if nothing is directly above it. Simulation, one seed per goal." });
+  }
   const SHORT = { detour: 'wall-detour room', slalom: 'alternating-walls room', corridor: 'corridor', doorway: 'doorway room', clutter: 'cluttered room' };
   const c = f.contact ?? {}, worst = Object.entries(c).sort((a, b) => b[1].over_100n / b[1].walks - a[1].over_100n / a[1].walks)[0];
   if (worst && worst[1].over_100n) {

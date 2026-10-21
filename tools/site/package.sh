@@ -5,9 +5,11 @@
 set -euo pipefail
 DATA=${1:?site-data dir}; MEDIA=${2:?media dir}; OUT=${3:?out dir}; TAG=${4:?tag}
 mkdir -p "$OUT"
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 # Deterministic archives: sorted names, fixed owner and time; the local mesh list (absolute paths) stays out.
+# The data carries the simplified Unitree meshes, so it carries their BSD-3-Clause notice and Studio's NOTICE too.
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00Z' --exclude='robot-meshes.txt' --exclude='*.tmp' \
-  -C "$DATA" -cf - . | gzip -9n > "$OUT/site-data.tar.gz"
+  -C "$DATA" -cf - . -C "$ROOT" NOTICE -C "$ROOT/site" licenses/unitree_mujoco-LICENSE.txt | gzip -9n > "$OUT/site-data.tar.gz"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00Z' -C "$MEDIA" -cf - . | gzip -1n > "$OUT/site-media.tar.gz"
 python3 - "$OUT" "$TAG" <<'PY'
 import hashlib, json, sys

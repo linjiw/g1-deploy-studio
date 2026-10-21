@@ -24,7 +24,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 | Navigate with the real robot: robot link on the deploy PC (loopback streams; goal and stand to node.py, never Go) | M5 | Verified against a protocol fixture only (browser 7/7); not run against node.py or a robot | [NAVIGATE](NAVIGATE.md) |
 | Scan to twin (an arena fitted to the robot's map) and the printable course build sheet | — | Verified in simulation and print | [NAVIGATE](NAVIGATE.md), [WORKBENCH](WORKBENCH.md) |
 | Site maps across sessions (mapping walk, relocalization) | — | Designed, not built | [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §5.3 |
-| **Public site**: Navigate on recorded walks of the real stack (five rooms, deploy settings, every grid goal that passes the checks), the robot-day checklist, the system diagram, the tour | L1 / L2, recorded | Verified (browser checks, desktop and phone) | [SITE](SITE.md) |
+| **Public site**: Navigate on recorded walks of the real stack (five rooms, deploy settings, a coverage lattice of goals that pass the checks; `site-v1`: 415 walks), the robot-day checklist, the system diagram, the tour | L1 / L2, recorded | Verified (browser checks, desktop and phone) | [SITE](SITE.md) |
 
 ## Current results
 
@@ -58,6 +58,7 @@ These are CPU MuJoCo lockstep runs from standing starts, at small n. They are no
 | 14 | Robot link thresholds not measured on hardware: a standing G1 must read below 0.05 m/s and 0.05 rad/s on LIO for 0.5 s, and the node's position must match LIO within 0.1 m, before a goal is sent | Operator | Measure on the first M5 session; `limits.still_*` in `config/robot_link.json` |
 | 13 | Proposals U1–U3 for g1-student-deploy: absolute odom goals, a telemetry stream with the planner's live map, loopback-only binds. Today node.py binds `tcp://*:5562` (accepts go and quit) and `*:5556`, the SONIC runner `*:5557` and the LIO bridge `*:5561`; U3 covers only node.py's two | Deploy repo owner | Proposed in [REAL_WORLD_DEPLOYMENT](REAL_WORLD_DEPLOYMENT.md) §7; Studio works without them. Until then, firewall the robot network |
 | 17 | g1-student-deploy's HARDWARE.md (step 4) and OPERATOR_GUIDE.md (step 3) say the remote's F1 starts a walk. In the code F1 only hands the runner to the node's ZMQ stream; the console starts node.py with `--wait-go`, so the node walks after the console's `g`. Studio's docs, UI and the site were corrected on 2026-10-21; the narrated tour still says "the console or the remote" (corrected on the site) | Deploy repo owner | Fix the two operator docs |
+| 18 | A deferred stand can walk away. In the site's recordings (`site-v1`: simulation, deploy settings, one seed per goal) 26 of 415 walks deferred their stand; in 4 the robot moved more than 0.5 m while it waited, the most 4.49 m in 20 s (wall-detour room, goal g01-05, a phantom ceiling, #15), and the node's outcome stayed "arrived". Past a plan's end the feed holds the plan's final frame (Flow `closed_loop/feed.py` `target`). node.py defers without a bound on the robot; Studio forces the stand after 20 s only in simulation | Deploy repo owner + operator | Bound the deferral or stand once the plan has ended (#11). On the robot, watch for drift after arrival; D-up stands it only if nothing is directly above |
 
 ## Decisions
 

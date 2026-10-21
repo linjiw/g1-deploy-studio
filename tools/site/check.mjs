@@ -58,7 +58,7 @@ await check('clicking the floor shows the six goal checks', async () => {
 // The outcome rule, restated here from the site's documentation so the page is checked against the raw data.
 function expectedGrade(walk) {
   const contact = (walk.max_contact_n ?? 0) > 100;
-  if (walk.outcome === 'arrived') return contact ? 'Arrived, with contact' : (walk.final_dist_m ?? 0) > 0.6 ? 'Arrived by its estimate, off by truth' : 'Arrived';
+  if (walk.outcome === 'arrived') return contact ? 'Arrived, with contact' : (walk.final_dist_m ?? 0) > 0.6 ? ((walk.final_dist_estimate_m ?? 0) > 0.6 ? 'Arrived, then moved away' : 'Arrived by its estimate, off by truth') : 'Arrived';
   return { stopped: 'Stopped', estop: 'E-stop', fell: 'Fell' }[walk.outcome] ?? walk.outcome;
 }
 await check('pick for me, press g on the keyboard, the timeline moves, the outcome matches the raw walk', async () => {

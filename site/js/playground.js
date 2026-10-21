@@ -377,7 +377,12 @@ export class Playground {
     const k = w.index(S.t), plan = w.plan(S.t);
     const dist = w.goal_cm[k] === null ? null : w.goal_cm[k] / 100;
     const tilt = w.tilt_mrad[k], contact = w.contact_n[k];
-    setText('pg-status', p.text ?? '');
+    // A deferred stand is not settling: the node keeps the last plan's pose until its memory clears or Studio forces it.
+    const deferred = phase === 'ARRIVED' && w.events.find(e => e.type === 'stand_deferred' && e.t <= S.t);
+    const stood = deferred && w.events.some(e => (e.type === 'stand' || e.type === 'stand_forced') && e.t > deferred.t && e.t <= S.t);
+    setText('pg-status', deferred && !stood
+      ? `Arrived, but the stand is deferred: node.py sees a ceiling below 1.35 m within 0.8 m in its memory, so it does not stand: it lets the last plan play out and holds its final frame. The robot can still drift.`
+      : p.text ?? '');
     $('pg-facts').innerHTML = [
       ['Time', `${fmt(S.t, 1)} s`, '', 'Simulated time since Go'],
       ['To goal (est.)', dist === null ? '—' : `${fmt(dist, 2)} m`, '', "By the robot's own estimate (LIO-level drift), as node.py measures it"],
@@ -428,7 +433,7 @@ export class Playground {
       ['Final, truth', `${fmt(w.final_dist_m, 2)} m`], ['Final, estimate', `${fmt(w.final_dist_estimate_m, 2)} m`],
       ['Max contact', contact === null ? '—' : `${Math.round(contact)} N`], ['Plans', w.plans_n ?? '—'],
     ].map(([a, b]) => `<div><span>${a}</span><b>${escape(String(b))}</b></div>`).join('');
-    $('pg-outcome-meta').textContent = `Grades: green arrived cleanly; amber arrived with contact over 100 N, or ended more than 0.6 m from the goal by truth (node.py's radius is 0.4 m, by its estimate); red E-stop or fall. Recorded on CPU MuJoCo at ${fmt(w.rtf, 2)}× real time; seed ${S.world.settings?.seed ?? 0}; planner ${S.world.settings?.planner?.candidates ?? '?'} candidates, ${S.world.settings?.planner?.ode_steps ?? '?'} ODE steps.`;
+    $('pg-outcome-meta').textContent = `Grades: green arrived cleanly; amber arrived with contact over 100 N, or ended more than 0.6 m from the goal by truth (node.py's radius is 0.4 m, by its estimate; it can also move away after arriving); red E-stop or fall. Recorded on CPU MuJoCo at ${fmt(w.rtf, 2)}× real time; seed ${S.world.settings?.seed ?? 0}; planner ${S.world.settings?.planner?.candidates ?? '?'} candidates, ${S.world.settings?.planner?.ode_steps ?? '?'} ODE steps.`;
     chip.innerHTML = `<b>${escape(g.label)}</b> · ends ${fmt(w.final_dist_m, 2)} m from the goal (truth)${contact > 100 ? ` · contact ${Math.round(contact)} N` : ''}`;
   }
 }

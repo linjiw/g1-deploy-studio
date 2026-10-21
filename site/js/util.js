@@ -19,7 +19,8 @@ export function grade(walk) {
   const contact = (walk.max_contact_n ?? 0) > 100;
   if (walk.outcome === 'arrived') {
     if (contact) return { key: 'contact', label: 'Arrived, with contact', color: 0xefbb70 };
-    if ((walk.final_dist_m ?? 0) > 0.6) return { key: 'off', label: 'Arrived by its estimate, off by truth', color: 0xefbb70 };
+    // Off by truth: its estimate was wrong, or (its estimate agreeing) it moved away after arriving, as in a deferred stand.
+    if ((walk.final_dist_m ?? 0) > 0.6) return { key: 'off', label: (walk.final_dist_estimate_m ?? 0) > 0.6 ? 'Arrived, then moved away' : 'Arrived by its estimate, off by truth', color: 0xefbb70 };
     return { key: 'clean', label: 'Arrived', color: 0x7be0a5 };
   }
   const o = OUTCOME[walk.outcome] ?? { label: walk.outcome, color: 0x8aa0ad };
@@ -31,7 +32,7 @@ export const PHASE = {
   WAIT: { label: 'WAIT', color: '#8aa0ad', why: 'Standing; the node waits for a goal and the operator.' },
   PRESCAN: { label: 'PRESCAN', color: '#c4a0d9', text: 'Pre-scan: before every walk node.py stands for 0.5 s while its LiDAR fills the map.', why: 'node.py pre-scans before every walk.' },
   RUN: { label: 'RUN', color: '#56d9d0', text: 'Walking: the planner replans from its memory several times a second and SONIC tracks the plan.', why: 'Flow student plans; SONIC tracks.' },
-  ARRIVED: { label: 'ARRIVED', color: '#7be0a5', text: "Arrived: settling to a stand. The recording ends once it stands still.", why: "node.py's arrival rule: its own pose estimate within the 0.4 m goal radius." },
+  ARRIVED: { label: 'ARRIVED', color: '#7be0a5', text: "Arrived: settling to a stand. The recording ends when it stands still, or if it falls.", why: "node.py's arrival rule: its own pose estimate within the 0.4 m goal radius." },
   STOPPED: { label: 'STOPPED', color: '#efbb70', text: 'Stopped: standing up where it is.', why: "A walk timeout (Studio's 60 s limit in simulation), the operator, or a supervisor stop." },
 };
 

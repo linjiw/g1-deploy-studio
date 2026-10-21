@@ -20,6 +20,7 @@ config/robot_link.json
 
 # Static site build outputs and generated data (tools/site, docs/SITE.md)
 _site/
+site-check/
 site/data/
 site/media/
 site/vendor/

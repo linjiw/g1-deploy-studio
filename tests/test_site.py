@@ -122,6 +122,14 @@ class WalkExportTests(unittest.TestCase):
         self.assertEqual(heights[2 * 5 + 3], 55)
         self.assertEqual(d['outcome'], 'arrived')
 
+    def test_example_notes_name_how_an_unclean_walk_ends(self):
+        clean = {'max_contact_n': 20.0, 'final_dist_m': 0.3, 'outcome': 'arrived', 'reason': None}
+        self.assertEqual(export._ending(clean), '')
+        fell = {'max_contact_n': 338.2, 'final_dist_m': 1.84, 'outcome': 'fell', 'reason': 'pelvis 0.29 m'}
+        self.assertEqual(export._ending(fell), ' The walk peaks at 338 N of contact, ends 1.84 m from the goal (simulator truth)'
+                                               ' and is reported as fell (pelvis 0.29 m).')
+        self.assertEqual(export._ending(dict(clean, max_contact_n=None, final_dist_m=None, outcome='estop')), ' The walk is reported as estop.')
+
     def test_a_walk_that_starts_on_another_map_is_refused(self):
         other = (self.base[0] + 1, self.base[1])
         with self.assertRaisesRegex(ValueError, 'differs from the probe map'):

@@ -1527,7 +1527,7 @@ class RobotLink:
         phase = status.get("phase") if (status and fresh) else None
         if pending_stand:
             add("stand", "Stand not deferred", "block", f"{pending_stand}: the robot holds the plan's last pose until "
-                "it is clear. Take over with the remote's D-up only if nothing is directly above the robot")
+                "it is clear, and can still drift. Take over with the remote's D-up only if nothing is directly above the robot")
         elif phase is None:
             add("stand", "Stand not deferred", "block", "unknown: node status unavailable")
         elif phase in ("ARRIVED", "STOPPED"):

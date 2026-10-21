@@ -602,7 +602,7 @@ def check_goal(grid, robot_xy, goal_xy, *, robot_radius_m=0.30, arrival_radius_m
         checks.append(_check('overhead', 'block', 'Low overhead obstacle',
                              f'An overhead obstacle {_metres(inner[0])} above the floor is {_metres(inner[1])} from the '
                              f'goal (head height {_metres(head_height_m)}): standing up there drives the head into it, '
-                             'so the node defers the stand and the robot holds its last pose.' + edge_note(inner[0])))
+                             'so the node defers the stand and the robot holds its last pose (it can still drift).' + edge_note(inner[0])))
     elif outer is not None:
         checks.append(_check('overhead', 'warn', 'Overhead obstacle near the arrival',
                              f'An overhead obstacle {_metres(outer[0])} above the floor is {_metres(outer[1])} from the '
