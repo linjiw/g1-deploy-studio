@@ -20,7 +20,7 @@ WORLDS = {
                  'blurb': 'A corridor with a beam overhead. The map keeps overhead cells apart from obstacles.'},
     'doorway': {'source': 'worlds/doorway.json', 'title': 'Doorway', 'start_xy': [0.0, -1.0],
                 'start_yaw_rad': 0.4363323129985824,
-                'blurb': 'A 2 m wall across the room with one 0.8 m door, offset from the start. The far side is hidden until the robot is in the doorway.'},
+                'blurb': 'A 2 m wall across the whole room with one 1 m door, off to the side of the start. Most of the far side is hidden behind the wall.'},
     'clutter': {'source': 'worlds/clutter.json', 'title': 'Cluttered room', 'start_xy': [0.0, 0.0],
                 'start_yaw_rad': 1.5707963267948966,
                 'blurb': 'Nine 1.2 m boxes, table height. Their top edges are where the robot\'s map can file a low ceiling (a finding below).'},
