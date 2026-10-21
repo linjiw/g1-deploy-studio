@@ -33,8 +33,9 @@ await R.check('1.1', 'Session picker: groups, outcome marks, policy and id suffi
   const labels = groups.map(g => g.label);
   assert(labels.includes('Recordings'), `groups ${labels}`);
   if (!jobsList.length) return R.blocked('No owned job recordings in the validation data root', { groups });
-  assert(labels[0] === 'CPU rehearsals', `CPU rehearsals first: ${labels}`);
-  const cpu = groups[0].options;
+  // Navigation sessions (when any exist) come first, then CPU rehearsals.
+  assert(labels.filter(l => l !== 'Navigation sessions')[0] === 'CPU rehearsals' && (labels[0] === 'CPU rehearsals' || labels[0] === 'Navigation sessions'), `group order: ${labels}`);
+  const cpu = groups.find(g => g.label === 'CPU rehearsals').options;
   for (const s of sessions.filter(s => s.group === 'CPU rehearsals')) {
     const o = cpu.find(o => o.v === s.id); assert(o, `missing ${s.id}`);
     const mark = { goal_completion: '✓', timeout: '⏱', obstacle_collision: '✕', fall: '✕', runtime_error: '✕' }[s.outcome];
