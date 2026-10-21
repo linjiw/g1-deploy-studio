@@ -524,7 +524,9 @@ class Handler(BaseHTTPRequestHandler):
                 link = workbench.robot_link_status() if workbench else {'configured': False}
                 live = bool(workbench) and any(j.get('kind') == 'robot' and j['status'] in ('starting', 'running', 'detached')
                                                for j in list(workbench.jobs.values()))
-                return self.respond({"mode": "replay", "hardware_enabled": False, "publishers": [],
+                kinds = {j.get('kind') for j in list(workbench.jobs.values()) if j['status'] in ('starting', 'running', 'detached')} if workbench else set()
+                mode = 'robot-link' if 'robot' in kinds else 'simulation' if kinds else 'replay'
+                return self.respond({"mode": mode, "hardware_enabled": False, "publishers": [],
                                      "dds_participants": 0, "binding": self.server.server_address[0], "read_only": not bool(workbench),
                                      "motor_command_path": False,
                                      "robot_link": {"configured": bool(link.get('configured')), "connected": live,

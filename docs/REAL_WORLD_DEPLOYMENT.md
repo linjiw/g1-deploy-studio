@@ -16,7 +16,7 @@ The robot-side stack already exists in g1-student-deploy. When this design was w
 | Start and stop | Console keys `g` (go), `h` (stand), `t` (SONIC takeover), `o` (damping); remote F1, D-up, Select; the node's own supervisor | None, by design |
 | Watching a run | The console's text screen, then logs and a memory dump after the run | 3D replay and live view of simulated runs |
 
-So the pipeline and its frames were designed (ARCHITECTURE: `map → odom → base → head → lidar`; the M5 read-only observation plan). The operator workflow, where you see the robot's map, click a goal on it and watch the robot walk, was not. Studio's current rule is that it never connects to the node's control port (REALTIME_REHEARSAL § M5). Section 6 proposes changing that rule, which needs your decision.
+So the pipeline and its frames were designed (ARCHITECTURE: `map → odom → base → head → lidar`; the M5 read-only observation plan). The operator workflow, where you see the robot's map, click a goal on it and watch the robot walk, was not. At the time Studio's rule was that it never connected to the node's control port; on 2026-10-21 the owner decided that it may send a checked goal and a stand, never Go (§11).
 
 Four facts shape the design:
 

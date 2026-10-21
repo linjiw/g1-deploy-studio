@@ -1,6 +1,6 @@
 // Deployment inspector tabs. Values are rendered with their evidence class;
 // unavailable fields are collapsed with reasons rather than shown as zeros.
-import { $, escape, num, vector, clock, fact, notice, tiny, chip, finite, hasPose, outcomeChip } from './util.js';
+import { $, escape, num, vector, clock, fact, notice, tiny, chip, finite, hasPose, hasRoot, outcomeChip } from './util.js';
 import { renderPipeline, pipelineHealthLink } from '../pipeline.js';
 import { renderSystemMap, systemDetails, KIND_LABEL, sessionKind } from './system.js';
 
@@ -51,9 +51,9 @@ function renderIntent(state) {
       ${tiny(wire ? 'Decoded wire reference. World-root pose was not in the packet; no ghost is rendered.' : 'Cyan ghost: reference now. Amber ghosts: +0.4 s and +0.9 s. Root path is a planner diagnostic (columns 64–66), not SONIC input.')}
       <details class="raw-details"><summary>Inspect actual reference values</summary><pre>${escape(JSON.stringify(wire ? r.raw_fields : { offset_s: windowRows[0]?.offset_s, joint_names: state.session.joint_names, values: r.raw?.[0] }, null, 1))}</pre></details>`
       : notice('No reference payload at this cursor. Reference joints and tracking error stay unavailable.', 'warning'), { evidence: wire ? 'measured' : 'commanded' });
-  const exec = card('Observed execution', `${state.frozenFrame ? notice(`Diagnostic: state held at ${clock(m.time)} while the cursor advances.`, 'warning') : ''}${fact('Root · world', hasPose(m) ? `[${vector(m.position, 2)}] m` : 'Unavailable')}
-      ${fact('Heading', hasPose(m) ? num(Math.atan2(2 * (m.quaternion_wxyz[0] * m.quaternion_wxyz[3] + m.quaternion_wxyz[1] * m.quaternion_wxyz[2]), 1 - 2 * (m.quaternion_wxyz[2] ** 2 + m.quaternion_wxyz[3] ** 2)), 3, 'rad') : 'Unavailable')}
-      ${fact('Joint reference RMSE', num(h.tracking_rmse_rad, 3, 'rad'))}${fact('PD target RMSE', num(h.command_tracking_rmse_rad, 3, 'rad'))}`, { evidence: hasPose(m) ? (m.classification === 'estimated' ? 'estimated' : meta.mode === 'simulation' || isLockstep(state) ? 'sim-truth' : 'recorded') : 'unavailable' });
+  const exec = card('Observed execution', `${state.frozenFrame ? notice(`Diagnostic: state held at ${clock(m.time)} while the cursor advances.`, 'warning') : ''}${fact(m?.frame_id === 'odom' ? 'Root · odom' : 'Root · world', hasRoot(m) ? `[${vector(m.position, 2)}] m` : 'Unavailable')}
+      ${fact('Heading', hasRoot(m) ? num(Math.atan2(2 * (m.quaternion_wxyz[0] * m.quaternion_wxyz[3] + m.quaternion_wxyz[1] * m.quaternion_wxyz[2]), 1 - 2 * (m.quaternion_wxyz[2] ** 2 + m.quaternion_wxyz[3] ** 2)), 3, 'rad') : 'Unavailable')}
+      ${fact('Joint reference RMSE', num(h.tracking_rmse_rad, 3, 'rad'))}${fact('PD target RMSE', num(h.command_tracking_rmse_rad, 3, 'rad'))}`, { evidence: hasRoot(m) ? (m.classification === 'estimated' ? 'estimated' : meta.mode === 'simulation' || isLockstep(state) ? 'sim-truth' : 'recorded') : 'unavailable' });
   $('intent-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${wire ? 'REFERENCE PUBLISHER → COLLECTOR' : 'PLANNER → SONIC'}</span><h3>What comes next</h3></div>${nav}${plan}${ref}${exec}`;
 }
 

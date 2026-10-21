@@ -555,6 +555,7 @@ class Workbench:
             # A robot link a previous gateway started is still running: it obeys an `end` file in its inbox (review M7).
             job.update(status='detached', error='A robot link started by a previous gateway is still running; End stops it.',
                        ownership='recovered robot link; stopped through its inbox only')
+            self._register_detached(job)
             return
         if result and result.get('status') == 'completed' and (output/'run/session.json').is_file():
             job.update(status='completed', result_session_id=job['id'], error=None)
@@ -568,12 +569,24 @@ class Workbench:
             job.update(status='failed', error='Gateway ownership was interrupted; no worker lock or successful completion receipt remains.')
         else:
             job.update(status='detached', error='Another or surviving worker holds the data root. This gateway can inspect files but does not own its process.')
+            if job.get('kind') == 'navigation':
+                self._register_detached(job)
         job['ownership'] = 'read-only recovered record; no process signals authorized'
         if job['status'] in TERMINAL_STATES and not self._lease_held():
             job.setdefault('finished_unix_s', time.time())
             self._persist_job(job)
         if job.get('result_session_id') and job['status'] in ('completed', 'failed'):
             self._register_result(job)  # make the recovered recording replayable without another restart
+
+    def _register_detached(self, job):
+        """Serve a surviving session's live view from its files (verification NEW-3): its latest.json keeps updating."""
+        key = job['id']
+        if key in self.catalog.providers:
+            return
+        label = (job.get('scenario') or {}).get('label') or 'Navigation session'
+        self.catalog.register(key, job['output']/'run/session.json', f'LIVE · {label} (previous gateway)', provider=lambda: self.session_data(key),
+                              extra={'group': 'Navigation sessions', 'status': 'detached', 'started_unix_s': job.get('started_unix_s'),
+                                     'scenario_label': label, 'kind': job.get('kind'), 'robot': (job.get('navigation') or {}).get('robot')})
 
     def _reload_jobs(self):
         for output in sorted((self.root/'jobs').glob('job-*'))[-MAX_JOBS:]:
@@ -901,8 +914,10 @@ class Workbench:
                 raise ValueError('CPU reference interpreter or SONIC model unavailable')
             if not policy_identity['available']:
                 raise ValueError('Policy profile artifacts unavailable: ' + '; '.join(policy_identity['missing'])[:500])
-            if any(j['status'] in ACTIVE_STATES for j in self.jobs.values()):
-                raise ValueError('A simulation is already active; end it before starting a navigation session')
+            if any(j['status'] in ACTIVE_STATES or j['status'] == 'detached' for j in self.jobs.values()):
+                raise ValueError('A simulation or session is already active (possibly one a previous gateway started); end it first')
+            if self._robot_lock_held():
+                raise ValueError('A robot link is running on this data root; end it in Navigate before starting a simulated robot')
             if any(s['status'] in SUITE_ACTIVE for s in self.suites.values()):
                 raise ValueError('A suite is running; cancel it or wait before starting a navigation session')
             if len(list((self.root/'jobs').glob('job-*'))) >= MAX_JOBS:
@@ -967,8 +982,8 @@ class Workbench:
         if config is None:
             raise ValueError(reason)
         with self.lock:
-            if any(j['status'] in ACTIVE_STATES or (j.get('kind') == 'robot' and j['status'] == 'detached') for j in self.jobs.values()):
-                raise ValueError('End the active session, robot link or simulation before connecting to the robot')
+            if any(j['status'] in ACTIVE_STATES or j['status'] == 'detached' for j in self.jobs.values()) or self._lease_held():
+                raise ValueError('End the active session, robot link or simulation (also one a previous gateway started) before connecting to the robot')
             if any(s['status'] in SUITE_ACTIVE for s in self.suites.values()):
                 raise ValueError('A suite is running; cancel it or wait before connecting to the robot')
             if len(list((self.root/'jobs').glob('job-*'))) >= MAX_JOBS:
@@ -1062,9 +1077,13 @@ class Workbench:
             inbox = job['output']/'run/inbox'
             if not inbox.is_dir():
                 raise ValueError('The session is still starting; try again in a moment')
-            if job.get('_seq', 0) >= MAX_NAV_COMMANDS:
+            # The next sequence number follows everything already in the inbox, so a command written after a gateway
+            # restart (when the in-memory counter starts again) never reuses or overwrites a file (verification NEW-1).
+            on_disk = [int(n[:6]) for n in os.listdir(inbox) if len(n) >= 11 and n[:6].isdigit() and n.endswith('.json')]
+            job['_seq'] = max([job.get('_seq', 0), *on_disk])
+            if job['_seq'] >= MAX_NAV_COMMANDS:
                 raise ValueError('Command limit reached for this session')
-            job['_seq'] = job.get('_seq', 0) + 1
+            job['_seq'] += 1
             body.update(seq=job['_seq'], issued_unix_s=time.time())
             atomic_json(inbox/f"{body['seq']:06d}.json", body)
         return {'id': key, 'seq': body['seq'], 'cmd': cmd, 'status': 'queued'}
@@ -1163,8 +1182,10 @@ class Workbench:
         truth = ((request.get('map') or {}).get('boxes')) if job.get('kind') == 'navigation' else None
         start = navigation.get('start_xy') or [0, 0]
         label_text = f"Twin · {navigation.get('map_label') or navigation.get('label') or job['id']}"[:120]
+        # Studio's reconstruction of a robot's LiDAR has no self filter or noise thresholds: fit coarser pieces there.
         arena = twin.twin_from_grid(grid, start_xy=start, start_yaw_rad=navigation.get('start_yaw_rad', 0.0),
-                                    goal_xy=goal, label=label_text, truth_boxes=truth)
+                                    goal_xy=goal, label=label_text, truth_boxes=truth,
+                                    min_area_m2=0.04 if job.get('kind') == 'robot' else 0.01)
         if not arena['boxes']:
             raise ValueError("The robot's map shows no obstacles, so a twin would be empty; use the flat-ground world instead")
         quality = arena.get('quality')
@@ -1330,7 +1351,7 @@ class Workbench:
             if compact:
                 # Result summaries are bounded on disk; only outcome/duration in lists.
                 if summary is not None:
-                    report = summary.get('report', {})
+                    report = summary.get('report') or {}  # a refused robot-link config writes report: null
                     result['summary'] = {'status': summary.get('status'), 'wall_time_s': summary.get('wall_time_s'),
                                          'outcome': report.get('outcome'), 'elapsed_s': report.get('elapsed_s')}
                 return copy.deepcopy(result)
@@ -1387,6 +1408,8 @@ class Workbench:
             # the rehearsal reader's 64 MiB default.
             return read_json(final, SESSION_READ_BYTES if job.get('kind') in ('navigation', 'robot') else 64 * 1024 * 1024)
         latest = job['latest']
+        if job.get('recovered'):  # a detached session: read its files, never a cached snapshot
+            latest = job['latest'] = self._optional_json(job['output']/'run/latest.json', 16*1024*1024)
         if not latest or not latest.get('frame') or not latest.get('metadata'):
             raise ValueError('Simulation is initializing; state and model are not available yet')
         metadata = dict(latest['metadata'], catalog_id=key, duration_s=max(.02, latest['frame']['time']), incomplete=True)

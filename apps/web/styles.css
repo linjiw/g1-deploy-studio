@@ -472,3 +472,6 @@ body.arena-preview .vp-hud, body.arena-preview .viewport-meta { display: none; }
 .hardware-off.robot-live { color: var(--c-amber); border-color: #6a5232; }
 .nav-node-goal { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; margin: 2px 0 4px; }
 .nav-ready h4 { margin-bottom: 4px; }
+/* A live navigation session follows the robot: playback controls belong to its recording, not the live view. */
+body.live-navigation #restart, body.live-navigation #step-back, body.live-navigation #play, body.live-navigation #step-forward,
+body.live-navigation .transport-right .check, body.live-navigation .transport-right .speed-label { display: none; }

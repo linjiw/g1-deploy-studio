@@ -426,7 +426,9 @@ def _run(req, output, inbox, started):
                                    'label': 'True world (simulation only; the robot does not see this)'},
                    'events': S['events'][-30:],
                    'progress': {'simulation_time_s': sim_t, 'wall_time_s': now - started,
-                                'real_time_factor': (S['motion_ticks'] * DT) / max(1e-6, S.get('motion_wall', 0.0)) if S.get('motion_wall') else None,
+                                # Count the stretch in progress too, or the live factor inflates after the first walk.
+                                'real_time_factor': ((S['motion_ticks'] * DT) / motion_wall) if (motion_wall := S.get('motion_wall', 0.0)
+                                                    + (now - S['moving_since'] if S.get('moving_since') else 0.0)) > 0.5 else None,
                                 'frames': len(frames), 'paused': S['paused']}}
         _atomic(output / 'latest.json', payload)
 
@@ -665,6 +667,7 @@ def _run(req, output, inbox, started):
             if motion_wall_started is not None:
                 S['motion_wall'] += time.monotonic() - motion_wall_started
                 motion_wall_started = None
+            S['moving_since'] = None
             if time.monotonic() - S['last_command_wall'] > req['idle_timeout_s']:
                 S['ending'], S['end_reason'] = True, f"idle for {req['idle_timeout_s']:.0f} s"
                 break
@@ -673,6 +676,7 @@ def _run(req, output, inbox, started):
             continue
         if motion_wall_started is None:
             motion_wall_started = time.monotonic()
+        S['moving_since'] = motion_wall_started
         tick = S['tick']
         meas = sim.measure()
         true_q = meas['qpos']

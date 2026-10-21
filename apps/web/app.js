@@ -111,7 +111,11 @@ async function loadSession(id, { keepCamera = false } = {}) {
     if (state.workspace === 'system') renderSystem().catch(() => {});
     return true;
   } catch (error) {
-    if (generation === state.loadGeneration) { $('loading-overlay').hidden = true; showError(`Cannot open this recording: ${error.message}`); console.error(error); }
+    if (generation === state.loadGeneration) {
+      $('loading-overlay').hidden = true; showError(`Cannot open this recording: ${error.message}`); console.error(error);
+      // The picker names what the view shows, never the recording that failed to open (validation D3).
+      if (state.sessionId && [...$('session-picker').options].some(o => o.value === state.sessionId)) $('session-picker').value = state.sessionId;
+    }
     return false;
   } finally {
     if (generation === state.loadGeneration) state.loading = false;
@@ -129,6 +133,7 @@ function updateModeBadge() {
   }
   const fid = fidelity(m), level = fid.short ?? (fid.level === 'L2-approx' ? 'L2≈' : fid.level);
   const detached = live && state.liveStatus === 'detached';
+  document.body.classList.toggle('live-navigation', (m.kind === 'navigation' || m.recording_kind === 'robot-link') && (live || m.mode === 'live'));
   if (m.kind === 'navigation' || m.recording_kind === 'robot-link') {
     const real = m.recording_kind === 'robot-link' || m.robot === 'real', running = live || m.mode === 'live';
     $('mode-badge').textContent = running ? (real ? '● LIVE · REAL ROBOT · OBSERVE + GOALS' : `● LIVE · SIMULATED ROBOT · ${level}`)

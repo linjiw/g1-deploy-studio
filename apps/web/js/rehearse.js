@@ -79,7 +79,7 @@ export function render() {
   const suiteRuns = list.length * rh.seeds, suiteLimit = rh.catalog.limits?.suite_runs ?? 48;
   root.innerHTML = `
     <div class="panel-section"><h4>Flow research sync</h4>${research.available
-      ? `<div class="research-sync">${chip('configured', research.basis)} Adopted block <strong>${escape(research.adopted_block)}</strong> · ${escape(research.adopted_at)} · commit <code>${escape(research.adopted_commit)}</code></div>${research.last_update ? `<details class="tiny research-note"><summary>Latest research note</summary>${escape(research.last_update)}</details>` : ''}`
+      ? `<div class="research-sync">${chip('configured', research.basis)} Adopted block <strong>${escape(research.adopted_block)}</strong> · ${escape(research.adopted_at)} ${research.adopted_commit ? ` · commit <code>${escape(research.adopted_commit)}</code>` : research.adopted_reference ? ` · <code>${escape(research.adopted_reference)}</code>` : ''}${research.adopted_description ? ` · ${escape(research.adopted_description)}` : ''}</div>${research.last_update ? `<details class="tiny research-note"><summary>Latest research note</summary>${escape(research.last_update)}</details>` : ''}`
       : `<div class="callout warning">${escape(research.reason ?? 'Flow research tracker unavailable')}</div>`}
       ${rh.catalog.policies.some(p => p.matches_adopted) ? '' : '<p class="tiny warn-text">No deployable Studio profile matches the adopted block yet.</p>'}</div>
     <div class="panel-section"><h4>Policy profile</h4><div class="policy-list">${rh.catalog.policies.map(p => policyCard(p, research)).join('')}</div></div>

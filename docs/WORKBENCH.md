@@ -59,7 +59,7 @@ Open **Rehearse**, or click **Rehearse →** after saving an arena.
 
 Cancel signals only this gateway's own process group. It is a simulation control, not an emergency stop. Closing the browser does not cancel a run.
 
-**Gateway restarts.** A worker can outlive its gateway, for example after a gateway-only crash. Stopping the systemd unit stops the worker too.
+**Gateway restarts.** A worker can outlive its gateway, for example after a gateway-only crash. Stopping the systemd unit stops the worker too. A navigation session or robot link that outlives its gateway is shown as detached in Navigate; End stops it through its inbox and its recording is kept. While one is detached, no new simulation, session or robot link starts on that data root.
 
 - When the gateway comes back, the run shows **DETACHED**.
 - The new gateway reads the run's files but never signals the process, so the run cannot be cancelled from the page.
@@ -101,7 +101,7 @@ Bundle-profile runs also record causal LiDAR and maps at 5 Hz. WX runs record no
 
 ## API (loopback only; POST needs the same-origin token)
 
-`GET /api/workbench`, `/api/map?id=`, `/api/scenarios`, `/api/jobs[?id=&light=1&perception_after=]`, `/api/suites[?id=]`, `/api/runs`, `/api/policies`, `/api/robot`, `/api/sensors?session=&time=[&masks=1]`, `/api/session?id=` (gzip + ETag), `/api/version`.
+`GET /api/workbench`, `/api/map?id=`, `/api/scenarios`, `/api/jobs[?id=&light=1&perception_after=]`, `/api/suites[?id=]`, `/api/runs`, `/api/policies`, `/api/robot`, `/api/sensors?session=&time=[&masks=1]`, `/api/session?id=` (gzip + ETag), `/api/version`, `/api/safety`, and Navigate's `/api/nav/check?id=&x=&y=`, `/api/nav/map?id=`, `/api/nav/robot`, `/api/nav/options`.
 
 `POST /api/scenarios`, `/api/arenas`, `/api/maps/import`, `/api/jobs`, `/api/jobs/cancel`, `/api/suites`, `/api/suites/cancel`, and Navigate's `/api/nav/start`, `/api/nav/command`, `/api/nav/twin`, `/api/nav/connect` ([NAVIGATE.md](NAVIGATE.md)). No other mutation or control endpoint exists, and none reaches a motor.
 

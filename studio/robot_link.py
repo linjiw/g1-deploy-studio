@@ -112,7 +112,7 @@ MAX_SESSION_BYTES = 60 * 1024 * 1024
 CAPTURE_DEFAULT_BYTES = 64 * 1024 * 1024
 CAPTURE_MAX_BYTES = 128 * 1024 * 1024
 MAX_MAP_SIDE = 1201  # studio.goal_check.MAX_SIDE: the gateway's goal check loads at most this many cells per side
-# finalize: the gateway sends SIGKILL 3 s after SIGTERM (workbench._terminate). Threads get FINALIZE_JOIN_S together;
+# finalize: the gateway sends SIGKILL SESSION_TERM_GRACE_S (20 s) after SIGTERM for robot links (workbench._terminate). Threads get FINALIZE_JOIN_S together;
 # the capture writer drains in parallel with the recording until FINALIZE_CAPTURE_BY_S after the stop.
 FINALIZE_JOIN_S = 1.0
 FINALIZE_CAPTURE_BY_S = 2.5

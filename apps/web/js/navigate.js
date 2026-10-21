@@ -150,6 +150,7 @@ async function startSession() {
 export async function pickGoal(xy) {
   const n = navState();
   if (!isActive(nav.job) || !n) return;
+  if (nav.job.status === 'detached') { nav.notice = { kind: 'warning', text: 'This session was started by a previous gateway: End it, then start a new one.' }; renderLive(); return; }
   if (!n.can?.goal) {
     nav.notice = { kind: 'warning', text: n.can_reasons?.goal ?? (n.phase === 'RUN' || n.phase === 'PRESCAN' ? 'Goals are placed while the robot stands, as on the robot. Press Stand first or wait for it to arrive.' : 'The robot cannot take a goal right now.') };
     renderLive(); return;
@@ -180,6 +181,7 @@ export function overlay() {
   return { pick: live ? nav.pick?.xy : null, pickStatus: status, path: live ? nav.pick?.check?.path_xy : null,
     goal: goal?.xy ?? null, staged: !!goal && n?.phase !== 'RUN' && n?.phase !== 'PRESCAN' && n?.can?.go, walks: live ? walks : [],
     goalUnverified: !!(goal && goal.verification && goal.verification !== 'verified'),
+    goalLabel: goal?.verification === 'external' ? 'NODE GOAL · NOT FROM STUDIO' : goal?.verification === 'unverified' ? 'NODE GOAL · UNVERIFIED' : null,
     bounds: live ? bounds : null, boundsLabel: m?.origin_xy ? 'planner memory · assumed' : 'planner memory', radius: 0.4 };
 }
 
@@ -359,7 +361,8 @@ export function renderLive() {
   root.dataset.key = key;
   const real = isReal(job);
   const [phaseText, tone] = phaseLabel(n, real);
-  const can = n?.can ?? {};
+  // A session a previous gateway started can only be ended from here; its own `can` describes the process, not us.
+  const can = job.status === 'detached' ? { end: true } : (n?.can ?? {});
   const goal = n?.goal;
   const legs = n?.legs ?? [];
   const pick = nav.pick;

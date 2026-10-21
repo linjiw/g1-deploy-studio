@@ -40,6 +40,8 @@ The gateway treats both the same way: a session directory with a live snapshot, 
 
 ## 2. Session directory
 
+A session a previous gateway started keeps running after a gateway restart (`detached`): Navigate shows it and End stops it through its inbox, whose sequence numbers continue from the files already there.
+
 ```text
 <data_root>/jobs/<id>/run/
   latest.json        live snapshot, atomically replaced (schema below)
@@ -56,19 +58,22 @@ The existing worker snapshot (`frame`, `perception`, `environment`, `metadata`, 
 ```text
 kind: "navigation"
 robot: "simulated" | "real"
+heartbeat: {monotonic, clock_domain}                                  (liveness while frames pause)
 navigation: {
-  phase: BOOT | WAIT | PRESCAN | RUN | ARRIVED | STOPPED | ENDED     (node.py phases + BOOT/ENDED)
-  standing: bool
+  phase: BOOT | WAIT | PRESCAN | RUN | ARRIVED | STOPPED | ENDED     (node.py phases + BOOT/ENDED; robot: null until known)
+  paused, standing, fallen: bool                                       (paused: simulated time stopped, waiting)
   goal: {xy: [x, y], frame_id, seq, staged_at_s} | null
-  goal_dist_m: number | null
-  legs: [{index, goal_xy, staged_at_s, go_at_s, start_xy, end_s, outcome, duration_s, path_m, final_dist_m,
-          max_contact_n, plans}]
+  goal_dist_m: number | null                                           (from the pose estimate)
+  legs: [{index (from 1), goal_xy, staged_at_s, go_at_s, start_xy, end_s, outcome, duration_s, path_m,
+          final_dist_m, final_dist_true_m, distance_basis, max_contact_n, plans, reason}]
+          outcome: arrived | stopped | estop | fell | session_end
   commands: [{seq, cmd, status: applied | rejected, reason, time_s}]     (last 20)
-  can: {goal, go, stand, end}                                          (what the operator may do now)
+  can: {goal, go, stand, takeover, end}                                (what the operator may do now)
   go_note: string | null                                               (real robot: where Go happens)
-  streams: [{id, label, age_s, rate_hz, threshold_s, status: fresh | stale | unavailable}]
-  map: {basis, seq, observed_fraction, updated_s}
+  streams: [{id, label, age_s, rate_hz, threshold_s, status: fresh | stale | unavailable | paused}]
+  map: {basis, seq, observed_fraction, updated_s, file}               (robot: also file_seq, reset_count)
   check: <the last goal check, §5>
+  pending_stand, holding_plan_end, end_reason, motion_s, max_motion_s  (simulated robot)
 }
 ```
 

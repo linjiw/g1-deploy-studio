@@ -585,7 +585,7 @@ export function setNavOverlay(o = null) {
   }
   if (Array.isArray(o.goal)) {
     const unverified = o.goalUnverified;
-    const g = navMarker(unverified ? 'NODE GOAL · UNVERIFIED' : o.staged ? 'GOAL · STAGED' : 'GOAL', unverified ? 0xf08c85 : 0xefbb70, o.radius ?? 0.4);
+    const g = navMarker(unverified ? (o.goalLabel ?? 'NODE GOAL · UNVERIFIED') : o.staged ? 'GOAL · STAGED' : 'GOAL', unverified ? 0xf08c85 : 0xefbb70, o.radius ?? 0.4);
     g.position.set(o.goal[0], o.goal[1], 0); view.navGroup.add(g);
   }
   if (Array.isArray(o.path) && o.path.length > 1) {
