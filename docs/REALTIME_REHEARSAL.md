@@ -77,4 +77,4 @@ M5 needs a separate safety review:
 - a robot-side collector with allowlisted DDS readers (`rt/lowstate`, `rt/secondary_imu`, `rt/utlidar/cloud_livox_mid360`) and the `g1_debug` subscriber;
 - an observe-only banner in the live view.
 
-The first passive reading must include `LowState.mode_machine`: it selects the hardware actuator limits ([ROBOT_CONTRACT.md](ROBOT_CONTRACT.md)). Studio never connects to the node control port `:5562` and never writes commands. A proposed, undecided change for goal staging is in [REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md) §6.
+The first passive reading must include `LowState.mode_machine`: it selects the hardware actuator limits ([ROBOT_CONTRACT.md](ROBOT_CONTRACT.md)). Studio writes no motor commands. Since 2026-10-21 (owner decision) Navigate's robot link may send node.py a checked goal while the robot stands and a stand request, never Go or quit ([NAVIGATE.md](NAVIGATE.md)).

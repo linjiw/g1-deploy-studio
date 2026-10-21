@@ -3,11 +3,13 @@
 A local cockpit for rehearsing Unitree G1 navigation policies before deployment. You can:
 - build a navigation arena (walls, overhead beams, start/goal presets);
 - run a pinned policy profile in an isolated CPU simulation (Flow planner → SONIC ONNX tracker → MuJoCo);
-- watch it live, replay it causally with synchronized sensors, model boundaries and timing, and compare runs.
+- watch it live, replay it causally with synchronized sensors, model boundaries and timing, and compare runs;
+- **Navigate**: put goals on the robot's own LiDAR map and watch it walk, with a simulated robot that follows the planner node's rules, or with the real robot through the deploy PC (see [docs/NAVIGATE.md](docs/NAVIGATE.md));
+- turn a session's map into an arena twin, and print a course build sheet for a real floor.
 
 Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the same timeline.
 
-**Hardware stays disabled.** Studio has no robot connection, DDS participant or motor-command path. It never publishes `rt/lowcmd`, hand commands or ZMQ `pose`, and never connects to the planner node control port. A simulation result is not hardware readiness.
+**No motor commands, ever.** Studio has no DDS participant and no motor-command path: it never publishes `rt/lowcmd`, hand commands or ZMQ `pose`. With the real robot (Navigate's robot link, on the deploy PC, loopback only) it may send exactly two things to the planner node's control socket: a goal, only while the robot stands and only after the goal passed its checks, and a stand request. It never sends Go or quit; the operator starts every walk on the console or the remote and keeps the physical E-stop. A simulation result is not hardware readiness, and the robot link has been tested against a protocol fixture only.
 
 **Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md), and a narrated 7-minute introduction is in `~/research-data/g1-deploy-studio/evidence/video-20261020/`.
 

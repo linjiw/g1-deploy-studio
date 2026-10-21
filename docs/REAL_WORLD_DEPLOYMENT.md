@@ -6,7 +6,7 @@ The question this page answers: once a course is built in a real room, how do we
 
 ## 1. Where we are
 
-The robot-side stack already exists in g1-student-deploy. Studio rehearses it in simulation but does not connect to it yet.
+The robot-side stack already exists in g1-student-deploy. When this design was written Studio rehearsed it in simulation and did not connect to it; the robot link (built since, [NAVIGATE.md](NAVIGATE.md)) now does, on the deploy PC.
 
 | Need | Robot side today (g1-student-deploy) | Studio today |
 |---|---|---|
@@ -186,7 +186,7 @@ The L3 chain (`tools/l3_rehearsal.sh`) runs the same `node.py`, with the same po
 
 ## 11. Decisions needed
 
-1. **Control socket.** May Studio send goals to the node's control socket in Phase 2? Until you decide, Studio stays read-only and never connects to `:5562`.
+1. **Control socket.** Decided 2026-10-21: Studio may send `status`, a checked `goal` and `stand`; never `go` or `quit`.
 2. **Deploy-repo changes.** May we propose U1–U3 to g1-student-deploy's owner? We would not edit that repository ourselves.
 3. **Policy for real runs.** The bundle (LiDAR student) is the only policy that runs on the robot's own perception today. WX-RF waits for a LiDAR-conditioned block from Flow.
 4. **First real course.** Its size (inside the 12 × 12 m memory), its obstacles, and confirmation that nothing is overhead until H7.

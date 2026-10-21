@@ -1,7 +1,7 @@
-# G1 Deploy Studio · status (2026-10-20)
+# G1 Deploy Studio · status (2026-10-21)
 
 Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navigation policies for the Unitree G1:
-**Flow planner → versioned ZMQ pose reference → SONIC tracker → Unitree DDS**. It observes and rehearses; it owns no command path.
+**Flow planner → versioned ZMQ pose reference → SONIC tracker → Unitree DDS**. It observes and rehearses and owns no motor-command path. Its only robot-side commands are a checked goal (while the robot stands) and a stand request to node.py; Go stays with the operator.
 
 - **Service:** http://127.0.0.1:8790/ (systemd user unit `g1-deploy-studio`, see [SERVICE.md](SERVICE.md)). The served commit is shown in the status bar and at `/api/version`.
 - **Remote:** `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open http://localhost:8790/.

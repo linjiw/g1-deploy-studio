@@ -133,6 +133,8 @@ export function download(name, data, type = 'application/json') {
 
 export const yawOf = q => Array.isArray(q) ? Math.atan2(2 * (q[0] * q[3] + q[1] * q[2]), 1 - 2 * (q[2] * q[2] + q[3] * q[3])) : null;
 export const hasPose = f => Array.isArray(f?.position) && Array.isArray(f?.quaternion_wxyz) && Array.isArray(f?.qpos);
+// A root pose without joints (a robot link without the runner's g1_debug): drawn as a pose marker, never as joints.
+export const hasRoot = f => Array.isArray(f?.position) && Array.isArray(f?.quaternion_wxyz);
 export const hasReferencePose = f => hasPose(f) && Array.isArray(f?.reference?.position) && Array.isArray(f?.reference?.quaternion_wxyz);
 
 // Same conservative standing-footprint preflight the server applies (workbench.point_status).

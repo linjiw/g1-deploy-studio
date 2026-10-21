@@ -1,6 +1,6 @@
 // G1 Deploy Studio browser entry: causal replay, owned CPU rehearsals and
 // navigation arenas. The browser never talks to a robot, DDS or ZMQ.
-import { $, escape, num, vector, clock, finite, hasPose, hasReferencePose, request, setToken, setTokenRefresher, on, emit,
+import { $, escape, num, vector, clock, finite, hasPose, hasRoot, hasReferencePose, request, setToken, setTokenRefresher, on, emit,
   updateView, updateViewSoon, EVIDENCE, chip, outcomeChip, yawOf } from './js/util.js';
 import * as scene from './js/scene.js';
 import { initTimeline, setTimelineSession, setTimelineCursor, refreshTimelineLive } from './js/timeline.js';
@@ -84,7 +84,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     $('footer-source').textContent = m.source_path ?? '';
     $('timeline').min = String(session.frames[0].time); $('timeline').max = String(m.duration_s); $('timeline').value = String(state.time);
     $('duration-time').textContent = clock(m.duration_s);
-    const hasState = session.frames.some(hasPose), hasRef = session.frames.some(hasReferencePose);
+    const hasState = session.frames.some(hasPose) || session.frames.some(hasRoot), hasRef = session.frames.some(hasReferencePose);
     for (const [layer, enabled] of [['robot', hasState], ['future', hasState], ['trajectory', hasState], ['environment', hasState], ['frames', hasState], ['reference', hasRef]]) $(`layer-${layer}`).disabled = !enabled;
     $('layer-perception').disabled = !session.perception?.available;
     $('layer-navigation').disabled = !m.goal_xy && !m.start_xy;
@@ -200,7 +200,7 @@ function hudItem(label, value, unit, tone = '') {
 function updateHud(sample) {
   const f = state.frame, m = state.measuredFrame ?? f, meta = state.session.metadata, h = sampleHealth(state);
   const crit = meta.navigation_criteria ?? {};
-  if (!hasPose(m)) {
+  if (!hasPose(m) && !hasRoot(m)) {
     $('hud').innerHTML = hudItem('Receiver', h.stream_status ?? 'unavailable', '', h.stream_status === 'fresh' ? 'good' : 'warn') + hudItem('Reference age', h.reference_age_ms, 'ms') + hudItem('Receive rate', h.observed_rate_hz, 'Hz');
     $('pose-caption').textContent = 'ROBOT STATE UNAVAILABLE · no measured or world-root pose recorded';
     $('reference-caption').textContent = f.reference ? 'REFERENCE VALUES · pose stream · no world-root position' : 'REFERENCE UNAVAILABLE at this time';
@@ -216,7 +216,7 @@ function updateHud(sample) {
     speedLabel = 'Speed (fd)';
     // Older recordings lack root velocity: finite difference of recorded poses (labelled in the tooltip).
     const frames = state.session.frames, i = state.frameIndex, a = frames[Math.max(0, i - 2)], b = frames[Math.min(frames.length - 1, i + 2)];
-    if (hasPose(a) && hasPose(b) && b.time > a.time) speed = Math.hypot(b.position[0] - a.position[0], b.position[1] - a.position[1]) / (b.time - a.time);
+    if (hasRoot(a) && hasRoot(b) && b.time > a.time) speed = Math.hypot(b.position[0] - a.position[0], b.position[1] - a.position[1]) / (b.time - a.time);
   }
   // Angle between body z and world z; 1 - 2(x² + y²) = cos(tilt), no folding beyond 90°.
   const q = m.quaternion_wxyz, tilt = Array.isArray(q) ? Math.acos(Math.max(-1, Math.min(1, 1 - 2 * (q[1] ** 2 + q[2] ** 2)))) : null;
@@ -342,7 +342,8 @@ async function attachLive(job) {
 }
 function appendLiveFrame(latest) {
   const frame = latest.frame;
-  if (!frame || !state.session || !hasPose(frame) || state.loading || !['simulation', 'live'].includes(state.session.metadata.mode)) return;
+  const rootOnly = !hasPose(frame) && hasRoot(frame) && state.session?.metadata?.recording_kind === 'robot-link';
+  if (!frame || !state.session || !(hasPose(frame) || rootOnly) || state.loading || !['simulation', 'live'].includes(state.session.metadata.mode)) return;
   state.runtime = latest.runtime ?? null; state.liveStatus = latest.status ?? null;
   const frames = state.session.frames, previous = frames.at(-1);
   if (previous && frame.time < previous.time) return;
@@ -384,6 +385,7 @@ function appendLiveFrame(latest) {
 // ------------------------------------------------------------------ Navigate (live navigation sessions)
 const navAttach = { loading: null, opened: null, layers: null, mapKey: null, mapLoading: false };
 const bytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+// Map cell codes -> texture; the same call gives Navigate the planner memory's square to draw.
 async function refreshNavMap(job, force = false) {
   const map = job?.latest?.navigation?.map, seq = map && 'file_seq' in map ? map.file_seq : map?.seq, key = `${job?.id}:${seq}:${job?.status}`;
   // Only once the session has written its map file (a robot link without a cloud stream never does).
@@ -393,10 +395,28 @@ async function refreshNavMap(job, force = false) {
     const map = await request(`/api/nav/map?id=${encodeURIComponent(job.id)}`);
     navAttach.mapKey = key;
     if (state.workspace === 'navigate') scene.setNavMap({ ...map, codes: bytes(map.codes), height: bytes(map.height_cm) });
+    const half = map.res_m / 2, far = (map.n - 1) * map.res_m + half;
+    if (job.kind !== 'robot') nav.mapBounds = [map.lo[0] - half, map.lo[1] - half, map.lo[0] + far, map.lo[1] + far];
+    scene.setNavOverlay(navOverlay());
   } catch { /* no map yet: the session has not published its memory */ }
   finally { navAttach.mapLoading = false; }
 }
+function robotLinkChrome(job) {
+  const live = job?.kind === 'robot' && ['starting', 'running', 'cancelling', 'detached'].includes(job.status);
+  const chip = $('hardware-chip');
+  chip.classList.toggle('robot-live', live);
+  chip.textContent = live ? '◈ Robot link · goal + stand only' : '◈ No motor commands';
+  $('footer-mode').lastChild.textContent = live
+    ? ' Loopback only · robot link live: goal and stand to node.py; never Go, quit or motor commands'
+    : ' Loopback only · replay, owned CPU simulation and the robot link (goal and stand only)';
+}
 async function attachNav(job) {
+  robotLinkChrome(job);
+  const waiting = job?.kind === 'robot' && !job?.latest?.frame && ['starting', 'running', 'detached'].includes(job?.status);
+  if (state.workspace === 'navigate') {
+    $('preview-note').hidden = !waiting;
+    if (waiting) $('preview-note').textContent = "Connected · waiting for the robot's LIO pose from the deploy PC. The view still shows the last recording.";
+  }
   if (!job?.latest?.frame) return;
   if (state.sessionId !== job.id) {
     if (navAttach.loading === job.id) return;
@@ -424,6 +444,8 @@ on('navigate:job', job => attachNav(job).catch(e => showError(e.message)));
 on('navigate:overlay', () => { if (state.workspace === 'navigate') scene.setNavOverlay(navOverlay()); });
 on('navigate:layers', () => { if (state.workspace === 'navigate') navLayers(true); $('layer-environment').checked = nav.showTruth; syncLayers(); });
 on('navigate:finished', async job => {
+  robotLinkChrome(job);
+  $('preview-note').hidden = true;
   await refreshSessionList();
   if (job.result_session_id && state.sessionId === job.id && navAttach.opened !== job.id) {
     navAttach.opened = job.id;

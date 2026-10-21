@@ -18,7 +18,7 @@ const LANES = [
 function goalDistance(f, m) {
   // Navigation sessions carry the goal of each walk in the frame; between walks there is none.
   const g = f?.navigation ? f.navigation.goal_xy : m.goal_xy;
-  return g && hasPose(f) ? Math.hypot(f.position[0] - g[0], f.position[1] - g[1]) : null;
+  return g && Array.isArray(f?.position) ? Math.hypot(f.position[0] - g[0], f.position[1] - g[1]) : null;
 }
 
 const tl = { session: null, canvas: null, base: null, lanes: [], t0: 0, t1: 1, onSeek: null, cursor: 0, dragging: false };

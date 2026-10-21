@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-import { finite, hasPose, hasReferencePose, request, yawOf } from './util.js';
+import { finite, hasPose, hasRoot, hasReferencePose, request, yawOf } from './util.js';
 
 const up = new THREE.Vector3(0, 0, 1);
 const stl = new STLLoader();
@@ -69,13 +69,17 @@ function setPoints(layer, points) {
 
 function label(text, color) {
   const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 64;
+  const font = '600 28px Inter, system-ui, sans-serif';
+  const probe = canvas.getContext('2d'); probe.font = font;
+  // Wide enough for the text: longer labels get a wider sprite at the same height (no clipping).
+  const width = Math.max(256, Math.ceil(probe.measureText(text).width / 32) * 32 + 40);
+  canvas.width = width; canvas.height = 64;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#0d1620e6'; ctx.beginPath(); ctx.roundRect(4, 6, 248, 52, 10); ctx.fill();
-  ctx.font = '600 28px Inter, system-ui, sans-serif'; ctx.textAlign = 'center';
-  ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`; ctx.fillText(text, 128, 42);
+  ctx.fillStyle = '#0d1620e6'; ctx.beginPath(); ctx.roundRect(4, 6, width - 8, 52, 10); ctx.fill();
+  ctx.font = font; ctx.textAlign = 'center';
+  ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`; ctx.fillText(text, width / 2, 42);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: false, sizeAttenuation: false }));
-  sprite.scale.set(0.11, 0.0275, 1);
+  sprite.scale.set(0.11 * width / 256, 0.0275, 1);
   sprite.renderOrder = 10;
   return sprite;
 }
@@ -267,7 +271,8 @@ export function clearSessionScene() {
 
 export async function loadSessionScene(session, id, isCurrent) {
   const spec = session.metadata.model_path ? await request(`/api/model?id=${encodeURIComponent(id)}`, undefined, { cache: 'no-cache' }) : null;
-  const worldAvailable = session.frames.some(hasPose);
+  // A live robot link may stream the LIO pose before (or without) the runner's joints: build the scene for it too.
+  const worldAvailable = session.frames.some(hasPose) || session.frames.some(hasRoot);
   const names = session.joint_names ?? [];
   const [main, ref] = worldAvailable && spec
     ? await Promise.all([buildRobot(spec, names), buildRobot(spec, names, { opacity: 0.26 })]) : [null, null];
@@ -288,6 +293,8 @@ export async function loadSessionScene(session, id, isCurrent) {
   L.future = polyline(0xefbb70, 0.95, 512); L.reference = polyline(0x56d9d0, 0.75, 64); L.travelled = polyline(0x9fe6c8, 0.9, 8192);
   view.content.add(L.trajectory, L.future, L.reference, L.travelled);
   view.robotAxes = new THREE.AxesHelper(0.3); view.content.add(view.robotAxes);
+  view.rootMarker = navMarker('LIO POSE · NO JOINTS', 0x7fb4ff, 0.3, true); view.rootMarker.visible = false;
+  view.content.add(view.rootMarker);
   view.waypoint = new THREE.Mesh(new THREE.RingGeometry(0.09, 0.13, 32), new THREE.MeshBasicMaterial({ color: 0xefbb70, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }));
   view.content.add(view.waypoint);
   const m = session.metadata;
@@ -317,10 +324,18 @@ export function renderFrameScene(state) {
   const f = state.frame, measured = state.measuredFrame ?? f;
   if (!f || !view.robot) { applyLayers(state); return; }
   const key = `${state.frameIndex}:${state.frozenFrame ? state.frozenFrame.time : ''}`;
-  if (key !== view.lastPoseKey && hasPose(measured)) {
+  const posed = hasPose(measured), rooted = !posed && hasRoot(measured);
+  if (key !== view.lastPoseKey && (posed || rooted)) {
     view.lastPoseKey = key;
-    pose(view.robot, measured);
-    if (hasReferencePose(f)) {
+    if (posed) pose(view.robot, measured);
+    if (view.rootMarker) {
+      view.rootMarker.userData.rooted = rooted;
+      if (rooted) {
+        view.rootMarker.position.set(measured.position[0], measured.position[1], 0);
+        const arrow = view.rootMarker.getObjectByName('heading'); if (arrow) arrow.rotation.z = yawOf(measured.quaternion_wxyz) ?? 0;
+      }
+    }
+    if (posed && hasReferencePose(f)) {
       pose(view.ghost, f, f.reference);
       const window = f.reference.window ?? [];
       view.futures.forEach((p, i) => { const w = window[Math.min(window.length - 1, i === 0 ? 4 : 9)]; if (w) pose(p, f, w); });
@@ -330,7 +345,7 @@ export function renderFrameScene(state) {
     setPolyline(view.lines.reference, f.reference?.window?.map(w => w.position) ?? [], null);
     const frames = state.session.frames, upto = [];
     const step = Math.max(1, Math.ceil(state.frameIndex / 4000));
-    for (let i = 0; i <= state.frameIndex; i += step) if (hasPose(frames[i])) upto.push(frames[i].position);
+    for (let i = 0; i <= state.frameIndex; i += step) if (hasRoot(frames[i])) upto.push(frames[i].position);
     upto.push(measured.position);
     setPolyline(view.lines.travelled, upto, 0.025);
     if (f.plan?.waypoint) view.waypoint.position.set(f.plan.waypoint[0], f.plan.waypoint[1], 0.015);
@@ -368,6 +383,7 @@ function followCamera(position, playing) {
 export function applyLayers(state = {}) {
   const L = view.layers, f = state.frame, m = state.measuredFrame ?? f;
   if (view.robot) view.robot.root.visible = L.robot && hasPose(m);
+  if (view.rootMarker) view.rootMarker.visible = L.robot && !hasPose(m) && hasRoot(m);
   if (view.ghost) view.ghost.root.visible = L.reference && hasReferencePose(f);
   view.futures.forEach(p => { p.root.visible = L.future && !!f?.reference; });
   if (view.lines.trajectory) {
@@ -380,7 +396,7 @@ export function applyLayers(state = {}) {
   if (view.mapLayer) view.mapLayer.visible = L.perception && !!view.session?.perception?.available && !view.navMapActive;
   if (view.navMap) view.navMap.visible = L.perception && !!view.navMapActive;
   for (const marker of Object.values(view.markers)) marker.visible = L.navigation && !marker.userData.hidden;
-  if (view.robotAxes) view.robotAxes.visible = L.frames && hasPose(m);
+  if (view.robotAxes) view.robotAxes.visible = L.frames && hasRoot(m);
   view.worldAxes.visible = L.frames;
   view.sensorLayer.visible = L.sensors;
   markDirty();
@@ -561,8 +577,15 @@ export function setNavOverlay(o = null) {
     const m = navMarker(`${w.index} ${ok ? '✓' : '·'}`, ok ? 0x5fd39b : 0x9fb3c4, 0.16);
     m.position.set(w.xy[0], w.xy[1], 0); view.navGroup.add(m);
   }
+  if (Array.isArray(o.bounds)) {
+    const [x0, y0, x1, y1] = o.bounds, edge = polyline(0x56d9d0, 0.45, 5);
+    setPolyline(edge, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], 0.02); view.navGroup.add(edge);
+    const tag = label((o.boundsLabel ?? 'planner memory').toUpperCase(), 0x56d9d0); tag.position.set(x0 + 0.1, y1 - 0.1, 0.05); tag.center.set(0, 1);
+    view.navGroup.add(tag);
+  }
   if (Array.isArray(o.goal)) {
-    const g = navMarker(o.staged ? 'GOAL · STAGED' : 'GOAL', 0xefbb70, o.radius ?? 0.4);
+    const unverified = o.goalUnverified;
+    const g = navMarker(unverified ? 'NODE GOAL · UNVERIFIED' : o.staged ? 'GOAL · STAGED' : 'GOAL', unverified ? 0xf08c85 : 0xefbb70, o.radius ?? 0.4);
     g.position.set(o.goal[0], o.goal[1], 0); view.navGroup.add(g);
   }
   if (Array.isArray(o.path) && o.path.length > 1) {

@@ -64,7 +64,8 @@ await R.check('N1', 'Navigate workspace: rail button, robot choice, world and st
 
 await R.check('N2', 'Start: the robot stands, the map is the robot\'s memory, the true world is hidden, top camera', async () => {
   await page.click('#nav-start-session');
-  const s = await waitNav(s => s.nav?.phase === 'WAIT' && s.session === s.job && s.kind === 'navigation', 180000, 'WAIT');
+  // The map layer switches on just after the live session opens: wait for both.
+  const s = await waitNav(s => s.nav?.phase === 'WAIT' && s.session === s.job && s.kind === 'navigation' && s.layers.perception, 180000, 'WAIT');
   assert(s.mode === 'simulation', `live mode ${s.mode}`);
   assert(s.layers.perception === true && s.layers.environment === false, `layers ${JSON.stringify(s.layers)}`);
   assert(s.nav.can.goal && !s.nav.can.go && !s.nav.can.stand, `can ${JSON.stringify(s.nav.can)}`);

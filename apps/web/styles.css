@@ -468,3 +468,7 @@ body.arena-preview .vp-hud, body.arena-preview .viewport-meta { display: none; }
 .nav-recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .nav-recent li { display: flex; flex-direction: column; }
 .nav-recent small { color: var(--dim); font-size: 11px; padding-left: 4px; }
+.callout.danger { border-color: #7a3a3c; background: #2c1617; color: #ffd4d1; }
+.hardware-off.robot-live { color: var(--c-amber); border-color: #6a5232; }
+.nav-node-goal { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; margin: 2px 0 4px; }
+.nav-ready h4 { margin-bottom: 4px; }

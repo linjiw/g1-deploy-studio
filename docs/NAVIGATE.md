@@ -17,11 +17,13 @@ Advanced settings: planner budget (quick is about real time on this CPU; the dep
 
 **Real robot** (on the deploy PC, next to the robot, under the operator procedure):
 
-1. Copy `config/robot_link.example.json` to `config/robot_link.json` (ignored by Git). The endpoints are loopback only.
-2. Start the runner, `node.py` and the LIO bridge with the console as usual (`./g1 robot ...`), then open Navigate, choose **Real robot** and **Connect**.
-3. Studio shows the LIO pose, the LiDAR and its reconstruction of the map, the plan reference and every stream's age. Click a goal and **Send goal**. Studio converts it to the node's *ahead, left* command while the robot stands and reads it back from the node (within 5 cm, or it is refused).
-4. **Start the walk on the console (`g`) or the remote (F1).** Studio never sends Go. **Stand** asks the node to settle; the remote's D-up and Select, the gantry and the physical E-stop stay with people.
-5. **End session** stops Studio's link only. The robot session opens in Replay.
+1. Copy `config/robot_link.example.json` to `config/robot_link.json` (ignored by Git). The endpoints are loopback only. `limits.max_goal_distance_m` (default 3 m, the ladder's first walks) caps how far a goal may be.
+2. Start the runner and `node.py` with the console **on LIO odometry** (`./g1 robot ... --odom zmq`; the console's default `--odom leg` gives the node a different frame from Studio's, and Studio then refuses goals), and the LIO bridge with `--forward-cloud` so Studio sees the registered LiDAR. Open Navigate, choose **Real robot** and **Connect**.
+3. Studio shows the LIO pose (labelled LIO ESTIMATE), the LiDAR and its reconstruction of the map within the planner's 12 × 12 m memory, the plan reference and every stream's age. Without the runner's joint stream the robot is drawn as a pose marker.
+4. **The node's goal** is always shown with where it came from: *verified by Studio*, *unverified* (a readback that did not match, or a console `n`) or *not from Studio* (the launch `--goal`). Anything but verified is a red warning: do not press g.
+5. Click a goal and **Send goal**. The gateway checks it on the map and refuses it if the check cannot run or blocks (fail closed). The robot link converts it to the node's *ahead, left* command only while the robot has been still for 0.5 s, the node's position matches LIO within 0.1 m, and nothing is in flight; then it reads the goal back from the node's status. A readback off by more than 5 cm is marked unverified: node.py has already applied it and has no command to clear it, so stage a new goal.
+6. **Before g on the console** lists what must hold: fresh status and odometry, frames that match, the robot still, the goal verified, inside the memory and the distance limit, no deferred stand. **The operator starts the walk on the console (`g`) or the remote (F1)**; Studio never sends Go. **Stand** asks the node to settle; the remote's D-up and Select, the gantry and the physical E-stop stay with people. A deferred stand (a low ceiling near the robot in the node's map) is shown in red.
+7. **End session** stops Studio's link only. The robot session opens in Replay. A link that a previous gateway started is shown as detached and End still stops it.
 
 **Course on a real floor without the link (Phase 0):** in Arena, pick a saved arena and preset, click **Build sheet**, build the course from the sheet, and run the console command it prints.
 
@@ -85,7 +87,7 @@ The gateway assigns `seq` (strictly increasing) and writes `inbox/NNNNNN.json` a
 | `clear` | — | Sim only, a staged goal | Unstage it. Real robot: refused (node.py has no clear) |
 | `end` | — | Any time | Sim: stand, write the recording, exit. Real: stop the link (nothing is sent to the node) |
 
-For the real robot the gateway checks a goal on the link's map before writing it to the inbox; a blocked goal is refused there and never reaches the node. The link also requires fresh odometry (≤ 0.1 s) and node status (≤ 1.5 s) and no command in flight before it sends anything; phase and standing are `null` while the node's status is unknown.
+For the real robot the gateway checks a goal on the link's map before writing it to the inbox and refuses it when the check blocks or cannot run; the link refuses any goal without `check.ok` true. The link also requires fresh odometry (≤ 0.1 s) and node status (≤ 1.5 s), a still robot, matching frames and no command in flight before it sends a goal; Stand is sent on the last known phase. Before the first status the phase is `null`; when the status goes stale the last phase is kept with `phase_status: "stale"`.
 
 Every command produces an entry in `navigation.commands` and an event in the recording.
 
