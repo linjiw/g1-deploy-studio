@@ -116,13 +116,13 @@ class Session:
                 return c
         return None
 
-    def finish(self, timeout_s=300):
+    def finish(self, timeout_s=300, grace_s=30):
         try:
             self.process.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             os.killpg(self.process.pid, signal.SIGTERM)
             try:
-                self.process.wait(timeout=30)
+                self.process.wait(timeout=grace_s)
             except subprocess.TimeoutExpired:
                 os.killpg(self.process.pid, signal.SIGKILL)
                 self.process.wait()
@@ -131,6 +131,9 @@ class Session:
 
     def end(self):
         if self.process.poll() is None:
+            if _STOP.is_set():  # stopping the batch: no graceful End, or a booting worker outlives a killed parent
+                self.finish(timeout_s=0, grace_s=3)
+                return None
             self.send('end')
         return self.finish()
 
@@ -201,6 +204,8 @@ def walk(world_id, profile, folder, goal):
     done = read_json(folder / 'outcome.json')
     if done and done.get('finished'):
         return done
+    if _STOP.is_set():  # the batch is stopping: queued goals start no worker
+        return {'goal_id': goal['id'], 'goal_xy': goal['xy'], 'finished': False, 'error': 'batch stopped'}
     if folder.exists():
         import shutil
         shutil.rmtree(folder)  # an interrupted attempt: start it again from nothing
@@ -229,6 +234,8 @@ def walk(world_id, profile, folder, goal):
             out['error'] = 'walk did not finish within the wall-clock bound'
     finally:
         result = s.end()
+        if _STOP.is_set():
+            return {**out, 'finished': False, 'error': 'batch stopped'}  # nothing written: a resumed batch walks it again
         legs = ((result or {}).get('report') or {}).get('legs') or []
         if legs and not out.get('outcome'):
             leg = legs[-1]
@@ -253,7 +260,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     base = args.out / args.world
     base.mkdir(parents=True, exist_ok=True)
-    signal.signal(signal.SIGTERM, lambda *_: _STOP.set())
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda *_: _STOP.set())
     memory = probe(args.world, args.profile, base / 'probe')
     cells = candidate_goals(args.world, memory, args.spacing)
     write_json(base / 'goals.json', {'world': args.world, 'profile': args.profile, 'profile_label': PROFILES[args.profile]['label'],
@@ -280,6 +288,9 @@ def main(argv=None):
                 results[c['id']] = r
             status()
             print(f"{args.world} {len(results)}/{len(todo)} {c['id']} {r.get('outcome')} {r.get('error') or ''} {r.get('wall_s')}s", flush=True)
+    if _STOP.is_set():
+        print(f'{args.world}: stopped; run it again to resume', flush=True)
+        return 143  # non-zero, so record_all.sh (set -e) stops too instead of starting the next room
     return 0
 
 

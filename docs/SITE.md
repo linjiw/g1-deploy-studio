@@ -36,6 +36,8 @@ tools/site/build.sh _site <site-data> <media> && python3 -m http.server -d _site
 SITE_URL=http://127.0.0.1:8811/ node tools/site/check.mjs          # browser acceptance, desktop and phone
 ```
 
+To stop a batch, send the recorder SIGTERM or press Ctrl-C: queued goals start no worker, running workers are terminated, the room loop exits, and nothing half-walked is marked done, so the same command resumes it.
+
 The worker records the planner's memory as display codes at every 1 s snapshot when the request sets `record_grids` (off by default; Studio never sets it). The exporter keeps every second 20 ms tick (25 Hz), quantizes positions to millimetres and angles to milliradians, keeps up to 400 LiDAR returns per snapshot and stores the map as changes from the start map, which it checks is identical in every session of a room.
 
 ## Data format

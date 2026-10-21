@@ -74,6 +74,21 @@ class WorldTests(unittest.TestCase):
             nav_worker.validate_request(dict(base, record_grids=1))
 
 
+class RecorderStopTests(unittest.TestCase):
+    def test_a_stopping_batch_starts_no_worker(self):
+        from tools.site import record_goals
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / 'g00-00'
+            record_goals._STOP.set()
+            try:
+                r = record_goals.walk('detour', 'deploy', folder, {'id': 'g00-00', 'xy': [1.0, 0.0]})
+            finally:
+                record_goals._STOP.clear()
+            self.assertEqual(r['error'], 'batch stopped')
+            self.assertFalse(r['finished'])
+            self.assertFalse(folder.exists())  # no session folder, so no worker process was started
+
+
 class WalkExportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
