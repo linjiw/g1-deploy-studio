@@ -465,3 +465,6 @@ body.arena-preview .vp-hud, body.arena-preview .viewport-meta { display: none; }
 .nav-endpoints { display: grid; gap: 3px; margin: 6px 0; font-size: 11.5px; }
 .nav-endpoints div { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); }
 .callout.ok { border-color: #2d5a43; background: #132a1f; color: #c9f2dc; }
+.nav-recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.nav-recent li { display: flex; flex-direction: column; }
+.nav-recent small { color: var(--dim); font-size: 11px; padding-left: 4px; }

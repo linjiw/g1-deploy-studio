@@ -186,7 +186,8 @@ class Catalog:
             row = {"id": k, "label": v.get("label", k), "description": v.get("description", ""),
                    "available": Path(v["path"]).exists() or k in live,
                    "group": v.get("group") or ('CPU rehearsals' if k.startswith('job-') else 'Recordings')}
-            for field in ('outcome', 'policy_id', 'started_unix_s', 'scenario_label', 'map_id', 'status', 'suite_id'):
+            for field in ('outcome', 'policy_id', 'started_unix_s', 'scenario_label', 'map_id', 'status', 'suite_id',
+                          'kind', 'walks', 'arrived', 'robot'):
                 if v.get(field) is not None:
                     row[field] = v[field]
             sessions.append(row)
@@ -577,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": f"Invalid request value: {error}"}, status=422)
 
     POST_ROUTES = ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel',
-                   '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin')
+                   '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin', '/api/nav/connect')
 
     def do_POST(self):
         if not self.authorize_local():
@@ -618,6 +619,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = workbench.nav_command(data.get('id'), data)
             elif path == '/api/nav/twin':
                 result = workbench.nav_twin(data)
+            elif path == '/api/nav/connect':
+                result = workbench.connect_robot(data)
             else:
                 result = workbench.cancel_job(data.get('id'))
             return self.respond(result, status=201)

@@ -58,6 +58,8 @@ const TRANSPORT = {
 export function sessionKind(session) {
   const m = session?.metadata ?? {};
   if (m.recording_kind === 'recorded-wire-transport') return 'wire';
+  if (m.recording_kind === 'navigation-session') return 'worker';
+  if (m.recording_kind === 'robot-link') return 'robot';
   if (m.recording_kind === 'sonic-mujoco-lockstep') {
     if (m.privileged_map || m.policy_profile?.loader === 'flow-callback') return 'privileged';
     return /^studio\.(policy_worker|flow_policy_worker)/.test(m.provenance?.adapter ?? '') ? 'worker' : 'lockstep';
@@ -146,6 +148,7 @@ export const KIND_LABEL = {
   lockstep: 'Recorded in-process lockstep · no DDS/ZMQ in this run',
   wire: 'Recorded ZMQ transport capture · one observed receiver edge',
   'process-chain': 'Separate simulator / planner / C++ runner processes · edges configured, traffic not captured',
+  robot: 'Live robot through the deploy PC · Studio subscribed to the loopback streams; DDS and motor commands not seen',
   reference: 'Reference real-time deployment topology (source-configured)',
 };
 

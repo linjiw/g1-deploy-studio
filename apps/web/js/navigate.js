@@ -33,7 +33,7 @@ export async function initNavigate(catalog) {
   const worlds = runnableWorlds();
   nav.mapId ??= (worlds.find(m => m.origin === 'arena-editor') ?? worlds.find(m => m.id === 'flow-detour') ?? worlds[0])?.id;
   if (nav.mapId) await selectWorld(nav.mapId, false);
-  await refreshActive();
+  await Promise.all([refreshActive(), refreshSessions()]);
   render();
 }
 
@@ -196,7 +196,21 @@ function setupForm() {
       ${nav.notice ? `<div class="callout ${nav.notice.kind === 'ok' ? '' : 'warning'}">${escape(nav.notice.text)}</div>` : ''}
       <button id="nav-start-session" class="primary-action wide-button" ${nav.busy || !nav.mapId ? 'disabled' : ''}>Start session</button>
     </section>
+    ${recentSessions()}
     ${nav.finished ? '' : sessionHelp()}`;
+}
+
+function recentSessions() {
+  const list = (nav.sessions ?? []).filter(s => s.group === 'Navigation sessions' && s.available && s.status !== 'running')
+    .sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0)).slice(0, 5);
+  if (!list.length) return '';
+  return `<section class="panel-section"><h4>Recent sessions</h4><ul class="nav-recent">${list.map(s => `<li>
+    <button class="link-button" data-open-session="${escape(s.id)}">${escape((s.scenario_label ?? s.label ?? s.id).replace(/^Navigate · /, ''))}</button>
+    <small>${s.robot === 'real' ? 'real robot · ' : ''}${Number.isFinite(s.walks) ? `${s.arrived ?? 0}/${s.walks} walks arrived` : escape(s.status ?? '')} · #${escape(s.id.slice(-6))}</small></li>`).join('')}</ul></section>`;
+}
+
+async function refreshSessions() {
+  try { nav.sessions = (await request('/api/sessions')).sessions ?? []; } catch { nav.sessions = []; }
 }
 
 function sessionHelp() {
@@ -215,6 +229,7 @@ function bindSetup(root) {
     root.querySelector(`#${id}`)?.addEventListener('change', e => { nav.settings[key] = e.target.value; });
   root.querySelector('#nav-seed')?.addEventListener('change', e => { nav.settings.seed = Math.max(0, Math.floor(Number(e.target.value) || 0)); });
   root.querySelector('#nav-start-session')?.addEventListener('click', startSession);
+  root.querySelectorAll('[data-open-session]').forEach(b => b.addEventListener('click', () => emit('open-session', b.dataset.openSession)));
 }
 
 function realRobotCard() {
@@ -367,7 +382,10 @@ function finishedCard(job) {
 
 function bindFinished(root) {
   root.querySelector('#nav-open-replay')?.addEventListener('click', () => emit('open-session', nav.job.result_session_id));
-  root.querySelector('#nav-new')?.addEventListener('click', () => { nav.job = null; nav.finished = null; nav.notice = null; nav.pick = null; emit('navigate:overlay'); render(); });
+  root.querySelector('#nav-new')?.addEventListener('click', async () => {
+    nav.job = null; nav.finished = null; nav.notice = null; nav.pick = null; emit('navigate:overlay');
+    await refreshSessions(); render();
+  });
   root.querySelector('#nav-twin')?.addEventListener('click', makeTwin);
   root.querySelector('[data-open-arena]')?.addEventListener('click', e => emit('rehearse:edit-arena', e.target.dataset.openArena));
 }

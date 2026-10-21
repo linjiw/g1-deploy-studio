@@ -1,6 +1,29 @@
-# Navigate: goals on the robot's own map (contract)
+# Navigate: goals on the robot's own map
 
-**Status: in development (2026-10-21).** This page fixes the contracts shared by the Navigate workspace, the simulated robot (`studio/nav_worker.py`), the real-robot link (`studio/robot_link.py`), goal checks (`studio/goal_check.py`) and scan-to-twin (`studio/twin.py`). The design rationale is in [REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md).
+**Status (2026-10-21): built and validated in simulation; the real-robot link is checked against a protocol fixture, not a robot.** Design rationale: [REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md). The second half of this page is the contract between the workspace, the simulated robot (`studio/nav_worker.py`), the real-robot link (`studio/robot_link.py`), goal checks (`studio/goal_check.py`) and scan-to-twin (`studio/twin.py`).
+
+## Using it
+
+**Simulated robot** (no robot, no permissions needed):
+
+1. Open **Navigate** in the left rail. Choose a world (any arena or scene) and a start. The robot only knows the world through its own LiDAR, as on a real site.
+2. **Start session.** The robot stands and scans. The floor shows what it has seen: teal floor, amber low obstacles it can step over, red obstacles, purple overhead. Never-seen space stays empty. The true world is hidden; tick *Show the true world* to compare.
+3. **Click the map** to place a goal. Studio checks it on the robot's map: inside the map, seen and free, no low ceiling, a path through what it knows, and how much of that path is unseen. A blocked goal cannot be sent.
+4. **Send goal**, then **Go**. Watch the plan, the reference SONIC tracks, distance, speed and the timeline. **Stand** settles it to a stand (not an emergency stop).
+5. It arrives and stands; simulated time pauses while it waits. Place the next goal: the map keeps everything it saw.
+6. **End session.** The recording opens in Replay with every walk. **Make an arena twin** fits boxes to the robot's map and saves them as an arena you can edit, rehearse and print as a build sheet.
+
+Advanced settings: planner budget (quick is about real time on this CPU; the deployed budget is about 0.15× real time), planner latency (160 ms is the deploy PC budget, with predictive anchoring), hardware limits (G1 revision) and odometry drift (LIO-level or poor).
+
+**Real robot** (on the deploy PC, next to the robot, under the operator procedure):
+
+1. Copy `config/robot_link.example.json` to `config/robot_link.json` (ignored by Git). The endpoints are loopback only.
+2. Start the runner, `node.py` and the LIO bridge with the console as usual (`./g1 robot ...`), then open Navigate, choose **Real robot** and **Connect**.
+3. Studio shows the LIO pose, the LiDAR and its reconstruction of the map, the plan reference and every stream's age. Click a goal and **Send goal**. Studio converts it to the node's *ahead, left* command while the robot stands and reads it back from the node (within 5 cm, or it is refused).
+4. **Start the walk on the console (`g`) or the remote (F1).** Studio never sends Go. **Stand** asks the node to settle; the remote's D-up and Select, the gantry and the physical E-stop stay with people.
+5. **End session** stops Studio's link only. The robot session opens in Replay.
+
+**Course on a real floor without the link (Phase 0):** in Arena, pick a saved arena and preset, click **Build sheet**, build the course from the sheet, and run the console command it prints.
 
 ## 1. One workflow, two robots
 

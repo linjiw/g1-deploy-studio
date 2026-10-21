@@ -5,7 +5,7 @@ import { $, finite, escape, clock, hasPose } from './util.js';
 const LANES = [
   { id: 'events', label: 'Events', unit: '' },
   { id: 'goal', label: 'Goal distance', unit: 'm', color: '#efbb70', value: (f, m) => goalDistance(f, m),
-    threshold: m => m.navigation_criteria?.goal_radius_m, thresholdLabel: 'goal radius' },
+    threshold: m => m.navigation_criteria?.goal_radius_m ?? m.navigation?.goal_radius_m ?? m.node_rules?.goal_radius_m, thresholdLabel: 'goal radius' },
   { id: 'planner', label: 'Planner compute', unit: 'ms', color: '#c4a0d9', value: f => f.health?.planner_latency_ms,
     threshold: () => 160, thresholdLabel: 'deploy replan 160 ms', step: true },
   { id: 'sonic', label: 'SONIC inference', unit: 'ms', color: '#56d9d0', value: f => f.health?.sonic_inference_ms,
@@ -16,7 +16,8 @@ const LANES = [
 ];
 
 function goalDistance(f, m) {
-  const g = m.goal_xy;
+  // Navigation sessions carry the goal of each walk in the frame; between walks there is none.
+  const g = f?.navigation ? f.navigation.goal_xy : m.goal_xy;
   return g && hasPose(f) ? Math.hypot(f.position[0] - g[0], f.position[1] - g[1]) : null;
 }
 

@@ -118,14 +118,19 @@ function updateJoints(state) {
 // Fidelity ladder (review §7.1): what a run proves and what it hides.
 export function fidelity(meta = {}) {
   const latency = meta.latency_model?.ms;
-  if (meta.recording_kind === 'sonic-mujoco-lockstep' && latency > 0) {
+  // A navigation session is the same CPU lockstep loop, with node.py's state machine around it.
+  const lockstep = ['sonic-mujoco-lockstep', 'navigation-session'].includes(meta.recording_kind);
+  if (meta.recording_kind === 'robot-link') return { level: 'M5', short: 'M5', label: 'M5 · live robot through the deploy PC',
+    proves: 'What the deploy PC streams: the LIO pose, LiDAR, the reference SONIC tracks and the node status, timed on Studio\'s clock.',
+    hides: 'Ground truth (a robot has none: the pose is the LIO estimate); motor commands, which Studio never sees or sends.' };
+  if (lockstep && latency > 0) {
     const approx = meta.fidelity === 'L2-approx', predict = approx && meta.latency_model.anchor === 'predict';
     const short = approx ? (predict ? 'L2≈ predict' : 'L2≈') : meta.latency_model.anchor === 'predict' ? 'L2 predict' : 'L2';
     return { level: meta.fidelity ?? 'L2', short, label: `${short} · lockstep with ${latency} ms planner latency`,
       proves: `Planner/tracker logic plus the effect of plans arriving ${latency} ms after they are requested (${meta.latency_model.anchor} anchor).`,
       hides: `DDS/ZMQ transport, C++/TensorRT numerics, real sensors${predict ? '; Studio, not Flow, predicts the planner history from the landed plan (g1-student-deploy method) while route and tight-mode decisions stay on the measured pose (approximation)' : approx ? '; the Flow callback still anchors replans on its latest plan (approximation)' : ''}.` };
   }
-  if (meta.recording_kind === 'sonic-mujoco-lockstep') return { level: 'L1', label: 'L1 · CPU lockstep',
+  if (lockstep) return { level: 'L1', label: 'L1 · CPU lockstep',
     proves: 'Planner and tracker logic, geometry, scoring.', hides: 'Planner latency (physics waits for each replan), DDS/ZMQ transport, C++/TensorRT numerics, start-up transient, real sensors.' };
   if (meta.fidelity === 'L3') return { level: 'L3', label: 'L3 · real-time chain in an isolated namespace',
     proves: 'Separate simulator, C++/TensorRT SONIC runner and planner processes over real DDS and ZMQ, at real-time rates.',

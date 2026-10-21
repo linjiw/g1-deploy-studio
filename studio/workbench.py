@@ -40,9 +40,11 @@ TERMINAL_STATES = ('completed', 'failed', 'cancelled')
 HISTORY_FIELDS = ('id', 'status', 'scenario_id', 'scenario', 'started_unix_s', 'finished_unix_s',
                   'exit_code', 'error', 'result_session_id', 'recovered', 'ownership', 'suite_id',
                   'policy_id', 'policy_identity', 'teardown_warning', 'original_status', 'kind', 'navigation')
-NAV_PLANNER = {'quick': {'candidates': 2, 'ode_steps': 4, 'label': 'Quick · K 2, ODE 4 (CPU)'},
-               'balanced': {'candidates': 8, 'ode_steps': 6, 'label': 'Balanced · K 8, ODE 6'},
-               'deployed': {'candidates': 16, 'ode_steps': 10, 'label': 'Deployed budget · K 16, ODE 10 (slow on CPU)'}}
+# Speeds measured 2026-10-21 on this host (2 CPU threads, one walk past a pillar): quick 1.08x, balanced 0.28x,
+# deployed 0.16x real time. The robot's deploy PC runs the deployed budget on its GPU (p95 0.10-0.18 s).
+NAV_PLANNER = {'quick': {'candidates': 2, 'ode_steps': 4, 'label': 'Quick · K 2, ODE 4 · about real time'},
+               'balanced': {'candidates': 8, 'ode_steps': 6, 'label': 'Balanced · K 8, ODE 6 · about 0.3x real time'},
+               'deployed': {'candidates': 16, 'ode_steps': 10, 'label': 'Deployed budget · K 16, ODE 10 · about 0.15x real time'}}
 NAV_ODOMETRY = ('truth', 'lio', 'drift')
 NAV_COMMANDS = ('goal', 'clear', 'go', 'stand', 'end')
 NAV_WALL_S = 3600.0
@@ -579,7 +581,10 @@ class Workbench:
                                      'outcome': (summary.get('report') or {}).get('outcome') or ('runtime_error' if job['status'] == 'failed' else None),
                                      'policy_id': job.get('policy_id') or scenario.get('policy_id') or DEFAULT_POLICY_ID,
                                      'started_unix_s': job.get('started_unix_s'), 'map_id': scenario.get('map_id'),
-                                     'scenario_label': scenario.get('label'), 'suite_id': job.get('suite_id')})
+                                     'scenario_label': scenario.get('label'), 'suite_id': job.get('suite_id'),
+                                     **({'walks': (summary.get('report') or {}).get('walks'),
+                                         'arrived': (summary.get('report') or {}).get('arrived'),
+                                         'robot': (job.get('navigation') or {}).get('robot')} if navigation else {})})
 
     def capabilities(self):
         from studio.policy_worker import capabilities
@@ -914,6 +919,50 @@ class Workbench:
                 'endpoints': [{'id': k, 'endpoint': v} for k, v in config['endpoints'].items()],
                 'rules': ['Subscribes to loopback streams only', 'Sends goal and stand to node.py; never go or quit',
                           'No DDS participant and no motor command path']}
+
+    def connect_robot(self, document=None):
+        """Start the real-robot link (studio/robot_link.py): loopback SUB streams plus goal/stand to node.py."""
+        config, reason = read_robot_link_config()
+        if config is None:
+            raise ValueError(reason)
+        with self.lock:
+            if any(j['status'] in ACTIVE_STATES for j in self.jobs.values()):
+                raise ValueError('End the active session or simulation before connecting to the robot')
+            if len(list((self.root/'jobs').glob('job-*'))) >= MAX_JOBS:
+                raise ValueError('Job storage limit reached; archive owned runs before starting more')
+            key = 'job-' + uuid.uuid4().hex[:12]
+            output = self.root/'jobs'/key
+            label = 'Robot session · deploy PC' + (' (protocol fixture)' if config.get('fixture') else '')
+            job = {'id': key, 'status': 'starting', 'kind': 'robot', 'scenario': {'label': label, 'map_id': None}, 'scenario_id': None,
+                   'navigation': {'robot': 'real', 'label': label, 'endpoints': config['endpoints'], 'fixture': bool(config.get('fixture'))},
+                   'started_unix_s': time.time(), 'output': output, 'process': None, 'latest': None, 'error': None,
+                   'result_session_id': None, '_seq': 0, 'ownership': 'owned child process (robot link)', 'suite_id': None,
+                   'policy_id': None, 'policy_identity': None, 'wall_limit_s': ROBOT_WALL_S}
+            try:
+                output.mkdir()
+                self.jobs[key] = job
+                self._persist_job(job)
+                request = {'schema_version': 1, 'id': key, 'endpoints': config['endpoints'],
+                           'fixture': bool(config.get('fixture')), 'limits': config.get('limits') or {}}
+                atomic_json(output/'request.json', request)
+                env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONPATH=str(ROOT))
+                with (output/'worker.log').open('wb') as log:
+                    job['process'] = subprocess.Popen([sys.executable, '-u', '-m', 'studio.robot_link', '--config', str(output/'request.json'),
+                                                       '--output', str(output/'run')], cwd=ROOT, env=env, stdout=log,
+                                                      stderr=subprocess.STDOUT, start_new_session=True)
+                self.catalog.register(key, output/'run/session.json', f'LIVE · {label}', provider=lambda: self.session_data(key),
+                                      extra={'group': 'Navigation sessions', 'status': 'running', 'started_unix_s': job['started_unix_s'],
+                                             'scenario_label': label, 'kind': 'robot', 'robot': 'real'})
+                threading.Thread(target=self._monitor, args=(key,), daemon=True).start()
+            except BaseException as exc:
+                if job['process'] is not None:
+                    self._terminate(job['process'])
+                    job['process'].wait()
+                job.update(status='failed', error=f'Robot link launch failed: {type(exc).__name__}: {exc}', finished_unix_s=time.time())
+                if output.is_dir():
+                    self._persist_job(job)
+                raise
+            return self.job(key)
 
     def _active_session(self, key):
         key = ident(key, 'session id')

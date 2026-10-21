@@ -41,7 +41,7 @@ on('arena:error', message => { $('workbench-error').textContent = message; $('wo
 // ------------------------------------------------------------------ sessions
 const OUTCOME_MARK = { goal_completion: '✓', timeout: '⏱', obstacle_collision: '✕', fall: '✕', runtime_error: '✕' };
 function sessionOption(s) {
-  const mark = s.status === 'running' ? '●' : OUTCOME_MARK[s.outcome] ?? '';
+  const mark = s.status === 'running' ? '●' : Number.isFinite(s.walks) ? (s.walks && s.arrived === s.walks ? '✓' : '◐') : OUTCOME_MARK[s.outcome] ?? '';
   const policy = s.policy_id && s.policy_id !== 'flow-bundle-20261008' ? ` · ${s.policy_id.replace('flow-', '').replace(/-s\d$/, '')}` : '';
   return `<option value="${escape(s.id)}" ${s.available ? '' : 'disabled'}>${mark ? mark + ' ' : ''}${escape(s.label ?? s.id)}${policy}${s.id.startsWith('job-') ? ` · #${escape(s.id.slice(-6))}` : ''}</option>`;
 }
@@ -52,7 +52,7 @@ async function refreshSessionList(selected) {
   const groups = new Map();
   const ordered = [...sessions].sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0));
   for (const s of ordered) { const g = s.group ?? 'Recordings'; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); }
-  const order = ['CPU rehearsals', 'Real-time rehearsals (L3)', 'Recordings'];
+  const order = ['Navigation sessions', 'CPU rehearsals', 'Real-time rehearsals (L3)', 'Recordings'];
   $('session-picker').innerHTML = [...groups.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
     .map(([g, list]) => `<optgroup label="${escape(g)}">${list.map(sessionOption).join('')}</optgroup>`).join('');
   if (selected && sessions.some(s => s.id === selected)) $('session-picker').value = selected;
@@ -129,6 +129,17 @@ function updateModeBadge() {
   }
   const fid = fidelity(m), level = fid.short ?? (fid.level === 'L2-approx' ? 'L2≈' : fid.level);
   const detached = live && state.liveStatus === 'detached';
+  if (m.kind === 'navigation' || m.recording_kind === 'robot-link') {
+    const real = m.recording_kind === 'robot-link' || m.robot === 'real', running = live || m.mode === 'live-robot';
+    $('mode-badge').textContent = running ? (real ? '● LIVE · REAL ROBOT · OBSERVE + GOALS' : `● LIVE · SIMULATED ROBOT · ${level}`)
+      : real ? 'REPLAY · ROBOT SESSION · M5' : `REPLAY · NAVIGATION SESSION · ${level}`;
+    $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
+    $('mode-badge').classList.toggle('sim', running);
+    const r = m.test_result;
+    $('run-outcome').innerHTML = running ? outcomeChip(null, 'running')
+      : r ? `<span class="outcome ${r.arrived === r.walks && r.walks ? 'outcome-good' : 'outcome-warn'}">${r.arrived ?? 0}/${r.walks ?? 0} walks arrived</span>` : '';
+    return;
+  }
   $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\.(flow_)?policy_worker/.test(m.provenance?.adapter ?? '') ? `REPLAY · CPU REHEARSAL · ${level}` : `REPLAY · RECORDED LOCKSTEP · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : m.fidelity === 'L3' ? 'REPLAY · REAL-TIME CHAIN · L3' : 'REPLAY · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
@@ -221,7 +232,7 @@ function updateHud(sample) {
   $('navigation-caption').textContent = f.navigation
     ? `${f.navigation.walk ? `Walk ${f.navigation.walk}` : 'Standing'} · ${goal ? `goal [${vector(goal, 2)}] m` : 'no goal'} · ${String(f.navigation.phase ?? '').toLowerCase()}`
     : goal ? `Goal [${vector(goal, 2)}] m · ${crit.label ?? ''}` : '';
-  const truth = meta.mode === 'simulation' || meta.recording_kind === 'sonic-mujoco-lockstep';
+  const truth = meta.recording_kind !== 'robot-link' && (meta.mode === 'simulation' || ['sonic-mujoco-lockstep', 'navigation-session'].includes(meta.recording_kind));
   $('pose-caption').textContent = `${state.frozenFrame ? 'DIAGNOSTIC HELD STATE' : truth ? 'SIM-TRUTH' : 'RECORDED'} · xyz [${vector(m.position, 2)}] m · yaw ${num(yawOf(q), 2, 'rad')}${state.frozenFrame ? ` · ${num(age, 0, 'ms')} old` : ''}`;
   $('reference-caption').textContent = scene.view.layers.perception && sample ? (finite(sample.time) && state.session.perception?.frames ? `MAP · causal sample ${clock(sample.time)} · unknown cells stay empty` : 'MAP · final accumulated snapshot · capture time unavailable') : f.reference ? 'Cyan: SONIC reference now · amber: +0.4 s / +0.9 s · line: planner prediction' : 'No reference packets in this recording';
   const badge = $('source-badge');
