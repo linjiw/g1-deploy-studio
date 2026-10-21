@@ -323,9 +323,13 @@ const endOverdue = () => !!nav.endRequestedAt && Date.now() - nav.endRequestedAt
 function readyList(n) {
   const items = n?.ready ?? [];
   if (!items.length) return '';
-  const block = items.find(r => r.status === 'block');
+  // Name what fails, in the negative: the items' own labels state the condition that must hold.
+  const FAILS = { node_status: 'node status not fresh', odometry: 'LIO odometry not fresh', frame: "node frame does not match LIO",
+    still: 'robot not still', goal_verified: 'node goal not verified by Studio', goal_range: 'goal outside the memory or the distance limit',
+    stand: 'stand deferred' };
+  const blocks = items.filter(r => r.status === 'block').map(r => FAILS[r.id] ?? r.label);
   return `<section class="panel-section nav-ready"><h4>Before g on the console</h4>
-    <div class="callout ${n.ready_ok ? 'ok' : 'danger'}">${n.ready_ok ? 'Ready: the operator may press g (or F1) once the area is clear.' : `Not ready, do not press g: ${escape(block?.label ?? 'see below')}.`}</div>
+    <div class="callout ${n.ready_ok ? 'ok' : 'danger'}">${n.ready_ok ? 'Ready: the operator may press g (or F1) once the area is clear.' : `Not ready, do not press g: ${escape(blocks.join('; ') || 'see below')}.`}</div>
     <ul class="nav-checks">${items.map(r => `<li class="${r.status}" title="${escape(r.detail ?? '')}"><i>${CHECK_ICON[r.status] ?? '?'}</i><span><strong>${escape(r.label)}</strong>${r.detail ? `<small>${escape(r.detail)}</small>` : ''}</span></li>`).join('')}</ul></section>`;
 }
 
