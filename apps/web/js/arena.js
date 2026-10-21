@@ -388,6 +388,12 @@ function updateStatus() {
   const save = $('arena-save'), go = $('arena-rehearse');
   if (save) save.textContent = arena.savedId ? 'Saved ✓' : 'Save arena';
   if (go) go.disabled = !arena.savedId;
+  const sheet = $('arena-sheet');
+  if (sheet) {
+    sheet.disabled = !arena.savedId || !preset();
+    sheet.title = !arena.savedId ? 'Save the arena first: the build sheet is made from the saved arena' : !preset() ? 'Add a start/goal preset first'
+      : 'Printable build sheet for the active preset: floor measurements from the start mark, the console command and the rehearsal evidence (new tab)';
+  }
   const issues = presetIssues();
   node.innerHTML = `<div class="arena-counts"><span><strong>${arena.boxes.length}</strong> boxes</span><span><strong>${arena.presets.length}</strong> presets</span><span>${arena.savedId ? `<span class="chip chip-recorded">SAVED ${escape(arena.savedId.slice(-6))}</span>` : '<span class="chip chip-unavailable">UNSAVED DRAFT</span>'}</span></div>
     ${issues.length ? `<ul class="issues">${issues.map(i => `<li>${escape(i)}</li>`).join('')}</ul>` : '<p class="tiny ok">Preflight: every start and goal clears the standing footprint. Route feasibility is not checked; only a rehearsal can tell.</p>'}`;
@@ -438,7 +444,7 @@ export function renderPanel() {
         <div class="field-row compact"><label class="check"><input id="rg-start" type="checkbox" ${arena.rg?.randomStart ? 'checked' : ''}> Random start too</label><label class="check" title="Only keep goals whose straight line from the start crosses an obstacle"><input id="rg-obstructed" type="checkbox" ${arena.rg?.obstructed ? 'checked' : ''}> Behind an obstacle</label><label class="check"><input id="rg-append" type="checkbox" ${arena.rg && !arena.rg.replace ? 'checked' : ''}> Append</label><button id="rg-generate" class="primary-action">Generate</button></div>
         <p class="tiny">Samples inside the arena bounds; each start and goal must clear the standing footprint. Same seed → same presets. Save the arena, then Rehearse → Run suite.</p></details></div>
     <div class="panel-section" id="arena-status"></div>
-    <div class="panel-section sticky-actions"><button id="arena-save" class="primary-action">${arena.savedId ? 'Saved ✓' : 'Save arena'}</button><button id="arena-rehearse" ${arena.savedId ? '' : 'disabled'} title="Open Rehearse with this arena">Rehearse →</button>
+    <div class="panel-section sticky-actions"><button id="arena-save" class="primary-action">${arena.savedId ? 'Saved ✓' : 'Save arena'}</button><button id="arena-rehearse" ${arena.savedId ? '' : 'disabled'} title="Open Rehearse with this arena">Rehearse →</button><button id="arena-sheet" disabled>Build sheet</button>
       <button id="arena-export">↓ JSON</button><label class="file-button">↑ JSON<input id="arena-import" type="file" accept="application/json,.json"></label></div>`;
   bindPanel();
   updateStatus();
@@ -501,6 +507,7 @@ function bindPanel() {
   $('preset-mirror').addEventListener('click', () => { const base = preset(); if (!base || arena.presets.length >= 16) return; arena.presets.push({ label: `${base.label} · mirrored`, start_xy: [base.start_xy[0], -base.start_xy[1]], start_yaw_rad: -base.start_yaw_rad, goal_xy: [base.goal_xy[0], -base.goal_xy[1]] }); arena.active = arena.presets.length - 1; changed(); draw(); });
   $('arena-save').addEventListener('click', async e => { e.currentTarget.disabled = true; try { await saveArena(); } catch (err) { emit('arena:error', err.message); } finally { const b = $('arena-save'); if (b) b.disabled = false; } });
   $('arena-rehearse').addEventListener('click', () => emit('arena:rehearse', arena.savedId));
+  $('arena-sheet').addEventListener('click', () => { if (arena.savedId && preset()) window.open(`/sheet.html?arena=${encodeURIComponent(arena.savedId)}&preset=${arena.active}`, '_blank', 'noopener'); });
   $('arena-export').addEventListener('click', () => download(`${(arena.label || 'arena').replace(/[^a-z0-9-]+/gi, '-').toLowerCase()}.json`, exportDocument()));
   $('arena-import').addEventListener('change', async e => {
     const file = e.target.files[0]; if (!file) return;
