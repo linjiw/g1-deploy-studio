@@ -1,10 +1,15 @@
 {
-  "comment": "Copy to config/robot_link.json (ignored by Git) on the deploy PC. Loopback endpoints only: Studio runs on the same PC as node.py, the SONIC runner and the LIO bridge. Studio subscribes to odom/cloud/pose/debug and sends only goal and stand to the node's control socket; Go stays with the operator.",
+  "comment": "Copy to config/robot_link.json (ignored by Git) on the deploy PC. Loopback endpoints only: Studio runs on the same PC as node.py, the SONIC runner and the LIO bridge. Start the node with --odom zmq and the bridge with --forward-cloud. Studio subscribes to odom/cloud/pose/debug and sends node.py only a checked goal (while the robot stands) and stand; Go stays with the operator. limits: goals farther than max_goal_distance_m are refused; a standing robot must read below still_speed_mps and still_yaw_rate_rad_s on LIO for 0.5 s before a goal is sent (not yet measured on hardware: raise them, max 0.5, if LIO sway blocks every goal).",
   "endpoints": {
     "odom": "tcp://127.0.0.1:5561",
     "cloud": "tcp://127.0.0.1:5561",
     "pose": "tcp://127.0.0.1:5556",
     "debug": "tcp://127.0.0.1:5557",
     "control": "tcp://127.0.0.1:5562"
+  },
+  "limits": {
+    "max_goal_distance_m": 3.0,
+    "still_speed_mps": 0.05,
+    "still_yaw_rate_rad_s": 0.05
   }
 }
