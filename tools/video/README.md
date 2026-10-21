@@ -20,10 +20,14 @@ tts/bin/python -B tools/video/narrate.py --storyboard tools/video/storyboard.jso
 # 2. A demo gateway with its own data root for the shots that save an arena and run a rehearsal
 PORT=8797 DATA_ROOT=~/research-data/g1-deploy-studio/video-demo-workbench EVIDENCE=$OUT/demo tools/browser/validation/gateway.sh start
 #    (create the "Studio demo · offset doorway" arena there through POST /api/arenas)
+#    For the navigate-robot shot, start that gateway with STUDIO_ROBOT_LINK=<a config like config/robot_link.example.json
+#    whose endpoints are tcp://127.0.0.1:18561 (odom, cloud), 18556 (pose), 18557 (debug), 18562 (control)>; the shot runs
+#    tools/fake_node.py, a protocol fixture, on those ports. Check /api/workbench lists the demo arenas: a stale gateway on
+#    the same port makes `gateway.sh start` report "up" without starting.
 # 3. Frames → segments (read-only shots use the release service on 8790)
 node tools/video/capture.mjs --out $OUT --app http://127.0.0.1:8790 --demo http://127.0.0.1:8797
 # 4. Final video
 python3 tools/video/assemble.py --out $OUT --ffmpeg <path-to-ffmpeg>
 ```
 
-`--only id,id` re-captures selected segments. The capture never touches hardware. Only the `arena` and `rehearse` shots change anything, and only on the demo gateway's data root. The rehearse shot is a labelled time-lapse of a real owned CPU run.
+`--only id,id` re-captures selected segments. The capture never touches hardware. Only the `arena`, `rehearse` and `navigate*` shots change anything, and only on the demo gateway's data root. The rehearse shot is a labelled time-lapse of a real owned CPU run.

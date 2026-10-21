@@ -35,6 +35,14 @@ async function timelapse(page, h, done, { maxFrames = 150, wallMs = 150 } = {}) 
   }
   return false;
 }
+// A shot starts from the setup panel: end any session a failed earlier capture left running on the demo gateway.
+async function endSessions(page, base) {
+  const api = page.request;
+  const token = (await (await api.get(`${base}/api/workbench`)).json()).csrf_token;
+  const busy = async () => ((await (await api.get(`${base}/api/jobs`)).json()).jobs ?? []).filter(j => ['robot', 'navigation'].includes(j.kind) && ['starting', 'running', 'detached'].includes(j.status));
+  for (const j of await busy()) await api.post(`${base}/api/nav/command`, { headers: { 'X-Studio-Token': token, Origin: base }, data: { id: j.id, cmd: 'end' } });
+  for (let i = 0; i < 120 && (await busy()).length; i++) await page.waitForTimeout(500);
+}
 const walkEnded = () => { const n = window.__studio.navigate.job?.latest?.navigation; return !!(n?.paused && n.legs?.length && n.legs.at(-1).outcome); };
 // The robot-link shot runs tools/fake_node.py (a protocol fixture, not a robot) on these loopback ports;
 // the demo gateway must be started with STUDIO_ROBOT_LINK pointing at a matching config.
@@ -213,6 +221,7 @@ export const SHOTS = {
   },
 
   async navigate({ page, h, DEMO }) {
+    await endSessions(page, DEMO);
     await boot(page, DEMO, '?workspace=navigate');
     await h.ready();
     await h.waitFor(() => !!document.querySelector('#nav-world'));
@@ -290,6 +299,7 @@ export const SHOTS = {
     const fixture = spawn(py, [`${root}tools/fake_node.py`, '--odom-bind', ep(F.odom), '--pose-bind', ep(F.pose), '--debug-bind', ep(F.debug),
       '--control-bind', ep(F.control), '--arena', 'demo'], { cwd: root, stdio: 'ignore' });
     try {
+      await endSessions(page, DEMO);
       await page.waitForTimeout(1500);
       await boot(page, DEMO, '?workspace=navigate');
       await h.ready();
@@ -302,19 +312,23 @@ export const SHOTS = {
       await page.waitForTimeout(2500); await h.settle(600);
       await h.caption('Navigate · protocol fixture (not a robot)', 'Pose: the LIO estimate in the odom frame · map: Studio\'s reconstruction from the LiDAR');
       await h.spot('#source-badge', 'LIO ESTIMATE', { dim: false, below: true }); await h.hold(2.6); await h.clearSpots();
-      await h.click(await worldPoint(page, 2.9, 0.4), { after: 0.2 });
+      // The link takes a goal once the robot has been still for 0.5 s and the node's frame matches LIO.
+      await h.waitFor(() => window.__studio.navigate.job?.latest?.navigation?.can?.goal === true, null, 30000);
+      await h.click(await worldPoint(page, 2.6, 0.3), { after: 0.2 });
       await h.waitFor(() => window.__studio.navigate.pick?.check?.ok === true, null, 30000);
+      await h.waitFor(() => !document.querySelector('#nav-send')?.disabled, null, 30000);
       await h.click('#nav-send', { after: 0.6 });
       await h.waitFor(() => (window.__studio.navigate.job?.latest?.navigation?.commands ?? []).some(c => c.cmd === 'goal' && c.status === 'applied'), null, 30000);
       await h.caption('Navigate · staged on the node', 'Sent as ahead / left while standing, read back within 5 cm · Studio never sends Go');
-      await h.spot('#nav-live .callout', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
+      await h.spot('.nav-node-goal', 'the node now holds this goal', { dim: false, below: true }); await h.hold(2.2); await h.clearSpots();
+      await h.caption('Navigate · before g on the console', 'Status, LIO, frames, a still robot, a verified goal in range, no deferred stand');
+      await h.spot('.nav-ready', '', { dim: false }); await h.hold(3.0); await h.clearSpots();
       await new Promise(resolve => spawn(py, [`${root}tools/fake_node.py`, '--press', 'go', '--control-connect', ep(F.control)], { cwd: root, stdio: 'ignore' }).on('exit', resolve));
-      await h.caption('Navigate · the operator pressed Go', 'Console g or remote F1 · Studio watches; Stand settles it (not an emergency stop)');
-      await timelapse(page, h, () => window.__studio.navigate.job?.latest?.navigation?.phase === 'RUN', { maxFrames: 30, wallMs: 100 });
-      await timelapse(page, h, () => false, { maxFrames: 20, wallMs: 120 });
-      await h.click('#nav-stand', { after: 0.2 });
-      await timelapse(page, h, () => ['STOPPED', 'ARRIVED'].includes(window.__studio.navigate.job?.latest?.navigation?.phase), { maxFrames: 40, wallMs: 120 });
-      await h.hold(1.4);
+      await h.caption('Navigate · the operator pressed Go', 'Console g or remote F1 · Studio watches the plan, the LIO pose and every stream');
+      await timelapse(page, h, () => ['ARRIVED', 'STOPPED'].includes(window.__studio.navigate.job?.latest?.navigation?.phase), { maxFrames: 90, wallMs: 100 });
+      await h.settle(400);
+      await h.caption('Navigate · arrived', 'The walk is logged against the verified goal; Stand (not an emergency stop) settles a walk early');
+      await h.spot('.nav-walks', '', { dim: false }); await h.hold(2.4); await h.clearSpots();
       await h.click('#nav-end', { after: 1.0 });
     } finally { fixture.kill('SIGTERM'); }
   },
