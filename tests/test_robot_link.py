@@ -210,6 +210,47 @@ class FixtureGeometryTests(unittest.TestCase):
         self.assertEqual(self.fake.load_arena("none"), ([], None))
 
 
+class PressHelperTests(unittest.TestCase):
+    def test_press_refuses_an_endpoint_that_is_not_the_fixture(self):
+        import threading
+        import zmq
+        ctx = zmq.Context.instance()
+        rep = ctx.socket(zmq.REP)
+        rep.setsockopt(zmq.LINGER, 0)
+        port = rep.bind_to_random_port("tcp://127.0.0.1")
+        received, stop = [], threading.Event()
+
+        def serve():  # answers like node.py: a status without "fixture"
+            while not stop.is_set():
+                if not rep.poll(50):
+                    continue
+                message = json.loads(rep.recv())
+                received.append(message["cmd"])
+                rep.send_string(json.dumps({"phase": "WAIT", "standing": False} if message["cmd"] == "status"
+                                           else {"ok": True, "queued": message["cmd"]}))
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            proc = subprocess.run([PY, str(ROOT / "tools/fake_node.py"), "--press", "go", "--control-connect",
+                                   f"tcp://127.0.0.1:{port}"], cwd=ROOT, env=ENV, capture_output=True, timeout=20)
+        finally:
+            stop.set()
+            thread.join(5)
+            rep.close(0)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn(b"refused", proc.stderr)
+        self.assertEqual(received, ["status"])  # go never left the helper
+        with self.assertRaises(SystemExit):
+            from contextlib import redirect_stderr
+            import io
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_fake_node_cli", ROOT / "tools/fake_node.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with redirect_stderr(io.StringIO()):
+                module.main(["--press", "go", "--control-connect", "tcp://192.168.123.164:5562"])
+
+
 class Fixture:
     def __init__(self, temp, ports, *extra):
         self.ports, self.extra, self.temp = ports, extra, Path(temp)
@@ -418,7 +459,9 @@ class RobotLinkFixtureTests(unittest.TestCase):
         # Second leg, stopped by Studio's stand mid-walk; a stand while standing is refused.
         link.send(8, cmd="goal", xy=[4.0, 0.6])
         self.assertEqual(link.command(8)["status"], "applied")
-        fixture.request({"cmd": "go"})
+        press = subprocess.run([PY, str(ROOT / "tools/fake_node.py"), "--press", "go", "--control-connect",
+                                fixture.endpoints["control"]], cwd=ROOT, env=ENV, capture_output=True, timeout=20)
+        self.assertEqual(press.returncode, 0, press.stderr)  # the demo operator key, on the fixture only
         link.wait(lambda d: d["navigation"]["phase"] == "RUN" and d["frame"]["position"][0] > 1.8, 6, "RUN 2 past 1.8 m")
         link.send(9, cmd="stand")
         c = link.command(9)

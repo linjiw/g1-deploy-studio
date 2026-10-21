@@ -20,6 +20,10 @@ heading), as the bridge defines it; the arena is in Studio's world frame.
 
   .venv/bin/python tools/fake_node.py --odom-bind tcp://127.0.0.1:5561 --pose-bind tcp://127.0.0.1:5556 \
       --debug-bind tcp://127.0.0.1:5557 --control-bind tcp://127.0.0.1:5562 [--arena arena.json] [--goal 3 0]
+
+For demos, `--press go|stand --control-connect tcp://127.0.0.1:5562` plays the operator's console key against a
+running fixture. It first asks for the status and refuses unless the answer carries "fixture": true, which
+node.py's status never does, so it cannot start a walk on a real node.
 """
 from __future__ import annotations
 
@@ -363,12 +367,40 @@ class FakeNode:
                 sock.close(0)
 
 
+def press(endpoint, cmd, timeout_s=1.0):
+    """The operator's key for a demo: only against an endpoint whose status says fixture: true."""
+    import zmq
+
+    sock = zmq.Context.instance().socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.setsockopt(zmq.RCVTIMEO, int(timeout_s * 1000))
+    sock.connect(endpoint)
+    try:
+        sock.send_string(json.dumps({"cmd": "status"}))
+        status = json.loads(sock.recv())
+        if not isinstance(status, dict) or status.get("fixture") is not True:
+            print(f"fake_node --press: refused, {endpoint} does not report fixture: true (not this fixture)",
+                  file=sys.stderr)
+            return 2
+        sock.send_string(json.dumps({"cmd": cmd}))
+        print(sock.recv().decode())
+        return 0
+    except zmq.Again:
+        print(f"fake_node --press: no reply from {endpoint}", file=sys.stderr)
+        return 2
+    finally:
+        sock.close(0)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--odom-bind", required=True, help="PUB for `odom` and `cloud` (the bridge's socket)")
+    ap.add_argument("--press", choices=("go", "stand"), default=None,
+                    help="demo operator key: send it to --control-connect if that endpoint is this fixture")
+    ap.add_argument("--control-connect", default=None, help="with --press: the fixture's control endpoint")
+    ap.add_argument("--odom-bind", help="PUB for `odom` and `cloud` (the bridge's socket)")
     ap.add_argument("--pose-bind", default=None, help="PUB for `pose` (node.py --stream-bind)")
     ap.add_argument("--debug-bind", default=None, help="PUB for `g1_debug` (the runner's output)")
-    ap.add_argument("--control-bind", required=True, help="REP (node.py --control)")
+    ap.add_argument("--control-bind", help="REP (node.py --control)")
     ap.add_argument("--arena", default="demo", help="'demo', 'none', a JSON box list or a Studio arena document")
     ap.add_argument("--start", type=float, nargs=3, default=None, metavar=("X", "Y", "YAW"),
                     help="start pose in the arena frame (default: the arena's first preset, else the origin)")
@@ -385,6 +417,17 @@ def main(argv=None):
                     help="fault injection: offset added to every goal the control socket applies")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
+    if args.press:
+        sys.path.insert(0, str(ROOT))
+        from studio.recorder import validate_endpoint
+
+        try:
+            validate_endpoint(args.control_connect or "")
+        except ValueError as exc:
+            ap.error(f"--press needs a loopback --control-connect: {exc}")
+        return press(args.control_connect, args.press)
+    if not args.odom_bind or not args.control_bind:
+        ap.error("--odom-bind and --control-bind are required")
     if not 0 < args.speed <= 0.7:
         ap.error("--speed must be in (0, 0.7] m/s")
     print(BANNER, file=sys.stderr, flush=True)
