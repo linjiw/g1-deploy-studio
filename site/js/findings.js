@@ -17,23 +17,28 @@ function cards(featured, catalog) {
       text: "Single high returns from the robot's arms become overhead cells in a memory that never forgets. Over a long session the validator saw stalls, deferred stands and falls follow.",
       status: `In the deploy repository (STATUS #15). Studio's simulated robot offers a fresh-map mode to compare.${deferred.phantom ? ` In these short walks: ${deferred.phantom} deferred their stand with nothing that low nearby.` : ''}` },
   ];
+  const SHORT = { detour: 'wall-detour room', slalom: 'alternating-walls room', corridor: 'corridor', doorway: 'doorway room', clutter: 'cluttered room' };
   const c = f.contact ?? {}, worst = Object.entries(c).sort((a, b) => b[1].over_100n / b[1].walks - a[1].over_100n / a[1].walks)[0];
   if (worst && worst[1].over_100n) {
-    out.push({ id: 'contact', kind: 'policy', tag: 'Policy · measured here', title: `In the ${room(worst[0])?.title.toLowerCase() ?? worst[0]}, walks touch the walls`,
-      text: `${worst[1].over_100n} of ${worst[1].walks} recorded walks there pushed against an obstacle with more than 100 N, and most of them still "arrived": the node's outcome does not see contact. The playground marks them amber.`,
-      status: Object.entries(c).map(([w, v]) => `${room(w)?.title ?? w}: ${v.over_100n}/${v.walks}`).join(' · ') });
+    const [w, v] = worst;
+    out.push({ id: 'contact', kind: 'policy', tag: 'Policy · measured here', title: `Walls get touched in the ${SHORT[w] ?? w}`,
+      text: `${v.over_100n} of ${v.walks} recorded walks there pushed against a wall with more than 100 N${v.at_wall_end ? `, ${v.at_wall_end} of them within 0.6 m of a wall's end, where the walk turns into the opening` : ''}. Most still "arrived": the node's outcome does not see contact. The playground marks them amber.`,
+      status: Object.entries(c).map(([k, x]) => `${room(k)?.title ?? k}: ${x.over_100n} of ${x.walks}`).join(' · ') });
   }
   const d = f.doorway;
   if (d && d.far_goals) {
-    out.push({ id: 'doorway', kind: 'policy', tag: 'Policy · measured here', title: 'Through a 0.8 m door',
-      text: `The doorway room has one 0.8 m door in a 2 m wall. Of ${d.far_goals} recorded walks to goals on the far side, ${d.through_door} went through the door (${pct(d.through_door, d.far_goals)}) and ${d.through_clean} of those arrived without contact over 100 N.`,
+    const door = d.door_halfwidth_m ? `${(2 * d.door_halfwidth_m).toFixed(1)} m` : 'single';
+    const other = d.far_goals - d.through_door;
+    out.push({ id: 'doorway', kind: 'policy', tag: 'Policy · measured here', title: `Through a ${door} door`,
+      text: `The doorway room has one ${door} door in a 2 m wall that runs past the edge of the planner's map. Of ${d.far_goals} recorded walks to goals on the far side, ${d.through_door} went through the door (${pct(d.through_door, d.far_goals)})${other ? ` and ${other} crossed the wall line elsewhere` : ''}; ${d.through_clean} of those through the door arrived without contact over 100 N.`,
       status: 'Simulation, one seed per goal. Not a hardware result.' });
   }
   const b = f.beam;
   if (b && b.walks_under) {
+    const m = list => list.map(v => v.toFixed(2)).join(', ');
     out.push({ id: 'beam', kind: 'policy', tag: 'Policy · measured here', title: 'Under a beam it has only seen',
-      text: `In the corridor a beam hangs ${b.beam_bottom_m.toFixed(2)} m above the floor; the planner never receives it as a box, only as overhead cells in its map. ${b.walks_under} recorded walks passed under it, and ${b.ducked_5cm} lowered the pelvis there by 5 cm or more.`,
-      status: 'Measured from the recorded pelvis height under the beam against the rest of each walk.' });
+      text: `In the corridor a beam hangs ${b.beam_bottom_m.toFixed(2)} m above the floor; the planner never receives it as a box, only as overhead cells in its map. ${b.walks_under} recorded walks passed under it. Lowest pelvis height under the beam: ${m(b.pelvis_under_m)} m, against a median of ${m(b.pelvis_elsewhere_m)} m on the rest of each walk.`,
+      status: b.clean ? `${b.clean} of them arrived without contact over 100 N.` : 'None of them is clean: each also pushed against a corridor wall with more than 100 N.' });
   }
   out.push(
     { id: 'fail-open', kind: 'studio', tag: 'Studio · fixed', title: 'Goal checks used to fail open',

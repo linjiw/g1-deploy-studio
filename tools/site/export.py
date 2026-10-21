@@ -120,7 +120,8 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
         if len(changed) or k == 0:
             map_steps.append({'t': round(float(gt[k]), 3), **_cell_changes(changed, codes[k].ravel(), heights[k].ravel())})
         prev_c, prev_h = codes[k], heights[k]
-    events = [{'t': round(float(e['time']), 3), 'type': e['type'], 'msg': e['message']}
+    events = [{'t': round(float(e['time']), 3), 'type': e['type'], 'msg': e['message'],
+               **({'dist': round(float(e['dist']), 3)} if e.get('dist') is not None else {})}
               for e in session.get('events') or [] if e['type'] not in ('replan', 'command')]
     report = meta.get('test_result') or {}
     return {'v': SCHEMA, 'world': world_id, 'goal_id': goal_id, 'goal': leg.get('goal_xy'),
@@ -245,7 +246,8 @@ def deferral_cause(index, walk):
         cause = 'phantom'
     else:
         cause = 'unclassified'
-    return {'t': ev['t'], 'cells': len(cells), 'cause': cause}
+    stood = next((e['t'] for e in walk['events'] if e['type'] in ('stand', 'stand_forced') and e['t'] > ev['t']), walk['time'][-1])
+    return {'t': ev['t'], 'cells': len(cells), 'cause': cause, 'held_s': round(float(stood - ev['t']), 2)}
 
 
 def featured(out, worlds):
@@ -265,10 +267,11 @@ def featured(out, worlds):
     for key, cause, label in (('edge-ceiling', 'table-edge', 'Watch a deferral at a table edge'),
                               ('phantom', 'phantom', 'Watch a deferral with nothing overhead')):
         if causes[cause]:
-            w, d, c = min(causes[cause], key=lambda x: x[1]['duration_s'] or 0)
-            pick[key] = {'world': w, 'goal': d['goal_id'], 'label': label,
-                         'note': f"{len(causes[cause])} of {len(walks)} recorded walks deferred a stand this way "
-                                 f"(classified from the recorded map and the room's boxes)."}
+            w, d, c = max(causes[cause], key=lambda x: x[2]['held_s'])
+            if c['held_s'] >= 0.5:
+                pick[key] = {'world': w, 'goal': d['goal_id'], 'label': label,
+                             'note': f"{len(causes[cause])} of {len(walks)} recorded walks deferred a stand this way (classified from "
+                                     f"the recorded map and the room's boxes). In this one the stand waits {c['held_s']:.1f} s, from {c['t']:.1f} s."}
     # The door: walks to the far side that cross the wall line through the 0.8 m door.
     if 'doorway' in indexes:
         far, through, clean = 0, 0, 0
@@ -286,7 +289,8 @@ def featured(out, worlds):
             clean += door and ok
             if door and (best is None or (ok and not best[1])):
                 best = (d, ok)
-        facts['doorway'] = {'far_goals': far, 'through_door': through, 'through_clean': clean}
+        facts['doorway'] = {'far_goals': far, 'through_door': through, 'through_clean': clean,
+                            'door_halfwidth_m': min((abs(b['center_xy'][1]) - b['half_xy'][1] for b in indexes['doorway']['boxes']), default=None)}
         if best:
             d, ok = best
             pick['doorway'] = {'world': 'doorway', 'goal': d['goal_id'], 'label': 'Watch it go through',
@@ -305,20 +309,33 @@ def featured(out, worlds):
                 (under if _box_distance([x, y], b) == 0 else other).append(z)
             if under and other:
                 dips.append((float(np.median(other) - min(under)), d, min(under), float(np.median(other))))
-        facts['beam'] = {'walks_under': len(dips), 'ducked_5cm': sum(x[0] >= 0.05 for x in dips),
-                         'beam_bottom_m': b['z_bottom']}
+        clean = [x for x in dips if x[1]['outcome'] == 'arrived' and (x[1]['max_contact_n'] or 0) <= 100]
+        facts['beam'] = {'walks_under': len(dips), 'clean': len(clean), 'beam_bottom_m': b['z_bottom'],
+                         'pelvis_under_m': [round(x[2], 3) for x in dips], 'pelvis_elsewhere_m': [round(x[3], 3) for x in dips]}
         if dips:
-            clean = [x for x in dips if x[1]['outcome'] == 'arrived' and (x[1]['max_contact_n'] or 0) <= 100]
             dip, d, zu, zo = max(clean or dips, key=lambda x: x[0])
             pick['beam'] = {'world': 'corridor', 'goal': d['goal_id'], 'label': 'Watch it pass under',
-                            'note': f"{len(dips)} recorded walks passed under the beam; {facts['beam']['ducked_5cm']} lowered the pelvis by 5 cm "
-                                    f"or more there. This one: {zu:.2f} m under the beam against {zo:.2f} m elsewhere."}
+                            'note': f"This walk: lowest pelvis {zu:.2f} m under the beam against a median of {zo:.2f} m on the rest of the walk"
+                                    + ('' if (d['max_contact_n'] or 0) <= 100 else f"; it also pushed against a wall with {d['max_contact_n']:.0f} N") + '.'}
     # Contact: the room where walks touch walls most, and one of its walks with a clear strike.
     touched = [(w, d) for w, d in walks if (d['max_contact_n'] or 0) > 100]
     by_room = {}
     for w, d in walks:
         r = by_room.setdefault(w, [0, 0]); r[0] += 1; r[1] += (d['max_contact_n'] or 0) > 100
     facts['contact'] = {w: {'walks': a, 'over_100n': b} for w, (a, b) in by_room.items()}
+    def peak_xy(d):
+        k = max(range(d['n']), key=lambda k: d['contact_n'][k] or 0)
+        return d['q'][k * 36] / 1000, d['q'][k * 36 + 1] / 1000
+    def end_distance(xy, box):
+        c, h, yaw = np.asarray(box['center_xy'], float), box['half_xy'], box.get('yaw', 0.0)
+        axis = np.array([np.cos(yaw), np.sin(yaw)]) if h[0] >= h[1] else np.array([-np.sin(yaw), np.cos(yaw)])
+        half = max(h)
+        return min(float(np.linalg.norm(np.asarray(xy) - (c + s * half * axis))) for s in (-1, 1))
+    for w in by_room:
+        mine = [d for x, d in touched if x == w]
+        if mine and indexes[w]['boxes']:
+            ends = [min(end_distance(peak_xy(d), b) for b in indexes[w]['boxes']) for d in mine]
+            facts['contact'][w]['at_wall_end'] = int(sum(e <= 0.6 for e in ends))
     if touched:
         room = max(by_room, key=lambda w: by_room[w][1] / by_room[w][0])
         mine = sorted((d for w, d in touched if w == room), key=lambda d: d['max_contact_n'])

@@ -36,6 +36,8 @@ export class Viewer {
     controls.target.set(1.2, 0, 0.4);
     controls.enableDamping = true; controls.dampingFactor = 0.12;
     controls.maxPolarAngle = Math.PI * 0.49; controls.minDistance = 1.2; controls.maxDistance = 22;
+    // OrbitControls sets touch-action: none on the canvas; on touch screens let a vertical swipe scroll the page.
+    if (window.matchMedia('(pointer: coarse)').matches) renderer.domElement.style.touchAction = 'pan-y';
     controls.addEventListener('change', () => this.dirty());
     controls.addEventListener('start', () => this.start());
     scene.add(new THREE.HemisphereLight(0xcfe8f0, 0x1a2228, 1.15));

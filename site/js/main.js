@@ -2,6 +2,7 @@ import { $, escape } from './util.js';
 import { json } from './data.js';
 
 // The playground starts at once. Everything else starts when it nears the viewport or receives keyboard focus.
+const starters = [];
 const lazy = (sectionId, start) => {
   const section = $(sectionId);
   if (!section) return;
@@ -14,7 +15,10 @@ const lazy = (sectionId, start) => {
   const io = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) go(); }, { rootMargin: '400px 0px' });
   io.observe(section);
   section.addEventListener('focusin', go, { once: true });
+  starters.push(go);
 };
+// Once the page is idle, build the rest too, so Tab reaches every section and links land in place.
+const idle = window.requestIdleCallback ?? (fn => setTimeout(fn, 1500));
 
 async function playground() {
   if (!webgl()) {
@@ -34,8 +38,9 @@ async function stats() {
   const walks = catalog.worlds.reduce((n, w) => n + w.walks, 0);
   const arrived = catalog.worlds.reduce((n, w) => n + (w.outcomes.arrived ?? 0), 0);
   document.querySelector('[data-stat="walks"]').textContent = walks.toLocaleString('en-US');
-  document.querySelector('[data-stat="worlds"]').textContent = String(catalog.worlds.length);
+  const contact = catalog.worlds.reduce((n, w) => n + (w.contact ?? 0), 0);
   document.querySelector('[data-stat="arrived"]').textContent = walks ? `${Math.round(arrived / walks * 100)} %` : '—';
+  document.querySelector('[data-stat="contact"]').textContent = walks ? `${Math.round(contact / walks * 100)} %` : '—';
 }
 
 async function chapters() {
@@ -64,3 +69,4 @@ lazy('how', async () => (await import('./pipeline.js')).initPipeline($('pipeline
 lazy('robot-day', async () => (await import('./robotday.js')).initRobotDay($('day')));
 lazy('findings', async () => (await import('./findings.js')).initFindings($('findings-cards')));
 lazy('tour', chapters);
+window.addEventListener('load', () => idle(() => starters.forEach(go => go()), { timeout: 4000 }));

@@ -55,13 +55,19 @@ await check('clicking the floor shows the six goal checks', async () => {
   if (n !== 6) throw new Error(`${n} checks`);
   return await page.locator('#pg-goal .verdict').innerText();
 });
-await check('send, Go, the timeline moves, and the walk plays to its outcome', async () => {
-  await page.evaluate(() => { const pg = window.studioPlayground; pg.S.speed = 4; pg.random(); });
+// The outcome rule, restated here from the site's documentation so the page is checked against the raw data.
+function expectedGrade(walk) {
+  const contact = (walk.max_contact_n ?? 0) > 100;
+  if (walk.outcome === 'arrived') return contact ? 'Arrived, with contact' : (walk.final_dist_m ?? 0) > 0.6 ? 'Arrived by its estimate, off by truth' : 'Arrived';
+  return { stopped: 'Stopped', estop: 'E-stop', fell: 'Fell' }[walk.outcome] ?? walk.outcome;
+}
+await check('pick for me, press g on the keyboard, the timeline moves, the outcome matches the raw walk', async () => {
+  await page.evaluate(() => { window.studioPlayground.S.speed = 4; });
+  await page.click('#pg-random');
   await page.waitForSelector('#pg-go:visible', { timeout: 5000 });
   if (await page.locator('#pg-send').isVisible()) throw new Error('Send still visible once staged');
   await page.screenshot({ path: path.join(OUT, 'desktop-staged.png') });
-  await page.locator('#pg-canvas').click({ position: { x: 5, y: 5 }, trial: true });
-  await page.evaluate(() => window.studioPlayground.go());
+  await page.keyboard.press('g');
   await page.waitForFunction(() => window.studioPlayground.S.mode === 'playing', null, { timeout: 15000 });
   const t0 = await page.locator('#pg-time').innerText();
   await page.waitForTimeout(2500);
@@ -70,9 +76,13 @@ await check('send, Go, the timeline moves, and the walk plays to its outcome', a
   if (t0 === t1) throw new Error(`timeline frozen at ${t0}`);
   await page.waitForFunction(() => window.studioPlayground.S.mode === 'done', null, { timeout: 120000 });
   await page.screenshot({ path: path.join(OUT, 'desktop-done.png') });
+  const id = await page.evaluate(() => `${window.studioPlayground.S.worldId}/g/${window.studioPlayground.S.walk.goal_id}.json`);
+  const raw = await (await page.request.get(new URL(`data/${id}`, URL_).href)).json();
   const shown = await page.locator('#pg-outcome-title').innerText();
-  const want = await page.evaluate(async () => (await import('./js/util.js')).grade(window.studioPlayground.S.walk).label);
-  if (shown !== want) throw new Error(`outcome "${shown}" but the data says "${want}"`);
+  if (shown !== expectedGrade(raw)) throw new Error(`outcome "${shown}" but the raw walk says "${expectedGrade(raw)}"`);
+  const arrived = raw.events.find(e => e.type === 'arrived');
+  const text = await page.locator('#pg-outcome-text').innerText();
+  if (arrived && !text.includes(`arrived ${arrived.dist.toFixed(2)} m from the goal`)) throw new Error(`arrival sentence does not use the arrival distance ${arrived.dist}: ${text.slice(0, 160)}`);
   return `${t0} -> ${t1}; ${shown}`;
 });
 await check('scrubbing seeks, and scrubbing back rebuilds the map', async () => {
@@ -128,6 +138,15 @@ await check('robot day: a fault blocks the checklist, a clean run walks, focus i
   if (focus === 'BODY') throw new Error('focus dropped to the page');
   return `blocked with leg odometry; walked with the suggested goal; focus on ${focus}`;
 });
+await check('every section is built once the page is idle (Tab reaches them)', async () => {
+  const fresh = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+  await fresh.goto(URL_);
+  await fresh.waitForSelector('#pipeline .node', { state: 'attached', timeout: 15000 });
+  await fresh.waitForSelector('#day-steps button', { state: 'attached', timeout: 15000 });
+  await fresh.waitForSelector('#findings-cards .finding', { state: 'attached', timeout: 15000 });
+  await fresh.context().close();
+  return 'diagram, robot day and findings built without scrolling';
+});
 await check('findings and tour render', async () => {
   await page.locator('#findings').scrollIntoViewIfNeeded();
   await page.waitForSelector('#findings-cards .finding', { timeout: 10000 });
@@ -151,6 +170,10 @@ await check('phone: the playground fits and a tap picks a goal', async () => {
   await phone.page.waitForTimeout(400);
   await phone.page.screenshot({ path: path.join(OUT, 'phone-playground.png') });
   if (wide > 1) throw new Error(`page scrolls sideways by ${wide}px`);
+  const touch = await phone.page.evaluate(() => document.querySelector('#pg-canvas canvas').style.touchAction);
+  if (touch !== 'pan-y') throw new Error(`canvas touch-action is ${touch}: a vertical swipe would not scroll the page`);
+  const legendOpen = await phone.page.evaluate(() => document.getElementById('pg-legend').open);
+  if (legendOpen) throw new Error('the legend is open on a phone and pushes the timeline down');
   return `canvas ${Math.round(box.width)}×${Math.round(box.height)}`;
 });
 

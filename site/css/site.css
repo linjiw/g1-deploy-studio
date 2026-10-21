@@ -171,14 +171,14 @@ section { padding: clamp(48px, 7vw, 96px) clamp(16px, 4vw, 40px); max-width: 132
 .diagram .node text { fill: var(--text); font: 600 15px var(--sans); }
 .diagram .node text.sub { fill: var(--muted); font: 12px var(--mono); }
 .diagram .zone { fill: none; stroke: #22313b; stroke-dasharray: 4 5; }
-.diagram .zone-label { fill: var(--muted); font: 600 11px var(--mono); letter-spacing: .1em; }
+.diagram .zone-label { fill: var(--muted); font: 600 12px var(--mono); letter-spacing: .1em; }
 .diagram .edge { fill: none; stroke: #4a6474; stroke-width: 1.6; }
 .diagram .edge.flow { stroke-dasharray: 3 7; animation: flow 1.2s linear infinite; }
 .diagram .edge.studio-write { stroke: var(--teal); stroke-width: 2.2; }
 .diagram .edge.motor { stroke: var(--amber); stroke-width: 2.2; }
 .diagram .edge.operator { stroke: var(--green); stroke-width: 2.2; }
 .diagram .edge.never { stroke: var(--red); stroke-dasharray: 5 5; opacity: .8; }
-.diagram .elabel { fill: var(--muted); font: 12px var(--mono); paint-order: stroke; stroke: #121c24; stroke-width: 5px; stroke-linejoin: round; }
+.diagram .elabel { fill: var(--muted); font: 13px var(--mono); paint-order: stroke; stroke: #121c24; stroke-width: 5px; stroke-linejoin: round; }
 .diagram .elabel.studio { fill: var(--teal); } .diagram .elabel.never { fill: var(--red); }
 @keyframes flow { to { stroke-dashoffset: -20; } }
 #pipeline-detail h3 { color: var(--teal); text-transform: none; letter-spacing: 0; font-size: 1.1rem; }
@@ -297,3 +297,10 @@ footer { border-top: 1px solid var(--line); padding: 28px clamp(16px, 4vw, 40px)
 .no-webgl-note { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; }
 .no-webgl-note img { max-width: 70%; border-radius: 12px; opacity: .85; }
 .no-webgl-note p { color: var(--muted); margin-top: 12px; }
+
+.alert { background: #2a1616; border: 1px solid #6a3b37; color: #ffd6d0; border-radius: 10px; padding: 10px 12px; font-size: .88rem; margin: 10px 0 0; }
+
+.scroll-hint { display: none; margin-top: 6px; }
+@media (max-width: 860px) { .scroll-hint { display: block; } }
+.pg-stage { max-height: calc(100vh - 120px); }
+@media (max-width: 700px) { .pg-stage { max-height: none; } }

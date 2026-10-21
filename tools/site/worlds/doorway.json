@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "label": "Doorway \u00b7 0.8 m door in a long wall",
+ "label": "Doorway \u00b7 1 m door in a wall across the room",
  "kind": "boxes",
  "frame_id": "world",
  "units": "m",
@@ -8,11 +8,11 @@
   {
    "center_xy": [
     2.0,
-    2.7
+    4.25
    ],
    "half_xy": [
     0.12,
-    2.3
+    3.75
    ],
    "yaw": 0.0,
    "z_bottom": 0.0,
@@ -21,11 +21,11 @@
   {
    "center_xy": [
     2.0,
-    -2.7
+    -4.25
    ],
    "half_xy": [
     0.12,
-    2.3
+    3.75
    ],
    "yaw": 0.0,
    "z_bottom": 0.0,
@@ -42,11 +42,11 @@
    3.2079647570252936
   ]
  },
- "description": "Studio's offset-doorway demo arena with the two walls extended to |y| = 5 m and raised to 2 m, so the 0.8 m door (|y| < 0.4 m at x = 2) is the only way to the far side within the planner's memory. The original arena's 1.8 m walls could be walked around.",
+ "description": "Studio's offset-doorway demo arena rebuilt as a wall across the whole room: two 2 m high walls at x = 2 m from |y| = 0.5 m to 8 m, past the edge of the planner's 12 x 12 m memory, so the 1 m door (|y| < 0.5 m) is the only way to the far side the planner can know about. The original arena's 1.8 m walls, and a first rebuild with 0.8 m door and walls to |y| = 5 m, could both be walked around.",
  "provenance": {
   "source": "Studio arena editor (arena-5f331788aa98)",
   "sha256": "47d068e87266af42fb6ef751bee97751fe8813176d2602eb0a7b6c6815b983db",
   "derived_from": "Studio demo \u00b7 offset doorway (arena-5f331788aa98)",
-  "changed": "walls extended and raised for the site, 2026-10-21"
+  "changed": "rebuilt for the site, 2026-10-21: 1 m door, walls past the memory edge"
  }
 }

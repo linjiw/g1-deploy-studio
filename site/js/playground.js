@@ -41,6 +41,7 @@ export class Playground {
     const fromHash = parseHash();
     await this.loadWorld(fromHash?.world && this.catalog.some(w => w.id === fromHash.world) ? fromHash.world : this.catalog[0].id, { keepHash: true });
     window.addEventListener('hashchange', () => this.fromHash());
+    if (window.matchMedia('(max-width: 700px)').matches) $('pg-legend').open = false;
     this.root.classList.add('pg-ready');
     if (fromHash?.goal) await this.fromHash();
   }
@@ -57,7 +58,7 @@ export class Playground {
     this.root.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
     this.S.clicked = null;
     this.selectCell(cell, { stage: true });
-    if (h.play && this.S.mode === 'staged') this.go();
+    if (h.play && this.S.mode === 'staged' && !reducedMotion()) this.go();
   }
 
   bind() {
@@ -90,10 +91,11 @@ export class Playground {
     for (const b of this.root.querySelectorAll('[data-camera]')) b.addEventListener('click', () => this.camera(b.dataset.camera, b));
     window.addEventListener('keydown', e => {
       if (e.ctrlKey || e.metaKey || e.altKey || !this.inView()) return;
-      if (e.target.closest('input, textarea, select, button, a, [role="tab"], [contenteditable]')) return;
+      if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+      // g and Escape work wherever focus is (Send moves it to Go); Space keeps its meaning on buttons and links.
       if (e.key.toLowerCase() === 'g' && this.S.mode === 'staged') { e.preventDefault(); this.go(); }
-      else if (e.key === ' ' && this.S.walk) { e.preventDefault(); this.togglePlay(); }
       else if (e.key === 'Escape' && (this.S.selected || this.S.walk)) this.reset();
+      else if (e.key === ' ' && this.S.walk && !e.target.closest('button, a, [role="tab"], summary')) { e.preventDefault(); this.togglePlay(); }
     });
   }
   inView() { const r = this.root.getBoundingClientRect(); return r.bottom > 80 && r.top < window.innerHeight - 80; }
@@ -225,7 +227,8 @@ export class Playground {
       this.viewer.setMarker('hoverMarker', null);
       S.walk = walk; S.mapStep = -1;
       this.viewer.focus([S.world.start_xy, c.xy]);
-      if (narrow()) this.root.querySelector('.pg-stage').scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+      const stage = this.root.querySelector('.pg-stage').getBoundingClientRect();
+      if (narrow() || stage.bottom > window.innerHeight || stage.top < 56) this.root.querySelector('.pg-stage').scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: narrow() ? 'start' : 'center' });
       this.seek(0); this.play();
     } catch (error) {
       S.mode = 'staged'; this.flash(`Could not load the walk: ${error.message}`); this.render();
@@ -411,9 +414,10 @@ export class Playground {
     const g = grade(w), o = OUTCOME[w.outcome] ?? { text: '' };
     box.style.setProperty('--c', css(g.color)); chip.style.setProperty('--c', css(g.color));
     const contact = w.max_contact_n ?? null;
+    const arrival = w.events.find(e => e.type === 'arrived')?.dist ?? null;
     const lines = [
-      w.outcome === 'arrived' ? `By its own estimate it came within ${fmt(w.final_dist_estimate_m, 2)} m of the goal (node.py's rule: 0.4 m) and stood. By simulator truth it ended ${fmt(w.final_dist_m, 2)} m away.` : o.text,
-      w.reason ? `Reason: ${w.reason}.` : '',
+      w.outcome === 'arrived' ? `It arrived ${arrival === null ? '' : `${fmt(arrival, 2)} m from the goal `}by its own estimate (node.py's rule: within 0.4 m) and stood. When the walk ended it was ${fmt(w.final_dist_estimate_m, 2)} m away by its estimate and ${fmt(w.final_dist_m, 2)} m by simulator truth.` : o.text,
+      w.reason ? `Reason: ${reasonText(w.reason)}.` : '',
       contact === null ? '' : contact > 100 ? `It touched an obstacle: up to ${Math.round(contact)} N (Studio flags contact over 100 N).` : 'No obstacle contact over 100 N.',
       w.events.some(e => e.type === 'stand_deferred') ? 'Its stand was deferred under a low "ceiling" in its map' + (w.events.some(e => e.type === 'stand_forced') ? ', then forced after 20 s (a Studio limit in simulation).' : '.') : '',
     ].filter(Boolean);
@@ -424,11 +428,13 @@ export class Playground {
       ['Final, truth', `${fmt(w.final_dist_m, 2)} m`], ['Final, estimate', `${fmt(w.final_dist_estimate_m, 2)} m`],
       ['Max contact', contact === null ? '—' : `${Math.round(contact)} N`], ['Plans', w.plans_n ?? '—'],
     ].map(([a, b]) => `<div><span>${a}</span><b>${escape(String(b))}</b></div>`).join('');
-    $('pg-outcome-meta').textContent = `Recorded on CPU MuJoCo at ${fmt(w.rtf, 2)}× real time; seed ${S.world.settings?.seed ?? 0}; planner ${S.world.settings?.planner?.candidates ?? '?'} candidates, ${S.world.settings?.planner?.ode_steps ?? '?'} ODE steps.`;
-    chip.innerHTML = `<b>${escape(g.label)}</b> · ${fmt(w.final_dist_m, 2)} m off by truth${contact > 100 ? ` · contact ${Math.round(contact)} N` : ''}`;
+    $('pg-outcome-meta').textContent = `Grades: green arrived cleanly; amber arrived with contact over 100 N, or ended more than 0.6 m from the goal by truth (node.py's radius is 0.4 m, by its estimate); red E-stop or fall. Recorded on CPU MuJoCo at ${fmt(w.rtf, 2)}× real time; seed ${S.world.settings?.seed ?? 0}; planner ${S.world.settings?.planner?.candidates ?? '?'} candidates, ${S.world.settings?.planner?.ode_steps ?? '?'} ODE steps.`;
+    chip.innerHTML = `<b>${escape(g.label)}</b> · ends ${fmt(w.final_dist_m, 2)} m from the goal (truth)${contact > 100 ? ` · contact ${Math.round(contact)} N` : ''}`;
   }
 }
 
+// "tilt 0.75 rad > 0.75" reads as false at two decimals: say what the rule is instead.
+const reasonText = r => r.replace(/tilt ([\d.]+) rad > ([\d.]+)/, (_, a, b) => `tilted past the ${b} rad E-stop limit`);
 function setText(id, text) { const n = $(id); if (n.textContent !== text) n.textContent = text; }
 function parseHash() {
   const m = location.hash.match(/^#try(?:\/([a-z]+))?(?:\/(g\d\d-\d\d))?(\/play)?$/);

@@ -48,13 +48,13 @@
     <div class="cta"><a class="button primary" href="#try">Send the robot somewhere</a><a class="button" href="#tour">Watch the tour (9:44)</a></div>
     <ul class="stats" id="hero-stats">
       <li><b data-stat="walks">—</b><span>simulated walks, recorded</span></li>
-      <li><b data-stat="worlds">—</b><span>rooms</span></li>
       <li><b data-stat="arrived">—</b><span>arrived, by the robot's estimate</span></li>
+      <li><b data-stat="contact">—</b><span>of them pushed an obstacle with more than 100 N</span></li>
       <li><b>0</b><span>motor commands from Studio</span></li>
     </ul>
   </div>
   <a class="hero-shot" id="hero-shot" href="#try">
-    <img src="assets/hero.jpg" width="1200" height="900" alt="A recorded walk: the G1 in the corridor, over the map its LiDAR built" fetchpriority="high">
+    <img src="assets/hero.jpg" width="1200" height="900" alt="A recorded walk: the G1 weaving between three walls, over the map its LiDAR built" fetchpriority="high">
     <span class="caption" id="hero-caption"><b>A recorded walk</b> in the alternating-walls room. Red columns are the walls as the LiDAR saw them (the outlines are the real walls), pink is the plan, teal the path walked.</span>
   </a>
 </section>
@@ -82,7 +82,7 @@
       <div class="overlay bottom-right camera-buttons" role="group" aria-label="Camera">
         <button data-camera="orbit" aria-pressed="true">Orbit</button><button data-camera="top" aria-pressed="false">Top</button><button data-camera="follow" aria-pressed="false">Follow</button>
       </div>
-      <details class="legend" open>
+      <details class="legend" id="pg-legend" open>
         <summary>Legend</summary>
         <ul>
           <li><i class="sw floor"></i>floor the robot has seen</li>
@@ -93,7 +93,7 @@
           <li><i class="ln path"></i>path walked (sim truth)</li>
           <li><i class="dot est"></i>robot's own estimate</li>
           <li><i class="ln route"></i>Studio's check route</li>
-          <li><i class="dot ok"></i><i class="dot warn"></i><i class="dot bad"></i>recorded outcomes</li>
+          <li title="Green: arrived cleanly. Amber: arrived with contact over 100 N, or more than 0.6 m from the goal by truth. Red: E-stop or fall."><i class="dot ok"></i><i class="dot warn"></i><i class="dot bad"></i>outcomes: clean, flagged, failed</li>
         </ul>
       </details>
       <div id="pg-result" class="result-chip" role="status" hidden></div>
@@ -145,12 +145,13 @@
     <div class="diagram" id="pipeline" role="group" aria-label="System diagram: the robot, the deploy PC, Studio and the operator"></div>
     <aside class="card" id="pipeline-detail" aria-live="polite"></aside>
   </div>
+  <p class="fineprint scroll-hint">Scroll the diagram sideways to see all of it.</p>
   <div class="who-sends">
     <div><h3>Studio may send</h3><ul class="yes"><li><code>goal</code> to <code>node.py</code>, only after the checks pass and only while the robot stands still</li><li><code>stand</code> to <code>node.py</code></li><li><code>status</code> requests, to read the goal back</li></ul></div>
-    <div><h3>Studio never sends</h3><ul class="no"><li><code>go</code>: the operator presses <kbd>g</kbd> on the console or F1 on the remote</li><li><code>quit</code>, or anything to the SONIC runner</li><li>any DDS message: it has no DDS participant and no motor-command path</li></ul></div>
+    <div><h3>Studio never sends</h3><ul class="no"><li><code>go</code>: the operator presses <kbd>g</kbd> on the node console</li><li><code>quit</code>, or anything to the SONIC runner</li><li>any DDS message: it has no DDS participant and no motor-command path</li></ul></div>
     <div><h3>People keep</h3><ul class="people"><li>the wireless remote: D-up hands control to SONIC standing (not near overhead obstacles); Select is the runner's damping E-stop (the robot drops: gantry or spotter only)</li><li>the physical E-stop and a gantry or spotter</li><li>the decision to walk</li></ul></div>
   </div>
-  <p class="fineprint wide">Exposure today: Studio binds only loopback, but node.py (<code>tcp://*:5562</code>, which accepts <code>go</code> and <code>quit</code>, and <code>*:5556</code>) and the LIO bridge (<code>*:5561</code>) bind every interface. Until they bind 127.0.0.1 (proposal U3 to the deploy repository), firewall the robot network.</p>
+  <p class="fineprint wide">Exposure today: Studio binds only loopback, but node.py (<code>tcp://*:5562</code>, which accepts <code>go</code> and <code>quit</code>, and <code>*:5556</code>), the SONIC runner (<code>*:5557</code>) and the LIO bridge (<code>*:5561</code>) bind every interface. Proposal U3 to the deploy repository would bind node.py's two to loopback; the runner and the bridge need the same. Until then, firewall the robot network.</p>
 </section>
 
 <section id="robot-day" class="robot-day" aria-labelledby="day-title">
@@ -189,7 +190,7 @@
 <section id="tour" class="tour" aria-labelledby="tour-title">
   <div class="section-head">
     <h2 id="tour-title">The tour (9:44)</h2>
-    <p>Studio end to end: replay, rehearsal, the arena editor, suites, Navigate with the simulated robot and the real-robot link, and the validation behind it. Captions included.</p>
+    <p>Studio end to end: replay, rehearsal, the arena editor, suites, Navigate with the simulated robot and the real-robot link, and the validation behind it. Captions included. <b>Correction:</b> the video says the operator starts a walk "on the console or the remote". Only <kbd>g</kbd> on the node console starts it: the remote's F1 just hands the runner to the node's stream, and node.py waits for <kbd>g</kbd>.</p>
   </div>
   <div class="video" id="video-slot">
     <video id="tour-video" controls preload="metadata" playsinline poster="media/tour-poster.jpg">

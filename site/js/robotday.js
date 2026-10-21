@@ -9,7 +9,7 @@ const MAX_GOAL_M = 3.0;      // robot_link limits.max_goal_distance_m default
 const FAULTS = {
   leg: { label: 'Node started on leg odometry', note: "The console's default --odom leg instead of --odom zmq" },
   sway: { label: 'Robot still swaying', note: 'Just stood up; LIO reads it moving' },
-  lio: { label: 'LIO bridge stopped', note: 'No odometry for 2 s' },
+  lio: { label: 'LIO bridge stopped', note: 'No odometry for 2 s: on the robot this is an E-stop' },
   console: { label: 'Goal typed on the console', note: "Someone pressed n on the node's console" },
   ceiling: { label: 'Stand deferred after a walk', note: "The node will not stand: a low 'ceiling' in its map" },
 };
@@ -38,6 +38,7 @@ export async function initRobotDay(root) {
     <aside class="card" id="day-side" aria-label="Pre-Go checklist">
       <div class="ready-head"><h3>Before <kbd>g</kbd> on the console</h3><span id="day-verdict" class="verdict" aria-live="polite"></span></div>
       <ul class="ready" id="day-ready"></ul>
+      <p class="alert" id="day-alert" role="alert" hidden></p>
       <div class="faults"><h3 style="margin-top:14px">Break something</h3>
         ${Object.entries(FAULTS).map(([id, f]) => `<label class="switch"><input type="checkbox" data-fault="${id}"><span>${escape(f.label)}<small>${escape(f.note)}</small></span></label>`).join('')}
       </div>
@@ -45,6 +46,13 @@ export async function initRobotDay(root) {
   const canvas = $('day-canvas'), ctx = canvas.getContext('2d');
   const phaseAt = () => D.walk ? D.walk.phase(D.t) : 'WAIT';
   const walking = () => !!D.walk && D.t < D.walk.duration && !['ARRIVED', 'STOPPED'].includes(phaseAt());
+  const phaseAge = () => {  // seconds since the node's last phase change (the robot link's dwell rule)
+    if (!D.walk) return null;
+    const k = D.walk.index(D.t);
+    let start = 0;
+    for (const [i] of D.walk.phases) if (i <= k) start = D.walk.times[i];
+    return D.t - start;
+  };
   const motion = () => {  // LIO-level speed from the recorded estimate, as the robot link measures stillness
     if (!D.walk) return { v: 0, w: 0 };
     const k = D.walk.index(D.t), j = Math.max(0, k - 5), e = D.walk.est, dt = (D.walk.times[k] - D.walk.times[j]) || 1;
@@ -61,9 +69,11 @@ export async function initRobotDay(root) {
     if (f.has('lio')) add('Node frame matches LIO', 'block', 'node frame not compared yet: needs fresh node status and LIO odometry');
     else if (f.has('leg')) add('Node frame matches LIO', 'block', "the node's odometry is not the LIO bridge's: node status xy (0.31, -0.12) is 0.33 m from the LIO pose (0.00, 0.00) (limit 0.10 m); start the node with --odom zmq on the bridge's odometry");
     else add('Node frame matches LIO', 'pass', 'node status xy is 1.2 cm from the LIO pose (limit 10 cm)');
-    const m = motion();
+    const m = motion(), dwell = phaseAge();
     if (f.has('lio')) add('Robot still', 'block', 'robot stillness unknown: odometry is stale');
-    else if (walking()) add('Robot still', 'block', `the robot is moving (${fmt(m.v)} m/s; still means below 0.05 m/s and 0.05 rad/s)`);
+    else if (walking() && m.v >= 0.05) add('Robot still', 'block', `the robot is moving (${fmt(m.v)} m/s; still means below 0.05 m/s and 0.05 rad/s)`);
+    else if (D.walk && dwell !== null && dwell < 1.0) add('Robot still', 'block', `the node phase changed to ${phaseAt()} ${fmt(dwell, 1)} s ago (needs 1.0 s)`);
+    else if (walking()) add('Robot still', 'block', `the robot is walking (node phase ${phaseAt()})`);
     else if (f.has('sway')) add('Robot still', 'block', 'the robot is moving (0.08 m/s, 0.11 rad/s; still means below 0.05 m/s and 0.05 rad/s)');
     else add('Robot still', 'pass', 'still for 2.4 s (0.004 m/s, 0.006 rad/s)');
     const g = f.has('console') ? [1.8, 0.4] : D.sent?.xy;
@@ -76,7 +86,7 @@ export async function initRobotDay(root) {
       const d = Math.hypot(g[0] - world.start_xy[0], g[1] - world.start_xy[1]);
       add(label, d <= MAX_GOAL_M ? 'pass' : 'block', d <= MAX_GOAL_M ? `${fmt(d)} m from the robot; inside the assumed memory (±6 m around (0.00, 0.00))` : `${fmt(d)} m from the robot: beyond the ${MAX_GOAL_M.toFixed(1)} m limit`);
     }
-    if (f.has('ceiling')) add('Stand not deferred', 'block', "inferred from node status: the node is deferring its stand (a low ceiling near the robot): the robot holds the plan's last pose until it is clear. Take over with the remote's D-up only if nothing is directly above the robot");
+    if (f.has('ceiling')) add('Stand not deferred', 'block', `inferred from node status: the node is deferring its stand (a low ceiling near the robot): the robot holds the plan's last pose until it is clear. Take over with the remote's D-up only if nothing is directly above the robot${D.walk ? '' : ' (as after a walk that ended near a low ceiling)'}`);
     else if (walking()) add('Stand not deferred', 'warn', `the robot is walking (node phase ${phaseAt()})`);
     else add('Stand not deferred', 'pass', D.walk ? `node phase ${phaseAt()}, standing = true` : 'node phase WAIT (no stand pending)');
     return items;
@@ -212,16 +222,17 @@ export async function initRobotDay(root) {
   const TEXT = {
     build: () => `<h3>Build the course from a start mark</h3><p>Pick an arena in Studio and print its build sheet: every box as a measured offset from a start mark taped on the floor, the heading arrow, and the exact console command. Studio rehearses the same course in simulation first.</p><p class="muted">Here: the wall-detour room, one 1.8 m high wall about 1.8 m ahead of the start.</p>`,
     start: () => `<h3>Start the stack on the deploy PC</h3><p>Under the operator procedure: gantry or spotter, the remote in hand, the physical E-stop within reach.</p>
-<pre class="term"><span class="c"># the LiDAR mount and the streams</span>
-<span class="p">$</span> ./g1 calibrate &amp;&amp; ./g1 check
+<pre class="term"><span class="c"># the LiDAR mount and the streams (g1-student-deploy OPERATOR_GUIDE)</span>
+<span class="p">$</span> ./g1 calibrate --iface eth0 --out mount.json --png coverage.png
+<span class="p">$</span> ./g1 check --iface eth0 --perception
 <span class="c"># Point-LIO odometry on ZMQ :5561, with the registered cloud for Studio (bridge untested: no ROS 2 on the dev machine)</span>
-<span class="p">$</span> python g1deploy/adapters/ros2_lio_bridge.py --forward-cloud
+<span class="p">$</span> python g1deploy/adapters/ros2_lio_bridge.py --iface eth0 --forward-cloud
 <span class="c"># the SONIC runner and node.py, planning on LIO odometry</span>
-<span class="p">$</span> ./g1 robot --iface eth0 --goal 2 0 <b>--odom zmq</b>
+<span class="p">$</span> ./g1 robot --iface eth0 --goal 2 0 <b>--odom zmq</b> --mount-calib mount.json
 <span class="c"># Studio, on loopback; the laptop connects through SSH</span>
 <span class="p">$</span> .venv/bin/python -m studio.server --port 8790
 <span class="p">laptop$</span> ssh -N -L 8790:127.0.0.1:8790 you@deploy-pc</pre>
-<p class="muted">Studio refuses goals when the node runs on the console's default <code>--odom leg</code>: its frame would not be the one Studio draws. The node and the bridge bind every interface today, so keep the robot network firewalled.</p>`,
+<p class="muted">Studio refuses goals when the node runs on the console's default <code>--odom leg</code>: its frame would not be the one Studio draws. The node (:5556, :5562), the runner (:5557) and the bridge (:5561) bind every interface today, so keep the robot network firewalled.</p>`,
     connect: () => `<h3>Connect: see what the robot sees</h3><p>Navigate → Real robot → Connect. Studio subscribes on loopback and shows the LIO pose (labelled as an estimate: a real robot has no ground truth), the LiDAR, its reconstruction of the map within the planner's 12 × 12 m memory (dashed) and each stream's age. A stale stream shows as stale, never as zero.</p><p>The checklist on the right is live from here on. Try the switches.</p>`,
     goal: () => {
       const refusal = canSend(), g = D.goal;
@@ -232,7 +243,7 @@ export async function initRobotDay(root) {
     },
     go: () => {
       const ok = !ready().some(i => i.status === 'block');
-      return `<h3>Only a person starts a walk</h3><p>Studio never sends Go. The operator reads the checklist and presses <kbd>g</kbd> on the node's console (or F1 on the remote). Nothing in software stops a person pressing it anyway, so the list is written to be read.</p>
+      return `<h3>Only a person starts a walk</h3><p>Studio never sends Go. The operator reads the checklist and presses <kbd>g</kbd> on the node's console, which hands the runner to the node's stream and tells node.py to go. Nothing in software stops a person pressing it anyway, so the list is written to be read.</p>
         <div class="keys"><button class="keycap ${ok ? 'armed' : ''}" id="day-g" aria-label="Press g">g</button><span class="${ok ? 'verdict pass' : 'verdict block'}">${ok ? 'Checklist clear: press g' : 'Checklist blocked: do not press g'}</span></div>
         ${D.message ? `<p class="verdict block" style="margin-top:8px">${escape(D.message)}</p>` : ''}`;
     },
@@ -261,6 +272,9 @@ export async function initRobotDay(root) {
     const items = ready(), ok = !items.some(i => i.status === 'block'), live = D.step >= 2;
     const html = items.map(i => `<li class="${live ? i.status : 'idle'}"><span class="icon">${live ? ICON[i.status] : '·'}</span><span>${escape(i.label)}<small>${escape(live ? i.detail : 'not connected yet')}</small></span></li>`).join('');
     if (html !== lastReady) { $('day-ready').innerHTML = html; lastReady = html; }
+    const alert = $('day-alert'), lio = D.faults.has('lio');
+    alert.hidden = !lio;
+    if (lio) alert.textContent = 'On the robot this is not just a blocked checklist: node.py E-stops when its odometry is more than 0.5 s old, in any phase, and the console then switches the runner to damping. The robot drops; only the gantry or the spotter catches it.';
     $('day-verdict').className = `verdict ${live ? (ok ? 'pass' : 'block') : 'idle'}`;
     $('day-verdict').textContent = live ? (ok ? 'Clear' : 'Do not press g') : 'Not connected';
   };
