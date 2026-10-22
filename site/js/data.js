@@ -95,6 +95,15 @@ export class Walk {
     return phase;
   }
   phase(t) { return this.phaseAt(this.index(t)); }
+  // Is the reference at t the plan's? While walking (RUN), and while a deferred stand holds the plan's last frame
+  // (until the robot stands). Otherwise the node's reference is a stand, not a plan.
+  planHeld(t) {
+    const phase = this.phase(t);
+    if (phase === 'RUN') return true;
+    if (phase !== 'ARRIVED') return false;
+    const d = this.events.find(e => e.type === 'stand_deferred' && e.t <= t + 1e-9);
+    return !!d && !this.events.some(e => (e.type === 'stand' || e.type === 'stand_forced') && e.t > d.t && e.t <= t + 1e-9);
+  }
   plan(t) {
     let found = null;
     for (const [start, i] of this.planStarts) { if (start <= t + 1e-9) found = i; else break; }

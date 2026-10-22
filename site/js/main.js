@@ -14,14 +14,15 @@ function startDemo({ scroll = true, focus = false } = {}) {
   if (demoStart) { if (focus) demoStart.then(d => d?.el.canvas.focus({ preventScroll: true })); return demoStart; }
   const stage = $('demo-stage'), poster = stage.querySelector('.poster');
   poster.hidden = true;
-  demoStart = boot(stage, { embedded: true, hashPrefix: 'try/', fullHref: 'demo/' }, undefined, {
+  const mine = demoStart = boot(stage, { embedded: true, hashPrefix: 'try/', fullHref: 'demo/' }, undefined, {
     // Stop: back to the poster, nothing left running; a later Start (or #try link) boots it again.
     onStopped: () => {
-      demoStart = null; window.studioDemo = null; poster.hidden = false;
+      if (demoStart === mine) demoStart = null;
+      window.studioDemo = null; poster.hidden = false;
       if (location.hash.startsWith('#try/')) history.replaceState(null, '', '#try');
       poster.querySelector('.start')?.focus({ preventScroll: true });
     },
-  }).then(d => { window.studioDemo = d; if (focus) d?.el.canvas.focus({ preventScroll: true }); return d; });
+  }).then(d => { if (d && demoStart === mine) { window.studioDemo = d; if (focus) d.el.canvas.focus({ preventScroll: true }); } return d; });
   return demoStart;
 }
 for (const b of document.querySelectorAll('[data-start]')) b.addEventListener('click', () => startDemo({ focus: true }));
@@ -32,7 +33,8 @@ const closerLink = () => {
   const m = location.hash.match(/^#closer\/([a-z]+)\/(g\d\d-\d\d)$/);
   if (!m) return;
   $('closer').scrollIntoView({ behavior: smooth(), block: 'start' });
-  closer().then(s => s.showWalk(m[1], m[2]));
+  // The split view boots under the sections above it as they build: land on it again once it is in.
+  closer().then(s => s.showWalk(m[1], m[2])).then(() => requestAnimationFrame(() => $('closer').scrollIntoView({ block: 'start' })));
 };
 window.addEventListener('hashchange', closerLink);
 // The outcome table's cells open the room menu on that room and grade.
@@ -72,6 +74,7 @@ $('closer-stage').querySelector('[data-closer-start]').addEventListener('click',
 
 // ----- small tools
 document.querySelector('.menu')?.addEventListener('click', e => { if (e.target.closest('a')) e.currentTarget.open = false; });
+document.addEventListener('pointerdown', e => { const m = document.querySelector('.menu[open]'); if (m && !m.contains(e.target)) m.open = false; });
 $('faq-all')?.addEventListener('click', e => {
   const all = [...document.querySelectorAll('#faq-list details')], open = !all.every(d => d.open);
   for (const d of all) d.open = open;
@@ -131,6 +134,7 @@ for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) window.addEve
 const idle = window.requestIdleCallback ?? (fn => setTimeout(fn, 1500));
 window.addEventListener('load', () => idle(async () => {
   await Promise.all(starters.map(go => go()));
-  const target = /^#[a-z-]+$/.test(location.hash) ? document.querySelector(location.hash) : null;
+  const id = location.hash.match(/^#([a-z-]+)(?:\/|$)/)?.[1];
+  const target = id && id !== 'try' ? document.getElementById(id) : null;
   if (target && !moved) requestAnimationFrame(() => target.scrollIntoView({ block: 'start' }));
 }, { timeout: 4000 }));

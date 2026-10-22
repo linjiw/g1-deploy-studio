@@ -62,14 +62,16 @@ export async function initFindings(container, table) {
   container.innerHTML = cards(featured, catalog).map(f => {
     const ex = f.example;
     const href = ex ? `#try/${ex.world}/${ex.goal}/play${ex.at ? `@${Math.max(0, ex.at - 2).toFixed(1)}` : ''}` : f.anchor ?? f.link;
+    const fixed = f.num === 'Fixed';
     const shot = ex
       ? `<a class="shot" href="${href}" aria-label="${escape(ex.label ?? 'Watch it')}"><img src="${MEDIA}stills/${f.id}.jpg" width="640" height="360" loading="lazy" alt="" onerror="this.parentNode.classList.add('blank');this.remove()"><span class="play">▶ ${escape(ex.label ?? 'Watch it')}</span></a>`
-      : `<div class="shot blank" aria-hidden="true"><span>${escape(f.tag)}</span></div>`;
+      : fixed ? '' : `<div class="shot blank" aria-hidden="true"><span>${escape(f.tag)}</span></div>`;
     // One way in per card: the still is the link when there is an example.
     const watch = ex ? ''
       : f.anchor ? `<a class="watch" href="${f.anchor}">Try it →</a>` : f.link ? `<a class="watch" href="${f.link}">Read the record →</a>` : '';
-    return `<article class="finding">${shot}<div class="body"><span class="kind ${f.kind}">${escape(f.tag)}</span>
-      <p class="num">${escape(String(f.num))}${f.unit ? `<small>${escape(f.unit)}</small>` : ''}</p><h3>${escape(f.title)}</h3><p>${escape(f.text)}</p>
+    const lead = fixed ? '<span class="fixed-badge">✓ Fixed in review</span>' : `<p class="num">${escape(String(f.num))}${f.unit ? `<small>${escape(f.unit)}</small>` : ''}</p>`;
+    return `<article class="finding${fixed ? ' fixed' : ''}">${shot}<div class="body"><span class="kind ${f.kind}">${escape(f.tag)}</span>
+      ${lead}<h3>${escape(f.title)}</h3><p>${escape(f.text)}</p>
       <details><summary>How this was measured</summary>${ex?.note ? `<p>${escape(ex.note)}</p>` : ''}<p>${escape(f.method)}</p></details>${watch}</div></article>`;
   }).join('');
   if (table) outcomeTable(table, catalog);
@@ -82,7 +84,8 @@ function outcomeTable(table, catalog) {
   const cell = (n, k, folder) => {
     const cls = !n ? 'zero' : k === 'clean' ? '' : ['estop', 'fell'].includes(k) ? 'badcell' : 'hotcell';
     const open = n && folder && !(folder === 'wrong' && k === 'clean');
-    return `<td class="${cls}">${open ? `<button class="cell" data-folder="${folder}" data-grade="${k}" title="Open these walks in the demo">${n}</button>` : n ?? 0}</td>`;
+    const what = `${n} ${GRADES[k]?.label ?? k} walks${folder === 'wrong' ? ' in all rooms' : ''}`;
+    return `<td class="${cls}">${open ? `<button class="cell" data-folder="${folder}" data-grade="${k}" title="Open these walks in the demo" aria-label="Open the ${escape(what)} in the demo">${n}</button>` : n ?? 0}</td>`;
   };
   const total = k => catalog.reduce((n, w) => n + (w.grades?.[k] ?? 0), 0);
   table.insertAdjacentHTML('beforeend', `<thead><tr><th>Room</th>${keys.map(k => `<th><i style="background:${GRADES[k].css}"></i>${escape(GRADES[k].short)}</th>`).join('')}<th>Walks</th></tr></thead>

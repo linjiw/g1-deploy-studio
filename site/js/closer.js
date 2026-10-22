@@ -11,7 +11,7 @@ import { fmt, escape, reducedMotion } from './util.js';
 const FPS = 25, CLIP_S = 9;
 // The readouts: [label, kind of value, what it is].
 const FACTS = {
-  body: [['Plan to body', 'while walking', "The plan body's pelvis from where the robot thinks its pelvis is, both in the planner's frame"],
+  body: [['Plan to body', 'planner frame', "The plan body's pelvis from where the robot thinks its pelvis is, both in the planner's frame: while walking, and while a deferred stand holds the plan's last frame"],
          ['Pelvis', 'plan / body', 'Pelvis height: planned, and executed (simulator truth)'],
          ['Joints apart', 'plan / body', 'Root-mean-square gap over the 29 joint angles'],
          ['Contact', 'truth', 'Obstacle contact force, simulator truth']],
@@ -25,11 +25,12 @@ const SIDES = {
   estimate: [['Simulator truth', 'where the robot is'], ['Its estimate', 'where it thinks it is']],
 };
 
-export async function mountCloser(root, { scenarios, progress = () => {}, onChange = () => {}, onStop = null, trace = null } = {}) {
+export async function mountCloser(root, { scenarios, progress = () => {}, onChange = () => {}, onStop = null, trace = null, onCreate = null } = {}) {
   const c = new Closer(root, scenarios, progress, onChange, onStop);
   c.trace = trace;
+  onCreate?.(c);  // so a Stop during booting reaches it
   await c.init();
-  return c;
+  return c.destroyed ? null : c;
 }
 
 class Closer {
@@ -52,7 +53,7 @@ class Closer {
         <span class="time mono" data-el="frame">frame —</span>
         <button class="dk small" data-el="speed" title="Playback speed">1×</button>
         <div class="seg" role="group" aria-label="View"><button data-view="split" aria-pressed="true">Side by side</button><button data-view="overlay" aria-pressed="false">Overlay</button></div>
-        ${onStop ? '<button class="dk small" data-el="stop" title="Stop the comparison and free its memory">Stop</button>' : ''}
+        ${onStop ? '<button class="dk small" data-el="stop" title="Stop the comparison and free its memory" disabled>Stop</button>' : ''}
       </div>`);
     this.el = {};
     for (const n of root.querySelectorAll('[data-el]')) this.el[n.dataset.el] = n;
@@ -69,12 +70,15 @@ class Closer {
   }
   async init() {
     await this.viewer.loadRobot(DATA, f => this.progress(0.3 + 0.55 * f, 'Loading the robot'));
+    if (this.destroyed) return;
     this.viewer.ghost('plan', { color: COLORS.ghost, opacity: 1 });
     this.viewer.ghost('est', { color: 0x8fb8ff, opacity: 1 });
     this.progress(0.9, 'Loading the walk');
     await this.load(this.scenarios[0]);
+    if (this.destroyed) return;
     this.progress(1, 'Ready');
     this.root.classList.add('is-ready');
+    if (this.el.stop) this.el.stop.disabled = false;
   }
   bind() {
     const E = this.el;
@@ -95,7 +99,7 @@ class Closer {
     const S = this.S, token = ++S.token;
     S.playing = false;
     const [world, walk] = await Promise.all([json(`${sc.world}/index.json`).then(decodeWorld), walkJson(`${sc.world}/g/${sc.goal}.json`).then(d => new Walk(d))]);
-    if (token !== S.token) return;
+    if (token !== S.token || this.destroyed) return;
     S.scenario = sc; S.world = world; S.walk = walk;  // the scenario changes only with its walk
     const v = this.viewer;
     // Walls as glass: the bodies are the subject, and a wall must not hide them.
@@ -165,7 +169,7 @@ class Closer {
     }
     if (!quiet && S.walk) { this.aim(); this.apply(); }
   }
-  destroy() { this.abort.abort(); for (const o of this.observers) o.disconnect(); this.viewer.dispose(); if (this.trace) { this.trace.hidden = true; this.trace.innerHTML = ''; } }
+  destroy() { if (this.destroyed) return; this.destroyed = true; this.abort.abort(); for (const o of this.observers) o.disconnect(); this.viewer.dispose(); if (this.trace) { this.trace.hidden = true; this.trace.innerHTML = ''; } }
   // Under the stage (the next-step page): plan to body and contact over the clip, its cursor in step; a click seeks.
   drawTrace() {
     const S = this.S, w = S.walk, el = this.trace;
@@ -187,7 +191,7 @@ class Closer {
     let path = '', pen = false;
     for (const [t, d] of lag) { if (d === null) { pen = false; continue; } path += `${pen ? 'L' : 'M'}${x(t).toFixed(1)},${y(d).toFixed(1)}`; pen = true; }
     el.innerHTML = `<p class="trace-title"><b>Plan to body</b>, while walking (m) · <span class="hot">contact over 100 N</span> · click to move through the clip</p>
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Plan to body distance over the clip, up to ${fmt(top, 1)} m">
+      <svg viewBox="0 0 ${W} ${H}" role="slider" tabindex="0" aria-label="Plan to body distance over the clip, up to ${fmt(top, 1)} m; the arrow keys move through it" aria-valuemin="${fmt(a, 2)}" aria-valuemax="${fmt(b, 2)}" aria-valuenow="${fmt(S.t, 2)}">
         <line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/><line class="grid" x1="${L}" x2="${W - R}" y1="${y(top)}" y2="${y(top)}"/>
         <text x="${L - 6}" y="${y(top) + 4}" text-anchor="end">${fmt(top, 1)}</text><text x="${L - 6}" y="${H - B + 4}" text-anchor="end">0</text>
         ${hits.map(t => `<rect class="hit" x="${x(t) - 1.5}" y="${T}" width="3" height="${H - B - T}"/>`).join('')}
@@ -196,6 +200,14 @@ class Closer {
         <line class="cursor" x1="0" x2="0" y1="${T}" y2="${H - B}"/>
       </svg>`;
     this.traceX = x;
+    if (!this.traceSeen) { this.traceSeen = new ResizeObserver(() => { if (Math.abs(el.clientWidth - this.traceW) > 8) this.drawTrace(); }); this.traceSeen.observe(el); this.observers.push(this.traceSeen); }
+    this.traceW = el.clientWidth;
+    el.querySelector('svg').addEventListener('keydown', e => {
+      const d = { ArrowRight: 0.04, ArrowLeft: -0.04, ArrowUp: 0.5, ArrowDown: -0.5, PageUp: 2, PageDown: -2 }[e.key];
+      if (d === undefined && e.key !== 'Home' && e.key !== 'End') return;
+      e.preventDefault(); this.pause();
+      this.seek(e.key === 'Home' ? a : e.key === 'End' ? b : this.S.t + d);
+    });
     el.querySelector('svg').addEventListener('click', e => {
       const r = e.currentTarget.getBoundingClientRect(), t = a + ((e.clientX - r.left) / r.width * W - L) / (W - L - R) * (b - a);
       this.pause(); this.seek(t);
@@ -238,12 +250,12 @@ class Closer {
       if (fresh || plan !== this.shown.plan) v.setLine(this.lines.plan, plan ? plan.points : null);
       if (fresh || k !== this.shown.k) {
         // The plan body's root is the planner's only while it walks; standing, the node sets it to the robot's pose.
-        const run = w.phase(S.t) === 'RUN' && !w.est_missing?.includes(k), r = w.hasRef ? w.refFrames.subarray(k * 36, k * 36 + 36) : null;
+        const run = w.planHeld(S.t) && !w.est_missing?.includes(k), r = w.hasRef ? w.refFrames.subarray(k * 36, k * 36 + 36) : null;
         const has = r && !Number.isNaN(r[0]), f = w.frames.subarray(k * 36, k * 36 + 36);
         let rms = null;
         if (has) { let sq = 0; for (let j = 7; j < 36; j++) sq += (r[j] - f[j]) ** 2; rms = Math.sqrt(sq / 29) * 57.2958; }
         this.facts('body', [
-          !has ? '—' : run ? `${fmt(Math.hypot(r[0] - w.est[k * 2] / 1000, r[1] - w.est[k * 2 + 1] / 1000), 2)} m` : 'not walking',
+          !has ? '—' : run ? `${fmt(Math.hypot(r[0] - w.est[k * 2] / 1000, r[1] - w.est[k * 2 + 1] / 1000), 2)} m` : w.phase(S.t) === 'PRESCAN' ? 'pre-scan' : 'standing',
           has ? `${fmt(r[2], 2)} / ${fmt(f[2], 2)} m` : '—',
           has ? `${fmt(rms, 1)}° RMS` : '—',
           w.contact_n[k] === null ? '—' : w.contact_n[k] > 0 ? `${w.contact_n[k]} N` : 'none',
@@ -306,7 +318,7 @@ class Closer {
     const k = w.index(S.t + 1e-6);
     E.frame.textContent = `frame ${k + 1} / ${w.n} · ${fmt(S.t, 2)} s`;
     const cur = this.trace?.querySelector('.cursor');
-    if (cur && this.traceX) { const px = this.traceX(S.t).toFixed(1); cur.setAttribute('x1', px); cur.setAttribute('x2', px); }
+    if (cur && this.traceX) { const px = this.traceX(S.t).toFixed(1); cur.setAttribute('x1', px); cur.setAttribute('x2', px); cur.parentNode.setAttribute('aria-valuenow', fmt(S.t, 2)); }
     E.scrub.setAttribute('aria-valuetext', `${fmt(S.t, 2)} seconds, frame ${k + 1} of ${w.n} (${FPS} per second)`);
   }
 }

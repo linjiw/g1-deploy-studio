@@ -61,6 +61,7 @@
 .hint { padding: 8px 14px; border-radius: 999px; background: rgba(255, 255, 255, .94); color: #10161c; font-size: 14px; white-space: nowrap; box-shadow: 0 10px 30px -10px rgba(0, 0, 0, .5); transition: opacity .4s; pointer-events: none; }
 .hint::after, .goal-chip::after { content: ""; position: absolute; left: var(--ax, 50%); bottom: -6px; width: 12px; height: 12px; transform: translateX(-50%) rotate(45deg); background: inherit; border-right: inherit; border-bottom: inherit; }
 .goal-chip.below::after { bottom: auto; top: -6px; transform: translateX(-50%) rotate(225deg); }
+.goal-chip.adrift::after { display: none; }
 .hint::after { background: rgba(255, 255, 255, .94); }
 .stage:not(.is-ready) .hint, .stage.picked .hint { opacity: 0; }
 .goal-chip { width: 300px; max-height: calc(100% - 150px); overflow: auto; border-radius: 16px; padding: 12px 14px; background: var(--s-glass-2); }
@@ -279,7 +280,7 @@
 .guide li.now b { background: var(--s-accent); color: #fff; }
 .guide li.done { color: var(--s-ink-2); }
 .guide li.done b { background: var(--ok); color: #05261a; }
-.stage.narrow .guide { bottom: auto; top: auto; display: none; }
+.stage.narrow .guide li { padding: 4px 9px 4px 5px; font-size: 12px; }
 .stage[data-mode="done"] .guide, .stage[data-mode="playing"] .guide { display: none; }
 
 /* ----- the ghost's one-time explanation, pinned above the plan body */
@@ -291,3 +292,12 @@
 .stage.narrow .goal-chip .gc-actions { position: sticky; bottom: -12px; margin: 8px -14px -12px; padding: 10px 14px 12px; background: var(--s-glass-2); border-top: 1px solid var(--s-line); }
 @media (pointer: coarse) { .help .keys { display: none; } }
 .stage-canvas:focus-visible { outline: 2px solid var(--s-accent); outline-offset: -4px; }
+
+/* ----- round 4: the checks' buttons stay in view at any height; touch screens hide key hints */
+.goal-chip .gc-actions { position: sticky; bottom: -12px; margin: 8px -14px -12px; padding: 10px 14px 12px; background: var(--s-glass-2); border-top: 1px solid var(--s-line); }
+@media (pointer: coarse) { .btn.go kbd, .folders kbd { display: none; } }
+.stage.narrow .layers button { padding: 4px 8px; font-size: 11.5px; gap: 5px; }
+.stage.narrow .layers button i { width: 7px; height: 7px; }
+.stage.narrow .layers .legend-btn { width: 26px; }
+.stage.narrow .poster.small img { object-fit: contain; background: #0c1015; }
+.stage.closer.narrow .split-facts div:nth-child(n+3) { display: none; }

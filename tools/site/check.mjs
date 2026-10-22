@@ -308,6 +308,68 @@ await check('every walk, one dot: the chart plays the walk it names, and its cou
   if (rows !== want) throw new Error(`the table says ${want}, the room menu lists ${rows}`);
   return `${dots} dots; Enter played ${playing}; Plan vs body opened it; Stop left ${left.canvases} canvases; a count of ${want} opened ${rows} walks`;
 });
+await check('mouse: a dot plays its walk with the demo in view; at 1280×800 Send is never under the dock', async () => {
+  const { page: m } = await open({ width: 1280, height: 800 }, 'mouse');
+  await m.evaluate(() => { document.documentElement.style.scrollBehavior = 'auto'; document.getElementById('atlas').scrollIntoView(); });
+  await m.waitForSelector('#atlas-chart svg .dot', { timeout: 20000 });
+  const dot = m.locator('#atlas-chart svg .dot').nth(150);
+  await dot.hover({ force: true }); await m.waitForTimeout(150);  // dots overlap: the chart picks the nearest
+  const named = await m.evaluate(() => document.querySelector('#atlas-chart .atlas-read a.watch')?.getAttribute('href'));
+  await dot.click({ force: true });
+  await m.waitForFunction(() => window.studioDemo?.S.mode === 'playing', null, { timeout: 60000 });
+  await m.waitForTimeout(1200);
+  const s = await m.evaluate(() => ({ top: document.getElementById('demo-stage').getBoundingClientRect().top, playing: `#try/${window.studioDemo.S.worldId}/${window.studioDemo.S.walk.goal_id}/play` }));
+  const covered = await m.evaluate(() => { const d = window.studioDemo; let bad = 0;
+    for (const c of d.S.recorded) { d.selectCell(c); d.S.detail = true; d.renderChip(); d.place();
+      const b = d.el.chip.querySelector('[data-act="send"]').getBoundingClientRect(), dock = d.el.dock.getBoundingClientRect();
+      if (b.bottom > dock.top + 1 || !d.el.chip.contains(document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2))) bad++; }
+    return bad; });
+  await m.context().close();
+  if (s.playing !== named) throw new Error(`hovered ${named}, playing ${s.playing}`);
+  if (s.top < 0 || s.top > 200) throw new Error(`the demo landed at ${Math.round(s.top)} px`);
+  if (covered) throw new Error(`Send under the dock or covered for ${covered} goals`);
+  return `${s.playing} plays, the stage at ${Math.round(s.top)} px; Send clear for every goal`;
+});
+await check('Stop is offered only once the demo is up; Stop then Start leaves exactly one demo', async () => {
+  const { page: b } = await open({ width: 1280, height: 800 }, 'stop-boot');
+  // A slow robot download keeps the demo booting long enough to look at Stop.
+  await b.route('**/meshes.bin', async r => { await new Promise(res => setTimeout(res, 2500)); r.continue(); });
+  await b.click('#try .poster .start');
+  await b.waitForSelector('#demo-stage [data-el="stop"]', { state: 'attached', timeout: 15000 });
+  const early = await b.evaluate(() => document.querySelector('#demo-stage [data-el="stop"]').disabled);
+  await b.waitForSelector('#demo-stage.is-ready', { timeout: 60000 });
+  await b.unroute('**/meshes.bin');
+  await b.click('#demo-stage [data-el="stop"]');
+  const stopped = await b.evaluate(() => ({ demo: !!window.studioDemo, canvases: document.querySelectorAll('#demo-stage canvas').length, poster: !document.querySelector('#demo-stage .poster').hidden, focus: document.activeElement?.className }));
+  await b.click('#try .poster .start');
+  await b.waitForSelector('#demo-stage.is-ready', { timeout: 60000 });
+  const again = await b.evaluate(() => ({ canvases: document.querySelectorAll('#demo-stage canvas').length, guide: !document.querySelector('#demo-stage [data-el="guide"]').hidden }));
+  await b.context().close();
+  if (!early) throw new Error('Stop is enabled before the demo is ready');
+  if (stopped.demo || stopped.canvases || !stopped.poster) throw new Error(`after Stop: ${JSON.stringify(stopped)}`);
+  if (again.canvases !== 1) throw new Error(`after Start again: ${JSON.stringify(again)}`);
+  return `Stop disabled while booting; after Stop no canvas, the poster back, focus on ${stopped.focus}; Start again runs one`;
+});
+await check('keyboard: the arrow keys move a goal cursor and Enter picks it; a deferred stand reads as one', async () => {
+  const { page: k } = await open({ width: 1280, height: 800 }, 'keyboard', 'demo/');
+  await k.waitForSelector('.stage.is-ready', { timeout: 60000 });
+  await k.focus('.stage-canvas');
+  for (const key of ['ArrowUp', 'ArrowUp', 'ArrowUp', 'ArrowLeft']) await k.keyboard.press(key);
+  await k.keyboard.press('Enter');
+  const picked = await k.evaluate(() => ({ sel: window.studioDemo.S.selected?.id ?? null, focus: document.activeElement?.dataset?.act ?? document.activeElement?.className }));
+  const ex = featured.examples.drift;
+  let badge = null;
+  if (ex) {
+    await k.goto(URL_ + `demo/#${ex.world}/${ex.goal}/play@${(ex.at + 3).toFixed(1)}`);
+    await k.waitForFunction(() => window.studioDemo?.S.walk, null, { timeout: 60000 });
+    await k.evaluate(() => window.studioDemo.pause());
+    badge = await k.locator('[data-el="phase"]').innerText();
+  }
+  await k.context().close();
+  if (!picked.sel) throw new Error(`no goal picked by keyboard (focus ${picked.focus})`);
+  if (ex && !/stand deferred/.test(badge)) throw new Error(`during a deferred stand the badge reads "${badge}"`);
+  return `picked ${picked.sel}, focus on ${picked.focus}${ex ? `; badge "${badge}"` : ''}`;
+});
 await check('next step: Studio-measured numbers only, the split view starts', async () => {
   const { page: next } = await open({ width: 1440, height: 900 }, 'next', 'next/');
   await next.waitForSelector('#numbers-cards .hl', { timeout: 15000 });

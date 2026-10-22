@@ -289,7 +289,7 @@ h1.wide { max-width: 26ch; font-size: clamp(2rem, 4.2vw, 3.3rem); }
 .atlas .dot { stroke: #fff; stroke-width: 1; cursor: pointer; opacity: .85; }
 .atlas .dot.ok { fill: #2fae6a; } .atlas .dot.warn { fill: #e2a03a; opacity: .95; } .atlas .dot.bad { fill: #d64545; opacity: 1; }
 .atlas .focus-ring { fill: none; stroke: var(--ink); stroke-width: 2; pointer-events: none; }
-.atlas-read { min-height: 76px; margin-top: 8px; padding: 10px 14px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); font-size: .92rem; }
+.atlas-read { height: 98px; overflow: hidden; margin: 4px 0 10px; padding: 10px 14px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); font-size: .92rem; }
 .atlas-read p { margin: 0 0 2px; }
 .atlas-read .watch { font-weight: 620; font-size: .9rem; }
 .atlas-legend { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
@@ -318,7 +318,8 @@ h1.wide { max-width: 26ch; font-size: clamp(2rem, 4.2vw, 3.3rem); }
 .trace { max-width: 1200px; margin: 12px auto 0; padding: 12px 16px; }
 .trace-title { margin: 0 0 6px; font-size: .86rem; color: var(--ink-3); }
 .trace-title b { color: var(--ink); } .trace-title .hot { color: var(--bad); }
-.trace svg { display: block; width: 100%; height: 120px; cursor: pointer; }
+.trace svg { display: block; width: 100%; height: 120px; cursor: pointer; border-radius: 6px; }
+.trace svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .trace .lag { fill: none; stroke: #d0408a; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .trace .axis { stroke: var(--line-2); vector-effect: non-scaling-stroke; } .trace .grid { stroke: var(--line); stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
 .trace .hit { fill: rgba(196, 58, 58, .22); }
@@ -332,3 +333,19 @@ h1.wide { max-width: 26ch; font-size: clamp(2rem, 4.2vw, 3.3rem); }
   .cards > *, .gallery > * { scroll-snap-align: start; }
   #findings-cards { min-height: 0; }
 }
+
+/* ----- round 4: quieter labels, a shorter phone hero */
+.finding .kind { font: 600 .82rem var(--sans); letter-spacing: 0; text-transform: none; }
+.outcomes thead th { text-transform: none; letter-spacing: 0; font-size: .84rem; }
+.finding.fixed .body { gap: 6px; }
+.finding .fixed-badge { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: #e3f4ea; color: var(--ok); font-weight: 650; font-size: .85rem; }
+h1.wide { font-size: clamp(1.9rem, 3.6vw, 2.8rem); }
+@media (max-width: 700px) {
+  .hero { padding-top: 24px; padding-bottom: 10px; }
+  .hero h1 { font-size: 2.05rem; }
+  .lede { font-size: 1rem; }
+  .cta { margin-top: 6px; }
+  .tool-hint { display: none; }
+  .slot { padding-top: 4px; }
+}
+@media (max-width: 700px) { .atlas-read { height: 150px; } }

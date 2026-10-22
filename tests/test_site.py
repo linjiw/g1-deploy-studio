@@ -155,6 +155,13 @@ class WalkExportTests(unittest.TestCase):
             self.assertAlmostEqual(dz, 0.02, places=3)
             self.assertAlmostEqual(rms, 0.1, places=3)
 
+    def test_a_contact_peak_between_kept_ticks_is_kept(self):
+        session = json.loads((self.run_dir / 'session.json').read_text())
+        session['frames'][1]['health']['contact_force_n'] = 150.0  # tick 1 is not kept (every second tick is)
+        (self.run_dir / 'session.json').write_text(json.dumps(session))
+        d = export.walk_data('w', 'g00-00', self.run_dir, *self.base)
+        self.assertEqual(d['contact_n'][:2], [0, 150])  # the frame at tick 2 carries the peak of ticks 1 and 2
+
     def test_grades_follow_the_site_rule(self):
         g = export.grade_key
         self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': 20, 'final_dist_m': 0.2, 'final_dist_estimate_m': 0.2}), 'clean')

@@ -34,7 +34,7 @@ if (ex) {
 const b = f.beam, d = f.doorway, dr = f.deferral_drift;
 const falls = catalog.reduce((n, w) => n + (w.outcomes.estop ?? 0) + (w.outcomes.fell ?? 0), 0), walks = catalog.reduce((n, w) => n + w.walks, 0);
 const rows = [
-  c.corridor && ['Wall end', "corridor walks with contact over 100 N (within 0.6 m of a wall's end)", `${c.corridor.over_100n} of ${c.corridor.walks} (${c.corridor.at_wall_end ?? '—'})`],
+  c.corridor && ['Wall end', "corridor walks with contact over 100 N, and those within 0.6 m of a wall's end", `${c.corridor.over_100n} of ${c.corridor.walks}; ${c.corridor.at_wall_end ?? '—'} at a wall's end`],
   b?.walks_under && (() => {
     // One walk's two numbers, the one that went lowest: its executed pelvis and its plan's, under the beam.
     const i = b.pelvis_under_m.indexOf(Math.min(...b.pelvis_under_m)), planned = b.planned_under_m?.[i];

@@ -26,10 +26,10 @@ The 3D view fills the stage; the chrome floats over it and lets clicks through e
 - **At the robot:** a hint, *Click the floor. It has to find its own way.*, which goes away after the first goal. Above the dock, until the first walk plays, the operator's three steps light up in turn: pick a goal, send it, Go.
 - **At the goal:** Studio's six goal checks (`studio/goal_check.py`, precomputed for every grid cell). The chip shows the verdict, and expands to all six checks. A passing spot snaps to the nearest recorded goal. **Send goal** stages it ("sent, read back, verified"); **Go** (or `g`) plays the recorded walk. On narrow stages the chip is a sheet above the dock.
 - **Bottom:** the dock, with new goal, play, Go, the timeline with phase bands and events, speed, the room menu and the camera (orbit, top, follow).
-- **The room menu:** each room as a folder with its walks and a bar of their grades, plus **Went wrong**: every walk not graded clean, across rooms, worst first. Filters: clean, flagged, failed. **Pick one for me** plays a random walk from the current list.
+- **The room menu:** each room as a folder with its walks and a bar of their grades, plus **Went wrong**: every walk not graded clean, across rooms, worst first. Filters: clean, flagged, failed, and one grade when the outcome table opened the menu. Choosing a walk, or **Pick one for me** (a random walk from the current list), puts its goal and its checks up with Send focused: the operator still sends it and presses Go. A link or a dot in the chart plays a walk directly.
 - **Headlines:** a large line at each phase change and at the events that matter (pre-scan, walking, arrived with the distance, stand deferred, stand forced, E-stop, fall, the final grade), also read to screen readers.
 - **The walk:** the robot (simulator truth), its own estimate (the blue ring), its LiDAR returns, the planner's map growing cell by cell, the plan it is tracking, the path walked, and the **plan body**: the reference pose SONIC is chasing, as a pink ghost. A readout shows the estimated distance to the goal, the tilt, contact, how far the plan body is, and the planner's rule.
-- **Keys:** `g` Go, Space pause, `r` or Esc new goal, ← → 1 s (Shift: one frame), `n` the room menu, `1`–`5` rooms, `b` `m` `l` `p` `w` `o` `v` layers, `c` camera, `f` follow, `?` legend.
+- **Keys:** with the 3D view focused and no walk, the arrow keys move a goal cursor (0.4 m steps, up is away from the camera) and Enter picks it. Then `g` Go, Space pause, `r` new goal, Esc closes what is open or clears a goal, ← → 1 s (Shift: one frame), `n` the room menu, `1`–`5` rooms, `b` `m` `l` `p` `w` `o` `v` layers, `c` camera, `f` follow, `?` legend. Inside the page the keys belong to the demo only after a click or Tab into it.
 - **The result:** the grade, the numbers, and Replay, New goal, **Plan vs body** (this walk in the main page's split view, `#closer/<room>/<goal>`), **Copy link** and Went wrong.
 - **Stop** (in the page's slot): tears the demo down (its WebGL context, listeners and observers) and brings the poster back.
 - **Links:** `demo/#<room>/<goal>[/play[@<seconds>]]` opens a walk, and plays it from a moment. On the main page the same path follows `#try/`. The findings link to their example walks this way, two seconds before the moment they are about.
@@ -102,7 +102,7 @@ The worker records the planner's memory as display codes at every 1 s snapshot w
 `data/worlds.json` lists the rooms. Each room entry has:
 
 - its outcome and grade counts;
-- `list`: every walk as one row of `list_fields` (id, grade, metres from the start, max contact, final distance by truth, duration), for the room menu.
+- `list`: every walk as one row of `list_fields` (id, grade, metres from the start, max contact, final distance by truth, duration, and the goal's x and y), with the room's start pose, for the room menu and the chart.
 
 Per room, `data/<room>/index.json` holds:
 
@@ -117,6 +117,7 @@ Per room, `data/<room>/index.json` holds:
 - `time`;
 - `q`: per frame x y z in mm, quaternion w x y z × 10⁴, and the 29 joint angles in mrad, in the model's qpos order;
 - `ref`: the reference SONIC tracks at that frame (row 0 of its window), in the same layout, or `null` where none was recorded. Its root is the planner's, in the planner's frame, and SONIC never receives it; `ref_basis` says so;
+- `contact_n`: the peak obstacle contact over the 20 ms ticks the frame stands for, so the 25 Hz frames never hide a peak;
 - `est`: the LIO-level estimate, in mm;
 - `phases`;
 - `plans`: the pelvis path in cm, and its height;

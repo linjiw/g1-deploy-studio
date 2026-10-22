@@ -4,7 +4,7 @@
 // builds, the plan and, as a ghost, the plan body (the reference pose SONIC is tracking).
 import { Viewer, COLORS } from './viewer.js';
 import { DATA, json, walkJson, decodeWorld, Walk } from './data.js';
-import { fmt, escape, OUTCOME, PHASE, RULES, GRADES, grade, reducedMotion } from './util.js';
+import { fmt, escape, OUTCOME, PHASE, RULES, GRADES, grade, hex, reducedMotion } from './util.js';
 
 const CHECKS = {
   inside: { name: 'Inside', pass: 'Inside the map', why: "The goal must lie in the planner's 12 × 12 m memory, at least 0.5 m from its edge." },
@@ -31,7 +31,7 @@ const HUD = [
   ['goal', 'To goal', 'estimate', "By the robot's own estimate (LIO-level drift), as node.py measures it", ''],
   ['tilt', 'Tilt', 'truth', 'Simulator truth; the E-stop is at 0.75 rad (43°)', ''],
   ['contact', 'Contact', 'truth', 'Obstacle contact force, simulator truth', ''],
-  ['body', 'Plan body', 'off by', "How far the plan body's pelvis is from where the robot thinks its pelvis is (when they differ: walking, or a deferred stand holding the plan's last frame)", ''],
+  ['body', 'Plan body', 'off by', "How far the plan body's pelvis is from where the robot thinks its pelvis is, both in the planner's frame: while walking, and while a deferred stand holds the plan's last frame", ''],
   ['planner', 'Planner', 'its rule', "The planner's choice among its sampled candidates", 'wide'],
   ['event', 'Last event', 'log', 'The most recent event of the walk, as the navigation node or Studio logged it', 'wide'],
 ];
@@ -39,8 +39,9 @@ const QUIET = new Set(['waiting', 'goal', 'prescan', 'run', 'walk_end', 'ended']
 
 export async function mountDemo(root, options = {}) {
   const demo = new Demo(root, options);
+  options.onCreate?.(demo);  // so a Stop during booting reaches it
   await demo.init();
-  return demo;
+  return demo.destroyed ? null : demo;
 }
 
 class Demo {
@@ -85,17 +86,21 @@ class Demo {
   }
 
   async init() {
+    // A link that changes while the demo boots is followed once the first room is in (it is read again below).
+    window.addEventListener('hashchange', () => { if (this.S.world) this.fromHash(); }, { signal: this.abort.signal });
     this.progress(0.35, 'Loading the robot');
     const [catalog] = await Promise.all([json('worlds.json'), this.viewer.loadRobot(DATA, f => this.progress(0.35 + 0.5 * f, 'Loading the robot'))]);
+    if (this.destroyed) return;
     this.catalog = catalog.worlds;
     this.viewer.ghost('plan', { opacity: 0.42 });
     const h = this.parseHash();
     this.progress(0.88, 'Loading the room');
     await this.loadWorld(h?.world && this.catalog.some(w => w.id === h.world) ? h.world : this.catalog[0].id, { keepHash: true });
+    if (this.destroyed) return;
     this.progress(1, 'Ready');
     this.root.classList.add('is-ready');
-    window.addEventListener('hashchange', () => this.fromHash(), { signal: this.abort.signal });
-    if (h?.goal) await this.fromHash();
+    if (this.el.stop) this.el.stop.disabled = false;
+    if (this.parseHash()?.goal) await this.fromHash();
     else this.live('Standing at the start mark. Click the floor to pick a goal, or open the room menu.');
   }
 
@@ -118,10 +123,13 @@ class Demo {
     if (!h.goal || this.S.worldId !== h.world) return;  // goal ids repeat across rooms: only this room's
     const cell = this.S.world.cells.find(c => c.id === h.goal);
     if (!cell || !cell.walk) { this.flash('That walk is not in this recording.'); return; }
-    if (this.embedded) this.root.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' });
+    if (this.embedded) this.root.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
     this.S.clicked = null;
+    this.linking = true;
     this.selectCell(cell, { stage: true });
     if (h.play && this.S.mode === 'staged') await this.go({ at: h.at ?? 0, autoplay: !reducedMotion() });
+    this.linking = false;
+    if (this.embedded && document.activeElement && !this.root.contains(document.activeElement)) this.el.canvas.focus({ preventScroll: true });
   }
 
   bind() {
@@ -162,6 +170,16 @@ class Demo {
     for (const b of this.root.querySelectorAll('[data-layer]')) b.addEventListener('click', () => this.toggleLayer(b.dataset.layer));
     for (const b of this.root.querySelectorAll('[data-camera]')) b.addEventListener('click', () => this.camera(b.dataset.camera));
     E.folders.addEventListener('click', e => { const b = e.target.closest('[data-folder]'); if (b) { this.S.folder = b.dataset.folder; this.S.filter = 'all'; this.renderPicker(); } });
+    // Up and down move through the folders (and the walks); the choice follows the focus.
+    const arrows = (list, sel, choose) => list.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const items = [...list.querySelectorAll(sel)], i = items.indexOf(document.activeElement);
+      const next = items[Math.max(0, Math.min(items.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+      if (!next) return;
+      e.preventDefault(); e.stopPropagation(); next.focus(); choose?.(next);
+    });
+    arrows(E.folders, '[data-folder]', b => { this.S.folder = b.dataset.folder; this.S.filter = 'all'; this.renderPicker(); E.folders.querySelector(`[data-folder="${b.dataset.folder}"]`)?.focus(); });
+    arrows(E.walkList, '[data-walk]');
     E.filters.addEventListener('click', e => { const b = e.target.closest('[data-filter]'); if (b) { this.S.filter = b.dataset.filter; this.renderPicker(); } });
     E.walkList.addEventListener('click', e => { const b = e.target.closest('[data-walk]'); if (b) this.watch(b.dataset.room, b.dataset.walk); });
     const preview = e => {
@@ -180,6 +198,8 @@ class Demo {
   }
   // Stop: the page's poster comes back; the WebGL context, observers and listeners go.
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     this.abort.abort();
     clearTimeout(this._ghostTip);
     for (const o of this.observers) o.disconnect();
@@ -213,7 +233,14 @@ class Demo {
     if (lower === 'n') { this.togglePicker(); return; }
     if (/^[1-9]$/.test(k) && this.catalog[Number(k) - 1]) { this.loadWorld(this.catalog[Number(k) - 1].id); return; }
     if (!S.walk && e.target === this.el.canvas && /^Arrow/.test(k)) { e.preventDefault(); this.moveCursor(k); return; }
-    if (!S.walk && e.target === this.el.canvas && k === 'Enter' && S.cursor) { e.preventDefault(); this.pick(S.cursor); this.focusIn(this.el.chip.querySelector('[data-act="send"]')); return; }
+    if (!S.walk && e.target === this.el.canvas && k === 'Enter' && S.cursor) {
+      e.preventDefault();
+      const cell = this.target(S.cursor);
+      if (!cell) { this.flash('Outside the recorded room. Move the cursor onto the floor.'); return; }
+      S.clicked = null; this.selectCell(cell);
+      this.focusIn(this.el.chip.querySelector('[data-act="send"]'));
+      return;
+    }
     if (S.walk && (k === 'ArrowLeft' || k === 'ArrowRight') && !e.target.closest('input')) {
       e.preventDefault(); this.pause(); this.seek(S.t + (k === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 0.04 : 1)); return;
     }
@@ -236,7 +263,7 @@ class Demo {
       return false;
     }
     if (token !== S.loadToken) return false;  // a later click won
-    Object.assign(S, { worldId: id, world, walk: null, selected: null, staged: null, mode: 'pick', hover: null, clicked: null });
+    Object.assign(S, { worldId: id, world, walk: null, selected: null, staged: null, mode: 'pick', hover: null, clicked: null, cursor: null });
     const v = this.viewer;
     v.setMarker('goalMarker', null); v.setMarker('hoverMarker', null); v.setLine(this.lines.route, null);
     S.recorded = world.cells.filter(c => c.walk);
@@ -293,6 +320,7 @@ class Demo {
   // The keyboard's goal cursor: 0.4 m steps, up is away from the camera.
   moveCursor(key) {
     const S = this.S, v = this.viewer, c = v.camera.position, t = v.controls.target;
+    if (!S.world) return;
     let fx = t.x - c.x, fy = t.y - c.y; const n = Math.hypot(fx, fy) || 1; fx /= n; fy /= n;
     const step = { ArrowUp: [fx, fy], ArrowDown: [-fx, -fy], ArrowRight: [fy, -fx], ArrowLeft: [-fy, fx] }[key];
     S.cursor ??= [S.world.start_xy[0] + Math.cos(S.world.start_yaw_rad) * 1.2, S.world.start_xy[1] + Math.sin(S.world.start_yaw_rad) * 1.2];
@@ -315,12 +343,19 @@ class Demo {
   selectCell(cell, { stage = false } = {}) {
     const S = this.S;
     if (!cell) return;
+    this.el.ghostTip.hidden = true;
     this.pause();
     if (S.walk) this.resetRobot();
     S.selected = cell; S.staged = null; S.mode = 'pick'; S.detail = false;
     if (!S.picked) { S.picked = true; this.root.classList.add('picked'); }
     this.viewer.setMarker('hoverMarker', null);
     this.viewer.setMarker('goalMarker', cell.xy, { color: cell.ok ? COLORS.amber : COLORS.red });
+    // A goal chosen from the menu or a link may be out of view (the camera followed the last walk): bring it in.
+    const seen = this.viewer.project(cell.xy[0], cell.xy[1], 0.4);
+    if (!seen || seen[0] < 40 || seen[0] > this.root.clientWidth - 40 || seen[1] < 80 || seen[1] > this.root.clientHeight - 120) {
+      if (this.cameraMode === 'follow') this.camera('orbit');
+      this.viewer.focus([S.world.start_xy, cell.xy]);
+    }
     const path = cell.path?.length ? pairs(cell.path).map(p => [p[0], p[1], 0.03]) : null;
     this.viewer.setLine(this.lines.route, cell.ok ? path : null);
     if (stage && cell.ok && cell.walk) this.send({ quiet: true });
@@ -344,12 +379,13 @@ class Demo {
     this.viewer.setMarker('goalMarker', c.xy, { color: COLORS.teal });
     this.writeHash(`${S.worldId}/${c.id}`);
     this.render();
-    if (!quiet) this.splash('Goal sent and read back', 'Nothing moves until the operator presses Go');
+    this.live('Goal sent and read back. Nothing moves until the operator presses Go.');
     this.focusIn(this.el.chip.querySelector('[data-act="go"]') ?? this.el.go);
   }
   async go({ at = 0, autoplay = true } = {}) {
     const S = this.S, c = S.staged;
     if (!c || S.mode !== 'staged') return;
+    const hadFocus = this.root.contains(document.activeElement) && document.activeElement !== this.el.canvas;
     S.mode = 'loading'; this.render();
     try {
       const walk = new Walk(await walkJson(`${S.worldId}/g/${c.id}.json`));
@@ -365,8 +401,8 @@ class Demo {
       }
       this.seek(at);
       if (autoplay) this.play();
-      if (this.root.contains(document.activeElement) && document.activeElement.disabled !== false) this.el.play.focus({ preventScroll: true });
-      if (!at) this.splash('Pre-scan, then walk', 'node.py stands for 0.5 s while the LiDAR fills its map');
+      if (hadFocus || (this.root.contains(document.activeElement) && document.activeElement.disabled !== false) || document.activeElement === document.body && this.engaged) this.el.play.focus({ preventScroll: true });
+      if (!at) this.splash('Pre-scan, then walk', 'it stands for 0.5 s while the LiDAR fills its map');
     } catch (error) {
       S.mode = 'staged'; this.flash(`Could not load the walk: ${error.message}`); this.render();
     }
@@ -389,7 +425,7 @@ class Demo {
   focusIn(node) {
     if (!node || node.disabled) return;
     node.focus({ preventScroll: true });
-    if (this.embedded) node.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    if (this.embedded && !this.linking) node.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
   }
   reset() {
     const S = this.S;
@@ -423,7 +459,11 @@ class Demo {
     if (S.last !== null && now - S.last < 250) S.t = Math.min(S.walk.duration, S.t + (now - S.last) / 1000 * S.speed);
     S.last = now;
     this.apply();
-    if (S.t >= S.walk.duration) { S.playing = false; S.mode = 'done'; this.render(); this.splashDone(); }
+    if (S.t >= S.walk.duration) {
+      S.playing = false; S.mode = 'done'; this.render(); this.splashDone();
+      // A keyboard visitor lands on the result's first action.
+      if (this.root.contains(document.activeElement) && document.activeElement !== this.el.canvas) this.el.result.querySelector('[data-act="replay"]')?.focus({ preventScroll: true });
+    }
     else if (now - S.uiAt > 100) { S.uiAt = now; this.renderHud(); this.renderDock(); }
     return true;
   }
@@ -439,7 +479,9 @@ class Demo {
   apply() {
     const S = this.S, w = S.walk, v = this.viewer, L = S.layers;
     v.setPose(w.pose(S.t, this.pose));
-    const ref = L.body ? w.refPose(S.t, this.refPose) : null;
+    // The plan body is drawn where it is the plan: while walking, and while a deferred stand holds the plan's last
+    // frame. Standing, the node's reference is a stand, not a plan.
+    const ref = L.body && w.planHeld(S.t) ? w.refPose(S.t, this.refPose) : null;
     const apart = ref && !coincides(ref, this.pose);
     v.setGhost('plan', apart ? ref : null);
     // After the walking headline has gone (about 2 s into the walk), so the two never sit on top of each other.
@@ -473,11 +515,11 @@ class Demo {
       const was = S.phase;
       S.phase = phase;
       if (S.playing && was !== null) {
-        if (phase === 'PRESCAN') this.splash('Pre-scan', 'node.py stands for 0.5 s while the LiDAR fills its map');
+        if (phase === 'PRESCAN') this.splash('Pre-scan', 'it stands for 0.5 s while the LiDAR fills its map');
         else if (phase === 'RUN') this.splash('Walking', 'it replans several times a second, only around what it has seen');
         else if (phase === 'ARRIVED') {
           const a = w.events.find(e => e.type === 'arrived');
-          this.splash(a?.dist != null ? `Arrived ${fmt(a.dist, 2)} m from the goal` : 'Arrived', 'by its own estimate · node.py stands it up');
+          this.splash(a?.dist != null ? `Arrived ${fmt(a.dist, 2)} m from the goal` : 'Arrived', 'by its own position estimate · now it stands up');
         } else if (phase === 'STOPPED') this.splash('Stopped', 'standing up where it is');
       }
     }
@@ -535,14 +577,20 @@ class Demo {
   // This walk in the split view of the main page (plan body against the executed body).
   compare() {
     const S = this.S, hash = `#closer/${S.worldId}/${S.walk.goal_id}`;
-    if (this.embedded) { location.hash = hash; return; }
+    if (this.embedded) {
+      if (location.hash === hash) window.dispatchEvent(new HashChangeEvent('hashchange'));
+      else location.hash = hash;
+      return;
+    }
     location.href = new URL(`${this.home ?? '../'}${hash}`, location.href).href;
   }
   async copyLink() {
     const S = this.S, path = `#${S.worldId}/${S.walk.goal_id}/play`;
     const url = new URL(this.embedded ? `${this.fullHref}${path}` : path, location.href).href;
-    try { await navigator.clipboard.writeText(url); this.flash('Link copied: it opens this walk and plays it.'); }
-    catch { this.flash(url); }
+    try {
+      if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title: 'A recorded walk · G1 Deploy Studio', url }); return; }
+      await navigator.clipboard.writeText(url); this.flash('Link copied: it opens this walk and plays it.');
+    } catch (e) { if (e?.name !== 'AbortError') this.flash(url); }
   }
   // Open the room menu on a folder and, optionally, one grade (the outcome table's cells use this).
   openPicker(folder, filter = 'all') { this.S.filter = filter; this.togglePicker(true, folder); }
@@ -603,6 +651,7 @@ class Demo {
     n.dataset.tone = tone;
     n.classList.remove('on'); void n.offsetWidth; n.classList.add('on');
     clearTimeout(this._splash); this._splash = setTimeout(() => n.classList.remove('on'), reducedMotion() ? 2200 : 1700);
+    this.el.ghostTip.hidden = true;  // one message at a time
     this.live(sub ? `${title}: ${sub}.` : `${title}.`);
   }
   render() {
@@ -620,13 +669,14 @@ class Demo {
   renderGuide() {
     const S = this.S, g = this.el.guide;
     if (S.walk) S.guided = true;
-    g.hidden = !!S.guided;
+    g.hidden = !!S.guided || (this.root.classList.contains('narrow') && !!S.selected);
     if (g.hidden) return;
-    const now = S.mode === 'staged' || S.mode === 'loading' ? 'go' : S.selected ? 'send' : 'pick';
+    const now = S.mode === 'staged' || S.mode === 'loading' ? 'go' : S.selected && verdict(S.selected).sendable ? 'send' : 'pick';
     const order = ['pick', 'send', 'go'];
     for (const li of g.children) {
       const k = order.indexOf(li.dataset.step), at = order.indexOf(now);
       li.className = k < at ? 'done' : k === at ? 'now' : '';
+      if (k === at) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
     }
   }
   renderDock() {
@@ -660,7 +710,9 @@ class Demo {
     // A deferred stand is not settling: the node keeps the last plan's final frame until its memory clears or Studio forces it.
     const deferredNow = w && phase === 'ARRIVED' && w.events.find(e => e.type === 'stand_deferred' && e.t <= S.t);
     const stoodNow = deferredNow && w.events.some(e => (e.type === 'stand' || e.type === 'stand_forced') && e.t > deferredNow.t && e.t <= S.t);
-    const badge = !w && (S.mode === 'staged' || S.mode === 'loading') ? { label: 'Waiting for Go', color: '#9fd8ff' }
+    const g = w && S.mode === 'done' ? grade(w) : null;
+    const badge = !w ? (S.mode === 'staged' || S.mode === 'loading' ? { label: 'Waiting for Go', color: '#9fd8ff' } : { label: 'Waiting for a goal', color: '#8aa0ad' })
+      : g ? { label: g.short === 'Clean' ? 'Arrived' : g.short, color: hex(g.color) }
       : deferredNow && !stoodNow ? { label: 'Arrived · stand deferred', color: '#efbb70' } : p;
     if (E.phase.textContent !== badge.label) E.phase.textContent = badge.label;
     E.phase.style.setProperty('--c', badge.color); E.phase.title = p.why ?? '';
@@ -679,9 +731,14 @@ class Demo {
       tilt: tilt === null ? '—' : `${fmt(tilt / 1000 * 57.2958, 1)}°`,
       contact: contact === null ? '—' : contact > 0 ? `${contact} N` : 'none',
       // The plan body's root is the planner's only while it walks; standing, the node sets it to the robot's pose.
-      body: !ref ? (S.layers.body ? '—' : 'hidden') : coincides(ref, this.pose) ? 'on the body' : w.est_missing?.includes(k) ? '—' : `${fmt(Math.hypot(ref[0] - w.est[k * 2] / 1000, ref[1] - w.est[k * 2 + 1] / 1000), 2)} m`,
+      body: !ref ? (S.layers.body ? '—' : 'hidden') : !w.planHeld(S.t) ? (phase === 'PRESCAN' ? 'pre-scan' : 'standing') : w.est_missing?.includes(k) ? '—' : `${fmt(Math.hypot(ref[0] - w.est[k * 2] / 1000, ref[1] - w.est[k * 2 + 1] / 1000), 2)} m`,
       planner: plan && run ? `#${w.planNumber(S.t)} · ${RULES[plan.rule]?.label ?? plan.rule.replaceAll('_', ' ')}` : deferred && !stood ? 'stand deferred' : '—',
-      event: (() => { let last = null; for (const e of w.events) { if (e.t > S.t + 1e-9) break; if (!QUIET.has(e.type)) last = e; } return last ? `${fmt(last.t, 1)} s · ${last.msg}` : '—'; })(),
+      event: (() => {
+        const rank = e => ['stand_forced', 'estop', 'fell', 'stand_deferred'].indexOf(e.type);
+        let last = null;
+        for (const e of w.events) { if (e.t > S.t + 1e-9) break; if (QUIET.has(e.type)) continue; if (!last || e.t > last.t + 1e-6 || rank(e) > rank(last)) last = e; }
+        return last ? `${fmt(last.t, 1)} s · ${last.msg}` : '—';
+      })(),
     };
     // The rows are built once; only their values change (their titles and kinds stay readable).
     if (!E.hud.firstChild) {
@@ -751,12 +808,16 @@ class Demo {
     const tr = bottomOf(this.root.querySelector('.chrome.top-right'));
     const minY = Math.max(bottomOf(this.root.querySelector('.chrome.top-left')), tr) + 10;
     // The readout hangs under whatever the top-right chrome holds (the phase, Open full screen, Stop).
-    if (!E.hud.hidden && !this.root.classList.contains('narrow')) E.hud.style.top = `${Math.round(tr + 8)}px`;
-    else E.hud.style.top = '';
+    const top = !E.hud.hidden && !this.root.classList.contains('narrow') ? `${Math.round(tr + 8)}px` : '';
+    if (E.hud.style.top !== top) E.hud.style.top = top;
     const maxY = H - (E.dock.offsetHeight || 50) - 24 - (E.guide.hidden || this.root.classList.contains('narrow') ? 0 : E.guide.offsetHeight + 10);
-    const put = (node, xyz, dy, flip) => {
-      const p = v.project(...xyz);
-      if (!p || p[0] < -40 || p[0] > W + 40 || p[1] < -40 || p[1] > H + 40) { node.style.visibility = 'hidden'; return; }
+    const put = (node, xyz, dy, flip, keep = false) => {
+      let p = v.project(...xyz);
+      const off = !p || p[0] < -40 || p[0] > W + 40 || p[1] < -40 || p[1] > H + 40;
+      // A hint goes with its point; the goal checks stay on screen (clamped, without their arrow) so Send is reachable.
+      if (off && !keep) { node.style.visibility = 'hidden'; return; }
+      node.classList.toggle('adrift', off);
+      if (off) p = [W / 2, minY + node.offsetHeight + dy];
       node.style.visibility = '';
       const w = node.offsetWidth, h = node.offsetHeight;
       const x = Math.max(8, Math.min(W - w - 8, p[0] - w / 2));
@@ -773,12 +834,14 @@ class Demo {
     if (!S.picked) put(E.hint, [S.world.start_xy[0], S.world.start_xy[1], 1.75], 10, false);
     if (!E.ghostTip.hidden && this.viewer.ghosts.plan?.root.visible) { const r = this.refPose; put(E.ghostTip, [r[0], r[1], 1.55], 12, false); }
     if (E.chip.hidden) return;
-    if (this.root.classList.contains('narrow')) { E.chip.style.transform = ''; E.chip.style.visibility = ''; }
-    else put(E.chip, [S.selected.xy[0], S.selected.xy[1], 0.78], 12, true);
+    if (this.root.classList.contains('narrow')) { E.chip.style.transform = ''; E.chip.style.visibility = ''; E.chip.style.maxHeight = ''; return; }
+    const room = `${Math.max(160, Math.round(maxY - minY))}px`;
+    if (E.chip.style.maxHeight !== room) E.chip.style.maxHeight = room;
+    put(E.chip, [S.selected.xy[0], S.selected.xy[1], 0.78], 12, true, true);
   }
 }
 
-// The plan body on top of the body (standing, pre-scan): nothing to show.
+// The plan body on top of the body: nothing to show.
 function coincides(a, b) {
   if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > 0.03) return false;
   for (let j = 7; j < 36; j++) if (Math.abs(a[j] - b[j]) > 0.03) return false;
@@ -812,8 +875,10 @@ const bucket = g => g === 'clean' ? 'clean' : ['fell', 'estop'].includes(g) ? 'f
 // Eight ways round from the start mark's heading, in words.
 function direction(turn) {
   if (turn === null || turn === undefined) return 'away';
-  const names = ['ahead', 'ahead-left', 'left', 'behind-left', 'behind', 'behind-right', 'right', 'ahead-right'];
-  return names[((Math.round(turn / 45) % 8) + 8) % 8];
+  const a = Math.abs(turn);
+  if (a < 8) return 'ahead';
+  if (a > 172) return 'behind';
+  return `${Math.round(a / 5) * 5}° ${turn > 0 ? 'left' : 'right'}`;
 }
 function bar(list) {
   const n = list.length || 1, c = { clean: 0, flagged: 0, failed: 0 };
@@ -832,7 +897,7 @@ function template({ embedded, home, stop }) {
   <div class="chrome top-right">
     <span class="phase" data-el="phase">WAIT</span>
     ${embedded ? '<a class="pill" data-el="full" target="_blank" rel="noopener" aria-label="Open full screen"><span class="t">Open full screen</span> ↗</a>' : ''}
-    ${stop ? '<button class="pill" data-el="stop" title="Stop the demo and free its memory">Stop</button>' : ''}
+    ${stop ? '<button class="pill" data-el="stop" title="Stop the demo and free its memory" disabled>Stop</button>' : ''}
   </div>
   <div class="hud" data-el="hud" hidden></div>
   <ol class="guide" data-el="guide" aria-label="The operator's three steps"><li data-step="pick"><b>1</b> Pick a goal</li><li data-step="send"><b>2</b> Send it</li><li data-step="go"><b>3</b> Go</li></ol>

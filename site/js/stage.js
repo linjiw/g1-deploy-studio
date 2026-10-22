@@ -28,8 +28,9 @@ function card(root) {
 // observers) and puts the stage back as it was, poster included; then onStopped runs.
 export async function boot(root, options = {}, load = () => import('./demo.js').then(m => m.mountDemo), { onStopped = null } = {}) {
   const before = { nodes: [...root.childNodes], attributes: [...root.attributes].map(a => [a.name, a.value]) };
-  let instance = null;
+  let instance = null, stopped = false;
   const stop = () => {
+    stopped = true;
     instance?.destroy?.();
     instance = null;
     root.replaceChildren(...before.nodes);
@@ -43,7 +44,9 @@ export async function boot(root, options = {}, load = () => import('./demo.js').
   try {
     const mount = await load();
     ui.progress(0.3, 'Loading the robot');
-    instance = await mount(root, { ...options, progress: ui.progress, ...(onStopped ? { onStop: stop } : {}) });
+    const mounted = await mount(root, { ...options, progress: ui.progress, onCreate: i => { instance = i; }, ...(onStopped ? { onStop: stop } : {}) });
+    if (stopped) { mounted?.destroy?.(); return null; }  // stopped while booting: nothing stays behind
+    instance = mounted;
     return instance;
   } catch (error) {
     console.error(error);

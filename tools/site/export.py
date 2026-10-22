@@ -94,6 +94,7 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
     if picked[-1] is not frames[-1]:
         picked.append(frames[-1])
     q, est, tilt, force, dist, times, ref, est_missing = [], [], [], [], [], [], [], []
+    ticks = {id(f): i for i, f in enumerate(frames)}
     phases = []
     ref_basis = None
     for k, f in enumerate(picked):
@@ -113,7 +114,11 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
         est += _ints((position or qpos[:3])[:2], 1000)
         h = f.get('health') or {}
         tilt.append(None if h.get('tilt_rad') is None else int(round(h['tilt_rad'] * 1000)))
-        force.append(None if h.get('contact_force_n') is None else int(round(h['contact_force_n'])))
+        # Contact over the ticks this frame stands for (every second 20 ms tick is kept): the peak, not a sample.
+        i = ticks[id(f)]
+        seen = [(g.get('health') or {}).get('contact_force_n') for g in frames[max(0, i - STRIDE + 1):i + 1]]
+        seen = [v for v in seen if v is not None]
+        force.append(int(round(max(seen))) if seen else None)
         dist.append(None if h.get('goal_dist_m') is None else int(round(h['goal_dist_m'] * 100)))
         times.append(round(float(f['time']), 3))
         phase = (f.get('navigation') or {}).get('phase')
