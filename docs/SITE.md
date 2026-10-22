@@ -148,6 +148,6 @@ A change to `site/` alone redeploys with the same data.
 | Release | Date | Walks | Coverage | Archives |
 |---|---|---|---|---|
 | `site-v1` | 2026-10-21 | 415: wall detour 107, alternating walls 106, corridor 66, doorway 72, cluttered room 64 | Levels 0 and 1 in the first two rooms, level 0 in the others | data 17 MB (61 MB unpacked, with the mesh licence and NOTICE), media 25 MB |
-| `site-v2` | 2026-10-22 | 473: wall detour 107, alternating walls 106, corridor 124, doorway 72, cluttered room 64 | Levels 0 and 1 in the first three rooms, level 0 in the others. Schema 2: every walk carries the plan body; rooms list their walks; split-view scenarios; findings stills | data and media sizes are in the release notes |
+| `site-v2` | 2026-10-22 | 473: wall detour 107, alternating walls 106, corridor 124, doorway 72, cluttered room 64 | Levels 0 and 1 in the first three rooms, level 0 in the others. Schema 2: every walk carries the plan body; rooms list their walks; split-view scenarios; findings stills | data 24 MB (76 MB unpacked), media 25 MB (with the stills) |
 
 The batch can keep recording the remaining levels at the lowest priority for a later release. Nothing on the published site changes until `tools/site/release.json` names a new tag.
