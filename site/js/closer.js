@@ -72,7 +72,7 @@ class Closer {
     await this.viewer.loadRobot(DATA, f => this.progress(0.3 + 0.55 * f, 'Loading the robot'));
     if (this.destroyed) return;
     this.viewer.ghost('plan', { color: COLORS.ghost, opacity: 1 });
-    this.viewer.ghost('est', { color: 0x8fb8ff, opacity: 1 });
+    this.viewer.ghost('est', { color: 0x6c9ee6, opacity: 1 });
     this.progress(0.9, 'Loading the walk');
     await this.load(this.scenarios[0]);
     if (this.destroyed) return;

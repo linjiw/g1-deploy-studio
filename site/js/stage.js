@@ -18,7 +18,7 @@ function card(root) {
     fail: message => {
       boot.classList.add('failed');
       label.textContent = 'This part could not start';
-      boot.querySelector('small').innerHTML = `${escape(message)} The <a href="${escape(root.dataset.tour ?? '#tour')}" style="color:#fff">tour video</a> shows the same workflow.`;
+      boot.querySelector('small').innerHTML = `${escape(message)} The <a href="${escape(root.dataset.tour ?? '#tour')}">tour video</a> shows the same workflow.`;
     },
   };
 }

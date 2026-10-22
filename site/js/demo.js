@@ -17,13 +17,13 @@ const CHECKS = {
 const STATUS = { p: ['pass', '✓'], w: ['warn', '!'], b: ['block', '✕'] };
 const SPEEDS = [0.5, 1, 2, 4];
 const LAYERS = [
-  { id: 'robot', label: 'Robot', dot: '#d5dde3', key: 'v', why: 'The simulated G1 (simulator truth), the path it walked (teal) and, as a blue ring, where it thinks it is.' },
-  { id: 'body', label: 'Plan body', dot: '#ffb3dc', key: 'b', why: "The pose SONIC is chasing at this instant: the reference it tracks. Its root is the planner's (SONIC is never given it)." },
-  { id: 'map', label: 'Its map', dot: '#efbb70', key: 'm', why: "The planner's memory: floor it has seen, low obstacles it steps over, obstacles at their seen height, overhead cells." },
-  { id: 'lidar', label: 'LiDAR', dot: '#7fe0d2', key: 'l', why: 'The latest LiDAR returns, after the robot\'s own body is filtered out.' },
-  { id: 'plan', label: 'Plan path', dot: '#ff6fb5', key: 'p', why: 'The plan the tracker is following right now: its pelvis path, at pelvis height.' },
+  { id: 'robot', label: 'Robot', dot: '#5f6975', key: 'v', why: 'The simulated G1 (simulator truth), the path it walked (teal) and, as a blue ring, where it thinks it is.' },
+  { id: 'body', label: 'Plan body', dot: '#ff7fc4', key: 'b', why: "The pose SONIC is chasing at this instant: the reference it tracks. Its root is the planner's (SONIC is never given it)." },
+  { id: 'map', label: 'Its map', dot: '#e0a030', key: 'm', why: "The planner's memory: floor it has seen, low obstacles it steps over, obstacles at their seen height, overhead cells." },
+  { id: 'lidar', label: 'LiDAR', dot: '#14a39b', key: 'l', why: 'The latest LiDAR returns, after the robot\'s own body is filtered out.' },
+  { id: 'plan', label: 'Plan path', dot: '#e8458f', key: 'p', why: 'The plan the tracker is following right now: its pelvis path, at pelvis height.' },
   { id: 'world', label: 'Real room', dot: '#8fa4b3', key: 'w', why: 'The simulation\'s real boxes. The robot never receives them; it only knows its map. Click to cycle ghost, solid, off.' },
-  { id: 'outcomes', label: 'Outcomes', dot: '#7be0a5', key: 'o', why: 'Every recorded goal, coloured by how its walk ended.' },
+  { id: 'outcomes', label: 'Outcomes', dot: '#2fae6a', key: 'o', why: 'Every recorded goal, coloured by how its walk ended.' },
 ];
 const WRONG_ORDER = ['fell', 'estop', 'stopped', 'away', 'off', 'contact'];
 // The readout: [key, label, kind of value, what it is, class].
@@ -64,7 +64,7 @@ class Demo {
     // A full-bleed stage owns every gesture; inside the page a vertical swipe still scrolls the page.
     this.viewer.renderer.domElement.style.touchAction = embedded && matchMedia('(pointer: coarse)').matches ? 'pan-y' : 'none';
     const v = this.viewer;
-    this.lines = { route: v.line(COLORS.white, 2, { dashed: true, opacity: 0.8 }), plan: v.line(COLORS.pink, 4), trail: v.line(COLORS.teal, 3, { opacity: 0.9 }) };
+    this.lines = { route: v.line(COLORS.ink, 2, { dashed: true, opacity: 0.8 }), plan: v.line(COLORS.pink, 4), trail: v.line(COLORS.teal, 3, { opacity: 0.9 }) };
     v.groups.route.add(this.lines.route); v.groups.plan.add(this.lines.plan); v.groups.trail.add(this.lines.trail);
     this.pose = new Float64Array(36); this.refPose = new Float64Array(36);
     this.cameraMode = 'orbit';
@@ -184,7 +184,7 @@ class Demo {
     E.walkList.addEventListener('click', e => { const b = e.target.closest('[data-walk]'); if (b) this.watch(b.dataset.room, b.dataset.walk); });
     const preview = e => {
       const b = e.target.closest?.('[data-walk]'), cell = b && b.dataset.room === this.S.worldId ? this.S.world.cells.find(c => c.id === b.dataset.walk) : null;
-      this.viewer.setMarker('hoverMarker', cell ? cell.xy : null, { color: COLORS.white, radius: 0.14, pin: true });
+      this.viewer.setMarker('hoverMarker', cell ? cell.xy : null, { color: COLORS.ink, radius: 0.14, pin: true });
     };
     E.walkList.addEventListener('pointerover', preview); E.walkList.addEventListener('focusin', preview);
     E.walkList.addEventListener('pointerleave', () => this.viewer.setMarker('hoverMarker', null));
@@ -315,7 +315,7 @@ class Demo {
     const cell = xy ? this.target(xy) : null;
     if (cell === S.hover) return;
     S.hover = cell;
-    this.viewer.setMarker('hoverMarker', cell && cell !== S.selected ? cell.xy : null, { color: cell?.ok ? COLORS.white : COLORS.red, radius: 0.12, pin: false });
+    this.viewer.setMarker('hoverMarker', cell && cell !== S.selected ? cell.xy : null, { color: cell?.ok ? COLORS.ink : COLORS.red, radius: 0.12, pin: false });
   }
   // The keyboard's goal cursor: 0.4 m steps, up is away from the camera.
   moveCursor(key) {
@@ -326,7 +326,7 @@ class Demo {
     S.cursor ??= [S.world.start_xy[0] + Math.cos(S.world.start_yaw_rad) * 1.2, S.world.start_xy[1] + Math.sin(S.world.start_yaw_rad) * 1.2];
     S.cursor = [S.cursor[0] + step[0] * 0.4, S.cursor[1] + step[1] * 0.4];
     const cell = this.target(S.cursor);
-    this.viewer.setMarker('hoverMarker', S.cursor, { color: cell?.ok ? COLORS.white : COLORS.red, radius: 0.16, pin: true });
+    this.viewer.setMarker('hoverMarker', S.cursor, { color: cell?.ok ? COLORS.ink : COLORS.red, radius: 0.16, pin: true });
     if (!cell) { this.live('Outside the recorded room.'); return; }
     const d = Math.hypot(cell.xy[0] - S.world.start_xy[0], cell.xy[1] - S.world.start_xy[1]);
     this.live(`${fmt(d, 1)} m from the start: ${verdict(cell).text}. Enter picks it.`);
@@ -537,7 +537,7 @@ class Demo {
   }
   splashDone() {
     const w = this.S.walk, g = grade(w);
-    this.splash(g.label, `ends ${fmt(w.final_dist_m, 2)} m from the goal by simulator truth${(w.max_contact_n ?? 0) > 100 ? ` · contact ${Math.round(w.max_contact_n)} N` : ''}`, g.key === 'clean' ? 'ok' : GRADES[g.key]?.color === 0xf07870 ? 'bad' : 'warn');
+    this.splash(g.label, `ends ${fmt(w.final_dist_m, 2)} m from the goal by simulator truth${(w.max_contact_n ?? 0) > 100 ? ` · contact ${Math.round(w.max_contact_n)} N` : ''}`, g.key === 'clean' ? 'ok' : GRADES[g.key]?.color === 0xd64545 ? 'bad' : 'warn');
   }
 
   // ----- layers and camera
@@ -926,11 +926,11 @@ function template({ embedded, home, stop }) {
     <div class="picker-head"><b>Legend and keys</b><button class="x" data-el="helpClose" aria-label="Close">✕</button></div>
     <div class="help-body">
       <ul class="legend">
-        <li><i class="sw" style="background:#265c60"></i>floor the robot has seen</li><li><i class="sw" style="background:#efbb70"></i>low obstacle (steps over)</li>
-        <li><i class="sw" style="background:#f07870"></i>obstacle, at its seen height</li><li><i class="sw" style="background:#c4a0d9"></i>overhead (below 2 m)</li>
-        <li><i class="ln" style="background:#ff6fb5"></i>plan being tracked</li><li><i class="ln" style="background:#56d9d0"></i>path walked (simulator truth)</li>
-        <li><i class="ring"></i>where it thinks it is (its estimate)</li><li><i class="sw" style="background:#ffb3dc;opacity:.7"></i>plan body: the pose SONIC is chasing</li>
-        <li><i class="ln dash"></i>Studio's check route</li><li><i class="dot" style="background:#7be0a5"></i><i class="dot" style="background:#efbb70"></i><i class="dot" style="background:#f07870"></i>outcomes: clean, flagged, failed</li>
+        <li><i class="sw" style="background:#a9dcd7"></i>floor the robot has seen</li><li><i class="sw" style="background:#e8aa48"></i>low obstacle (steps over)</li>
+        <li><i class="sw" style="background:#de6258"></i>obstacle, at its seen height</li><li><i class="sw" style="background:#a080cd"></i>overhead (below 2 m)</li>
+        <li><i class="ln" style="background:#e8458f"></i>plan being tracked</li><li><i class="ln" style="background:#0f9e94"></i>path walked (simulator truth)</li>
+        <li><i class="ring"></i>where it thinks it is (its estimate)</li><li><i class="sw" style="background:#ff7fc4;opacity:.7"></i>plan body: the pose SONIC is chasing</li>
+        <li><i class="ln dash"></i>Studio's check route</li><li><i class="dot" style="background:#2fae6a"></i><i class="dot" style="background:#e2a03a"></i><i class="dot" style="background:#d64545"></i>outcomes: clean, flagged, failed</li>
       </ul>
       <dl class="keys"><dt><kbd>G</kbd></dt><dd>Go (a staged goal)</dd><dt><kbd>Space</kbd></dt><dd>pause, play</dd><dt><kbd>R</kbd> <kbd>Esc</kbd></dt><dd>new goal</dd>
         <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>1 s back, forward (<kbd>Shift</kbd>: one frame)</dd><dt><kbd>N</kbd> <kbd>1</kbd>–<kbd>5</kbd></dt><dd>rooms and walks</dd>

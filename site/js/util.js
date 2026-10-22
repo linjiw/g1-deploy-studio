@@ -17,13 +17,13 @@ export const OUTCOME = {
 // One verdict per walk for colours and badges: arrival by the robot's estimate is not the whole story.
 // The same rule as tools/site/export.py grade_key: contact over 100 N, then the final distance by simulator truth.
 export const GRADES = {
-  clean: { label: 'Arrived', short: 'Clean', color: 0x7be0a5, css: 'var(--ok)' },
-  contact: { label: 'Arrived, with contact', short: 'Contact', color: 0xefbb70, css: 'var(--warn)' },
-  off: { label: 'Arrived by its estimate, off by truth', short: 'Off by truth', color: 0xefbb70, css: 'var(--warn)' },
-  away: { label: 'Arrived, then moved away', short: 'Moved away', color: 0xefbb70, css: 'var(--warn)' },
-  stopped: { label: 'Stopped', short: 'Stopped', color: 0xefbb70, css: 'var(--warn)' },
-  estop: { label: 'E-stop', short: 'E-stop', color: 0xf07870, css: 'var(--bad)' },
-  fell: { label: 'Fell', short: 'Fell', color: 0xf07870, css: 'var(--bad)' },
+  clean: { label: 'Arrived', short: 'Clean', color: 0x2fae6a, css: 'var(--ok)' },
+  contact: { label: 'Arrived, with contact', short: 'Contact', color: 0xe2a03a, css: 'var(--warn)' },
+  off: { label: 'Arrived by its estimate, off by truth', short: 'Off by truth', color: 0xe2a03a, css: 'var(--warn)' },
+  away: { label: 'Arrived, then moved away', short: 'Moved away', color: 0xe2a03a, css: 'var(--warn)' },
+  stopped: { label: 'Stopped', short: 'Stopped', color: 0xe2a03a, css: 'var(--warn)' },
+  estop: { label: 'E-stop', short: 'E-stop', color: 0xd64545, css: 'var(--bad)' },
+  fell: { label: 'Fell', short: 'Fell', color: 0xd64545, css: 'var(--bad)' },
   ungraded: { label: 'Arrived, not fully graded', short: 'Ungraded', color: 0x8aa0ad, css: 'var(--ink-3)' },
 };
 export function gradeKey(walk) {

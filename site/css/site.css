@@ -232,10 +232,9 @@ table.outcomes { width: 100%; border-collapse: collapse; font-size: .9rem; font-
 @media (max-width: 900px) { .faq-grid { grid-template-columns: 1fr; } }
 
 /* ----- the next step, a dark band */
-.next-band { max-width: none; background: radial-gradient(120% 140% at 20% 0%, #26313c 0%, #11171d 60%); color: #e9eef2; text-align: center; display: grid; justify-items: center; }
+.next-band { max-width: none; background: linear-gradient(180deg, var(--bg) 0%, #e9edf2 100%); text-align: center; display: grid; justify-items: center; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .next-band h2 { max-width: 24ch; }
-.next-band p { color: rgba(233, 238, 242, .72); max-width: 680px; }
-.next-band .eyebrow { color: #8fb0ff; }
+.next-band p { color: var(--ink-3); max-width: 680px; }
 
 /* ----- use */
 .gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
