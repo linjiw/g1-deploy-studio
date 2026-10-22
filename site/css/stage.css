@@ -12,7 +12,7 @@
   -webkit-font-smoothing: antialiased;
 }
 .stage.standalone { position: fixed; inset: 0; height: 100vh; height: 100dvh; }
-.stage.embedded { height: clamp(520px, 80vh, 820px); border-radius: 22px; box-shadow: 0 30px 70px -44px rgba(16, 24, 40, .45), 0 0 0 1px rgba(16, 24, 40, .08); }
+.stage.embedded { height: clamp(min(520px, calc(100svh - 88px)), 80vh, 820px); border-radius: 22px; box-shadow: 0 30px 70px -44px rgba(16, 24, 40, .45), 0 0 0 1px rgba(16, 24, 40, .08); }
 .stage-canvas { position: absolute; inset: 0; cursor: crosshair; }
 .stage-canvas canvas { display: block; width: 100%; height: 100%; }
 .stage[data-mode="playing"] .stage-canvas { cursor: grab; }
@@ -36,7 +36,7 @@
 .title-chip:hover { text-decoration: none; border-color: var(--s-line-2); }
 .title-chip small { display: block; font-weight: 450; color: var(--s-ink-3); font-size: 12px; }
 .title-chip .mark { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: #10161c; color: #fff; font-weight: 800; font-size: 13px; }
-.layers { display: flex; gap: 2px; padding: 4px; border-radius: 999px; overflow-x: auto; max-width: 100%; scrollbar-width: none; }
+.layers { display: flex; flex-wrap: wrap; gap: 2px; padding: 4px; border-radius: 20px; max-width: 100%; }
 .layers::-webkit-scrollbar { display: none; }
 .layers button { flex: none; display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border: 0; border-radius: 999px; background: transparent; color: var(--s-ink-3); font-size: 13px; white-space: nowrap; transition: background .15s, color .15s; }
 .layers button i { width: 8px; height: 8px; border-radius: 50%; background: var(--dot); opacity: .3; transition: opacity .15s, box-shadow .15s; }
@@ -64,7 +64,7 @@
 .goal-chip.below::after { bottom: auto; top: -6px; transform: translateX(-50%) rotate(225deg); }
 .goal-chip.adrift::after { display: none; }
 .hint::after { background: #10161c; }
-.stage:not(.is-ready) .hint, .stage.picked .hint { opacity: 0; }
+.stage:not(.is-ready) .hint, .stage.picked .hint:not(.cursor-tip) { opacity: 0; }
 .goal-chip { width: 300px; max-height: calc(100% - 150px); overflow: auto; border-radius: 16px; padding: 12px 14px; background: var(--s-glass-2); }
 .goal-chip::after { background: var(--s-glass-2); border-color: var(--s-line); border-style: solid; border-width: 0 1px 1px 0; }
 .goal-chip[data-state="block"] { border-color: rgba(209, 67, 67, .45); }
@@ -120,7 +120,7 @@
 .r-more { margin-top: 10px; font-size: 12.5px; color: var(--s-ink-2); }
 .r-more summary { cursor: pointer; color: var(--s-ink); }
 .r-more p { margin: 6px 0 0; }
-.flash { position: absolute; z-index: 6; left: 50%; top: 70px; transform: translateX(-50%); background: #fdecec; border: 1px solid #f1c2c2; color: #8c2323; padding: 8px 14px; border-radius: 12px; font-size: 13.5px; max-width: calc(100% - 28px); }
+.flash { position: absolute; z-index: 6; left: 50%; top: 70px; text-align: center; transform: translateX(-50%); background: #fdecec; border: 1px solid #f1c2c2; color: #8c2323; padding: 8px 14px; border-radius: 12px; font-size: 13.5px; max-width: calc(100% - 28px); }
 
 /* ----- the dock */
 .dock { position: absolute; z-index: 4; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 16px; max-width: calc(100% - 28px); }
@@ -302,3 +302,59 @@
 .stage.narrow .layers .legend-btn { width: 26px; }
 .stage.narrow .poster.small img { object-fit: contain; background: #eef1f4; }
 .stage.closer.narrow .split-facts div:nth-child(n+3) { display: none; }
+
+/* ----- one obvious next action, every pill in sight, sheets that fit any screen */
+.flash { width: max-content; }
+.flash[data-tone="info"] { background: var(--s-glass-2); border-color: var(--s-line-2); color: var(--s-ink); box-shadow: 0 12px 32px -20px rgba(16, 24, 40, .38); }
+.cursor-tip { font-size: 12.5px; padding: 6px 11px; }
+.dk.new { padding: 0 12px; font-size: 13.5px; font-weight: 600; }
+.dk.nudge { animation: nudge 1.4s ease-in-out 1; }
+@keyframes nudge { 0%, 100% { box-shadow: 0 0 0 0 rgba(36, 86, 230, .45); } 35% { box-shadow: 0 0 0 7px rgba(36, 86, 230, .18); background: rgba(36, 86, 230, .1); } }
+/* Narrow docks: the timeline gets its own row, the buttons the next one (New goal first, as on wide screens). */
+.stage.narrow .scrub { flex: 1 1 calc(100% - 100px); }
+.stage.narrow .time { min-width: 84px; }
+/* Short and wide (a phone on its side): a single row of chrome and of dock; sheets on the right half. */
+.stage.short .title-chip { padding: 5px; }
+.stage.short .title-chip > span:last-child { display: none; }
+.stage.short .chrome.top-left { flex-direction: row; align-items: flex-start; right: auto; max-width: calc(100% - 172px); }
+.stage.short .layers button { padding-left: 7px; padding-right: 7px; }
+.stage.demo.narrow:not(.thin) .dock { left: 50%; right: auto; transform: translateX(-50%); flex-wrap: nowrap; max-width: calc(100% - 20px); }
+.stage.demo.narrow:not(.thin) .scrub { order: 0; flex: 0 1 auto; width: clamp(110px, 22cqi, 280px); }
+.stage.demo.narrow:not(.thin) .time { order: 0; min-width: 76px; }
+.stage.demo.narrow:not(.thin) .goal-chip, .stage.demo.narrow:not(.thin) .result { left: auto; right: 10px; width: min(400px, 50%); }
+.stage.demo.narrow:not(.thin) .guide { display: none; }
+/* The split view's labels in one view: side by side when they fit, wrapped when they do not, never cut. */
+.stage.closer.overlay .split-labels { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 8px; padding: 0 10px; }
+.stage.closer.overlay .split-labels span { max-width: 100%; white-space: normal; text-align: center; }
+/* Touch screens: every control at least 36 px. */
+@media (pointer: coarse) {
+  .layers button { min-height: 36px; }
+  .layers .legend-btn { min-width: 36px; }
+  .seg { padding: 2px; }
+  .seg button { height: 36px; }
+  .filters button { height: 36px; padding: 0 13px; }
+  .x { width: 36px; height: 36px; }
+  .walks li button { min-height: 44px; }
+  .btn { height: 40px; }
+  .btn.small { height: 36px; }
+  .pill { min-height: 36px; }
+  .dk { height: 40px; min-width: 40px; }
+  .r-more summary { display: flex; align-items: center; min-height: 36px; }
+  .help .x, .picker .x { width: 40px; height: 40px; }
+}
+/* Big screens: the chrome grows with the stage (labels stay at 12 px or more). */
+@container (min-width: 1800px) {
+  .title-chip { font-size: 16px; } .title-chip small { font-size: 13px; }
+  .layers button { font-size: 14.5px; padding: 8px 13px; }
+  .phase, .pill { font-size: 14.5px; }
+  .hud { width: 300px; } .hud span { font-size: 12px; } .hud b { font-size: 14.5px; }
+  .goal-chip { width: 360px; } .gc-verdict { font-size: 16.5px; } .gc-meta, .gc-note, .check { font-size: 13.5px; } .check .label small { font-size: 12.5px; }
+  .result { width: 420px; } .r-text { font-size: 14px; } .result .facts span, .split-facts span { font-size: 12px; } .result .facts b, .split-facts b { font-size: 14px; }
+  .dk { height: 42px; font-size: 15px; } .seg button { height: 34px; font-size: 14px; } .time { font-size: 14px; } .scrub { width: clamp(220px, 22cqi, 560px); }
+  .guide li { font-size: 14.5px; } .hint { font-size: 15px; } .splash span { font-size: 17px; }
+  .picker { width: min(960px, calc(100% - 28px)); height: min(620px, calc(100% - 200px)); } .walks li button, .folders button { font-size: 14px; }
+  .help { width: min(520px, calc(100% - 28px)); } .help-body { font-size: 14px; }
+}
+.gc-actions { gap: 6px; }
+.gc-actions .btn { padding: 0 11px; }
+@media (pointer: coarse) { .ghost-tip a { display: inline-flex; align-items: center; min-height: 36px; } }

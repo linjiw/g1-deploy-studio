@@ -32,7 +32,7 @@ export async function initRobotDay(root) {
   root.innerHTML = `
     <ol class="steps" id="day-steps">${STEPS.map((s, i) => `<li><button data-step="${i}"><b>${escape(s.title)}</b><span>${escape(s.sub)}</span></button></li>`).join('')}</ol>
     <div class="day-main">
-      <div class="day-view"><canvas id="day-canvas" role="img" aria-label="Top view of what Studio shows for a real robot"></canvas><span class="tag" id="day-tag">STUDIO · REAL ROBOT</span></div>
+      <div class="day-view"><canvas id="day-canvas" role="img" aria-label="Top view of what Studio shows for a real robot"></canvas><span class="tag" id="day-tag">Studio · real robot</span></div>
       <div class="card step-text" id="day-text" aria-live="polite"></div>
     </div>
     <aside class="card" id="day-side" aria-label="Pre-Go checklist">
@@ -118,7 +118,8 @@ export async function initRobotDay(root) {
   const sx = x => view.ox + x * view.scale, sy = y => view.oy - y * view.scale;
   const toWorld = (px, py) => [(px - view.ox) / view.scale, (view.oy - py) / view.scale];
   const mapCanvas = document.createElement('canvas');
-  const RGBA = { 1: [38, 92, 96, 160], 2: [239, 187, 112, 220], 3: [240, 120, 112, 240], 4: [196, 160, 217, 220] };
+  // The site's light map hues (viewer.js MAP_RGBA), a little stronger on a flat sheet.
+  const RGBA = { 1: [126, 200, 194, 110], 2: [232, 170, 72, 220], 3: [226, 120, 110, 235], 4: [160, 128, 205, 215] };
   const paintMap = codes => {
     const n = world.map.n; mapCanvas.width = n; mapCanvas.height = n;
     const mctx = mapCanvas.getContext('2d'), img = mctx.createImageData(n, n);
@@ -152,13 +153,13 @@ export async function initRobotDay(root) {
   const draw = () => {
     if (!view.w) return;
     const step = STEPS[D.step].id, b = world.bounds;
-    ctx.fillStyle = '#0b1117'; ctx.fillRect(0, 0, view.w, view.h);
-    ctx.strokeStyle = '#18242c'; ctx.lineWidth = 1;
+    ctx.fillStyle = '#fbfcfd'; ctx.fillRect(0, 0, view.w, view.h);
+    ctx.strokeStyle = '#e6eaee'; ctx.lineWidth = 1;
     for (let x = Math.ceil(b.min[0]); x <= b.max[0]; x++) { ctx.beginPath(); ctx.moveTo(sx(x), sy(b.min[1])); ctx.lineTo(sx(x), sy(b.max[1])); ctx.stroke(); }
     for (let y = Math.ceil(b.min[1]); y <= b.max[1]; y++) { ctx.beginPath(); ctx.moveTo(sx(b.min[0]), sy(y)); ctx.lineTo(sx(b.max[0]), sy(y)); ctx.stroke(); }
     if (step === 'build' || step === 'start') {
       for (const box of world.boxes) drawBox(box);
-      ctx.fillStyle = '#9aaeba'; ctx.font = '12px ui-monospace, monospace';
+      ctx.fillStyle = '#4a5561'; ctx.font = '12px ui-monospace, monospace';
       for (const box of world.boxes) {
         const text = `${fmt(box.center_xy[0], 2)}, ${fmt(box.center_xy[1], 2)} m · ${fmt(box.z_top, 2)} m tall`;
         const x = Math.min(sx(box.center_xy[0]) + 10, view.w - ctx.measureText(text).width - 8);
@@ -168,40 +169,40 @@ export async function initRobotDay(root) {
       const n = world.map.n, res = world.map.res_m, lo = world.map.lo;
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(mapCanvas, sx(lo[0] - res / 2), sy(lo[1] + (n - 0.5) * res), n * res * view.scale, n * res * view.scale);
-      ctx.strokeStyle = 'rgba(86,217,208,.35)'; ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = 'rgba(15,158,148,.45)'; ctx.setLineDash([6, 6]);
       ctx.strokeRect(sx(-6), sy(6), 12 * view.scale, 12 * view.scale); ctx.setLineDash([]);
-      ctx.strokeStyle = 'rgba(239,187,112,.4)'; ctx.beginPath(); ctx.arc(sx(world.start_xy[0]), sy(world.start_xy[1]), MAX_GOAL_M * view.scale, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(224,160,48,.55)'; ctx.beginPath(); ctx.arc(sx(world.start_xy[0]), sy(world.start_xy[1]), MAX_GOAL_M * view.scale, 0, Math.PI * 2); ctx.stroke();
       const lidar = D.walk ? D.walk.lidarAt(D.t) : world.start_lidar;
-      if (lidar) { ctx.fillStyle = 'rgba(160,230,220,.75)'; for (let k = 0; k < lidar.p.length; k += 3) ctx.fillRect(sx(lidar.p[k] / 100) - 1, sy(lidar.p[k + 1] / 100) - 1, 2, 2); }
+      if (lidar) { ctx.fillStyle = 'rgba(15,158,148,.7)'; for (let k = 0; k < lidar.p.length; k += 3) ctx.fillRect(sx(lidar.p[k] / 100) - 1, sy(lidar.p[k + 1] / 100) - 1, 2, 2); }
     }
     drawStart();
     const goal = D.sent?.xy ?? D.goal?.xy;
     if (D.goal && !D.sent && D.goal.path?.length) {
       const pts = []; for (let k = 0; k + 1 < D.goal.path.length; k += 2) pts.push([D.goal.path[k], D.goal.path[k + 1]]);
-      line(pts, 'rgba(230,238,242,.75)', 1.5, [5, 5]);
+      line(pts, 'rgba(42,51,61,.7)', 1.5, [5, 5]);
     }
     if (goal) {
-      ctx.strokeStyle = D.sent ? '#56d9d0' : '#efbb70'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(goal[0]), sy(goal[1]), 0.4 * view.scale, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = D.sent ? '#0f9e94' : '#e0a030'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(goal[0]), sy(goal[1]), 0.4 * view.scale, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); ctx.arc(sx(goal[0]), sy(goal[1]), 4, 0, Math.PI * 2); ctx.fill();
     }
     if (D.walk) {
       const k = D.walk.index(D.t), pts = [];
       for (let i = 0; i <= k; i++) pts.push([D.walk.est[i * 2] / 1000, D.walk.est[i * 2 + 1] / 1000]);
-      line(pts, '#56d9d0', 2.5);
+      line(pts, '#0f9e94', 2.5);
       const plan = phaseAt() === 'RUN' ? D.walk.plan(D.t) : null;
-      if (plan) line(plan.points, '#ff6fb5', 3);
+      if (plan) line(plan.points, '#e8458f', 3);
     }
     drawRobot();
   };
   const drawBox = b => {
     ctx.save(); ctx.translate(sx(b.center_xy[0]), sy(b.center_xy[1])); ctx.rotate(-(b.yaw ?? 0));
-    ctx.fillStyle = 'rgba(143,164,179,.25)'; ctx.strokeStyle = '#8fa4b3'; ctx.lineWidth = 1.5;
+    ctx.fillStyle = 'rgba(154,168,182,.28)'; ctx.strokeStyle = '#8193a3'; ctx.lineWidth = 1.5;
     const w = b.half_xy[0] * 2 * view.scale, h = b.half_xy[1] * 2 * view.scale;
     ctx.fillRect(-w / 2, -h / 2, w, h); ctx.strokeRect(-w / 2, -h / 2, w, h);
     ctx.restore();
   };
   const drawStart = () => {
-    const [x, y] = world.start_xy; ctx.strokeStyle = '#e6eef2'; ctx.lineWidth = 2;
+    const [x, y] = world.start_xy; ctx.strokeStyle = '#2a333d'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(sx(x) - 10, sy(y)); ctx.lineTo(sx(x) + 10, sy(y)); ctx.moveTo(sx(x), sy(y) - 10); ctx.lineTo(sx(x), sy(y) + 10); ctx.stroke();
   };
   const drawRobot = () => {
@@ -212,10 +213,10 @@ export async function initRobotDay(root) {
       yaw = Math.atan2(2 * (q[3] * q[6] + q[4] * q[5]), 1 - 2 * (q[5] * q[5] + q[6] * q[6]));
     }
     ctx.save(); ctx.translate(sx(x), sy(y)); ctx.rotate(-yaw);
-    ctx.fillStyle = '#7fb4ff'; ctx.strokeStyle = '#0b1117'; ctx.lineWidth = 2;
+    ctx.fillStyle = '#2f74d0'; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-9, 9); ctx.lineTo(-5, 0); ctx.lineTo(-9, -9); ctx.closePath(); ctx.fill(); ctx.stroke();
     ctx.restore();
-    if (STEPS[D.step].id !== 'build' && STEPS[D.step].id !== 'start') { ctx.fillStyle = '#7fb4ff'; ctx.font = '600 11px ui-monospace, monospace'; ctx.fillText('LIO ESTIMATE', Math.min(sx(x) + 14, view.w - 90), sy(y) + 22); }
+    if (STEPS[D.step].id !== 'build' && STEPS[D.step].id !== 'start') { ctx.fillStyle = '#2f74d0'; ctx.font = '600 11px ui-monospace, monospace'; ctx.fillText('LIO estimate', Math.min(sx(x) + 14, view.w - 90), sy(y) + 22); }
   };
 
   // ----- text per step
@@ -263,7 +264,7 @@ export async function initRobotDay(root) {
     const text = TEXT[STEPS[D.step].id]();
     if (text !== lastText) { $('day-text').innerHTML = text; lastText = text; }
     renderReady();
-    $('day-tag').textContent = STEPS[D.step].id === 'build' || STEPS[D.step].id === 'start' ? 'THE ROOM · BUILD SHEET' : 'STUDIO · REAL ROBOT · LIO ESTIMATE';
+    $('day-tag').textContent = STEPS[D.step].id === 'build' || STEPS[D.step].id === 'start' ? 'The room · build sheet' : 'Studio · real robot · LIO estimate';
     canvas.setAttribute('aria-label', D.walk ? `Top view: the robot's LIO estimate walking to the goal, ${fmt(D.t, 1)} of ${fmt(D.walk.duration, 1)} s` : 'Top view of what Studio shows for a real robot');
     if (focused && document.activeElement?.id !== focused) $(focused)?.focus({ preventScroll: true });
     draw();

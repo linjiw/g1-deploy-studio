@@ -5,6 +5,10 @@ import { $, escape, fmt } from './util.js';
 import { json } from './data.js';
 import { initCloserSection } from './closer-section.js';
 
+// The phone menu closes on a choice and on a tap outside it (as on the main page).
+document.querySelector('.menu')?.addEventListener('click', e => { if (e.target.closest('a')) e.currentTarget.open = false; });
+document.addEventListener('pointerdown', e => { const m = document.querySelector('.menu[open]'); if (m && !m.contains(e.target)) m.open = false; });
+
 initCloserSection({ chips: $('closer-chips'), stage: $('closer-stage'), caption: $('closer-caption'), keep: sc => sc.mode === 'body' }).loaded.catch(console.error);
 const [featured, catalog] = await Promise.all([json('featured.json'), json('worlds.json').then(c => c.worlds)]);
 

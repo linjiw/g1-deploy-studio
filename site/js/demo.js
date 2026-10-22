@@ -36,6 +36,7 @@ const HUD = [
   ['event', 'Last event', 'log', 'The most recent event of the walk, as the navigation node or Studio logged it', 'wide'],
 ];
 const QUIET = new Set(['waiting', 'goal', 'prescan', 'run', 'walk_end', 'ended']);
+const tap = (lower = false) => { const w = matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click'; return lower ? w.toLowerCase() : w; };
 
 export async function mountDemo(root, options = {}) {
   const demo = new Demo(root, options);
@@ -72,12 +73,27 @@ class Demo {
     // demo always has them.
     this.engaged = !embedded;
     if (embedded) {
-      document.addEventListener('pointerdown', e => { this.engaged = root.contains(e.target); }, { capture: true, ...sig });
+      document.addEventListener('pointerdown', e => { this.engaged = this.wheelZoom = root.contains(e.target); }, { capture: true, ...sig });
       root.addEventListener('focusin', () => { this.engaged = true; }, sig);
       root.addEventListener('focusout', e => { if (e.relatedTarget && !root.contains(e.relatedTarget)) this.engaged = false; }, sig);
+      // The wheel scrolls the page over the stage until the visitor clicks into it (or holds Ctrl or ⌘ to zoom).
+      // This runs before the orbit controls' own wheel handler on the same canvas.
+      this.wheelZoom = false;
+      this.viewer.renderer.domElement.addEventListener('wheel', e => {
+        const zoom = this.wheelZoom || e.ctrlKey || e.metaKey;
+        this.viewer.controls.enableZoom = zoom;
+        if (!zoom && !this.wheelHinted) { this.wheelHinted = true; this.flash('The wheel scrolls the page here. Click the room first to zoom it.', 'info'); }
+      }, { capture: true, passive: true, ...sig });
     }
     // Narrow stages (phones, small slots) dock the goal checks and the result as sheets above the dock.
-    this.observers = [new ResizeObserver(() => { this.root.classList.toggle('narrow', this.root.clientWidth < 640); this.place(); })];
+    // Short stages (a phone on its side) use it too: their sheets and readout must fit above the dock.
+    this.observers = [new ResizeObserver(() => {
+      const w = this.root.clientWidth, h = this.root.clientHeight;
+      this.root.classList.toggle('narrow', w < 640 || h < 520);
+      this.root.classList.toggle('short', h < 520);
+      this.root.classList.toggle('thin', w < 640);
+      this.place();
+    })];
     this.observers[0].observe(root);
     // Sheets and the result sit above the dock, whose height depends on how it wraps.
     this.observers.push(new ResizeObserver(() => root.style.setProperty('--dock-h', `${this.el.dock.offsetHeight}px`)));
@@ -101,7 +117,7 @@ class Demo {
     this.root.classList.add('is-ready');
     if (this.el.stop) this.el.stop.disabled = false;
     if (this.parseHash()?.goal) await this.fromHash();
-    else this.live('Standing at the start mark. Click the floor to pick a goal, or open the room menu.');
+    else this.live(`Standing at the start mark. ${tap()} the floor to pick a goal, or open the room menu.`);
   }
 
   // ----- hash: [#try/]<room>[/<goal>[/play[@seconds]]]
@@ -109,20 +125,27 @@ class Demo {
     const m = location.hash.slice(1).match(new RegExp(`^${this.hashPrefix.replace('/', '\\/')}([a-z]+)(?:\\/(g\\d\\d-\\d\\d))?(\\/play(?:@(\\d+(?:\\.\\d+)?))?)?$`));
     return m ? { world: m[1], goal: m[2], play: !!m[3], at: m[4] ? Number(m[4]) : null } : null;
   }
+  // What the link should say for what is on screen: the room, a sent goal, or a walk.
+  here() {
+    const S = this.S;
+    return S.walk ? `${S.worldId}/${S.walk.goal_id}/play` : S.staged ? `${S.worldId}/${S.staged.id}` : S.worldId;
+  }
   writeHash(path) {
     if (this.el.full) this.el.full.href = `${this.fullHref}#${path}`;
     // Inside the main page, only a hash the demo owns (or none) is replaced: section links stay as they are.
-    if (this.embedded && location.hash && !location.hash.startsWith(`#${this.hashPrefix}`)) return;
+    // "#try" (what Stop leaves behind) is the demo's own too.
+    const own = location.hash.startsWith(`#${this.hashPrefix}`) || location.hash === `#${this.hashPrefix.replace(/\/$/, '')}`;
+    if (this.embedded && location.hash && !own) return;
     history.replaceState(null, '', `#${this.hashPrefix}${path}`);
   }
   async fromHash() {
     const h = this.parseHash();
     if (!h) return;
-    if (h.world && !this.catalog.some(w => w.id === h.world)) { this.flash('That room is not in this recording.'); return; }
+    if (h.world && !this.catalog.some(w => w.id === h.world)) { this.flash('That room is not in this recording.'); this.writeHash(this.here()); return; }
     if (h.world && h.world !== this.S.worldId && !(await this.loadWorld(h.world, { keepHash: true }))) return;
     if (!h.goal || this.S.worldId !== h.world) return;  // goal ids repeat across rooms: only this room's
     const cell = this.S.world.cells.find(c => c.id === h.goal);
-    if (!cell || !cell.walk) { this.flash('That walk is not in this recording.'); return; }
+    if (!cell || !cell.walk) { this.flash('That walk is not in this recording.'); this.writeHash(this.here()); return; }
     if (this.embedded) this.root.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
     this.S.clicked = null;
     this.linking = true;
@@ -149,7 +172,7 @@ class Demo {
       if (b.dataset.act === 'send') this.send();
       if (b.dataset.act === 'go') this.go();
       if (b.dataset.act === 'clear') this.reset();
-      if (b.dataset.act === 'more') { this.S.detail = !this.S.detail; this.renderChip(); }
+      if (b.dataset.act === 'more') { this.S.detail = !this.S.detail; this.renderChip(); this.focusIn(b.isConnected ? b : this.el.chip.querySelector('[data-act="more"]')); }
     });
     E.result.addEventListener('click', e => {
       const b = e.target.closest('button');
@@ -169,7 +192,8 @@ class Demo {
     });
     for (const b of this.root.querySelectorAll('[data-layer]')) b.addEventListener('click', () => this.toggleLayer(b.dataset.layer));
     for (const b of this.root.querySelectorAll('[data-camera]')) b.addEventListener('click', () => this.camera(b.dataset.camera));
-    E.folders.addEventListener('click', e => { const b = e.target.closest('[data-folder]'); if (b) { this.S.folder = b.dataset.folder; this.S.filter = 'all'; this.renderPicker(); } });
+    // The chosen outcome filter stays when the folder changes (it falls back to All where nothing matches).
+    E.folders.addEventListener('click', e => { const b = e.target.closest('[data-folder]'); if (b) { this.S.folder = b.dataset.folder; this.renderPicker(); } });
     // Up and down move through the folders (and the walks); the choice follows the focus.
     const arrows = (list, sel, choose) => list.addEventListener('keydown', e => {
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -178,7 +202,7 @@ class Demo {
       if (!next) return;
       e.preventDefault(); e.stopPropagation(); next.focus(); choose?.(next);
     });
-    arrows(E.folders, '[data-folder]', b => { this.S.folder = b.dataset.folder; this.S.filter = 'all'; this.renderPicker(); E.folders.querySelector(`[data-folder="${b.dataset.folder}"]`)?.focus(); });
+    arrows(E.folders, '[data-folder]', b => { this.S.folder = b.dataset.folder; this.renderPicker(); E.folders.querySelector(`[data-folder="${b.dataset.folder}"]`)?.focus(); });
     arrows(E.walkList, '[data-walk]');
     E.filters.addEventListener('click', e => { const b = e.target.closest('[data-filter]'); if (b) { this.S.filter = b.dataset.filter; this.renderPicker(); } });
     E.walkList.addEventListener('click', e => { const b = e.target.closest('[data-walk]'); if (b) this.watch(b.dataset.room, b.dataset.walk); });
@@ -192,6 +216,7 @@ class Demo {
     document.addEventListener('pointerdown', e => {
       this.swallow = false;
       if (!E.picker.hidden && !E.picker.contains(e.target) && !E.rooms.contains(e.target)) { this.togglePicker(false); this.swallow = true; }
+      if (!E.help.hidden && !E.help.contains(e.target) && !E.helpBtn.contains(e.target)) this.toggleHelp(false, false);
     }, sig);
     window.addEventListener('keydown', e => this.key(e), sig);
     E.stop?.addEventListener('click', () => this.onStop?.());
@@ -219,7 +244,7 @@ class Demo {
     if (k === 'Escape') {
       if (!this.el.picker.hidden) { this.togglePicker(false); this.el.rooms.focus(); }
       else if (!this.el.help.hidden) this.toggleHelp(false);
-      else if (!S.walk && S.selected) this.reset();
+      else if (S.walk || S.selected) this.reset();
       return;
     }
     // Space keeps its meaning on buttons, links and the slider; the letters work wherever focus is.
@@ -264,6 +289,7 @@ class Demo {
     }
     if (token !== S.loadToken) return false;  // a later click won
     Object.assign(S, { worldId: id, world, walk: null, selected: null, staged: null, mode: 'pick', hover: null, clicked: null, cursor: null });
+    this.el.cursorTip.hidden = true;
     const v = this.viewer;
     v.setMarker('goalMarker', null); v.setMarker('hoverMarker', null); v.setLine(this.lines.route, null);
     S.recorded = world.cells.filter(c => c.walk);
@@ -279,7 +305,7 @@ class Demo {
     if (!keepHash) this.writeHash(id);
     else if (this.el.full) this.el.full.href = `${this.fullHref}#${id}`;
     this.render();
-    if (!keepHash) this.splash(world.title, `${S.recorded.length} recorded walks · click the floor`);
+    if (!keepHash) this.splash(world.title, `${S.recorded.length} recorded walks · ${tap(true)} the floor`);
     return true;
   }
   paintOutcomes() { this.viewer.setOutcomes(this.S.layers.outcomes ? this.S.recorded : [], c => grade(c.walk).color); }
@@ -287,6 +313,7 @@ class Demo {
   resetRobot() {
     const S = this.S, w = S.world, v = this.viewer;
     v.dimOutcomes(false);
+    this.el.ghostTip.hidden = true;
     Object.assign(S, { walk: null, t: 0, playing: false, mapStep: -1, trailIndex: -1, trailWalk: null, planShown: null, lidarShown: null, phase: null, events: 0 });
     v.setMapBase(w.map);
     v.setLidar(S.layers.lidar ? w.start_lidar : null);
@@ -324,17 +351,30 @@ class Demo {
     let fx = t.x - c.x, fy = t.y - c.y; const n = Math.hypot(fx, fy) || 1; fx /= n; fy /= n;
     const step = { ArrowUp: [fx, fy], ArrowDown: [-fx, -fy], ArrowRight: [fy, -fx], ArrowLeft: [-fy, fx] }[key];
     S.cursor ??= [S.world.start_xy[0] + Math.cos(S.world.start_yaw_rad) * 1.2, S.world.start_xy[1] + Math.sin(S.world.start_yaw_rad) * 1.2];
-    S.cursor = [S.cursor[0] + step[0] * 0.4, S.cursor[1] + step[1] * 0.4];
+    const b = S.world.bounds, clamp = (x, lo, hi) => Math.max(lo + 0.2, Math.min(hi - 0.2, x));
+    S.cursor = [clamp(S.cursor[0] + step[0] * 0.4, b.min[0], b.max[0]), clamp(S.cursor[1] + step[1] * 0.4, b.min[1], b.max[1])];
     const cell = this.target(S.cursor);
     this.viewer.setMarker('hoverMarker', S.cursor, { color: cell?.ok ? COLORS.ink : COLORS.red, radius: 0.16, pin: true });
-    if (!cell) { this.live('Outside the recorded room.'); return; }
-    const d = Math.hypot(cell.xy[0] - S.world.start_xy[0], cell.xy[1] - S.world.start_xy[1]);
-    this.live(`${fmt(d, 1)} m from the start: ${verdict(cell).text}. Enter picks it.`);
+    const tip = this.el.cursorTip;
+    if (!cell) { tip.textContent = 'No recorded goal here · keep moving'; this.live('Outside the recorded goals.'); }
+    else {
+      const d = Math.hypot(cell.xy[0] - S.world.start_xy[0], cell.xy[1] - S.world.start_xy[1]);
+      tip.textContent = `${fmt(d, 1)} m · ${verdict(cell).text} · Enter picks`;
+      this.live(`${fmt(d, 1)} m from the start: ${verdict(cell).text}. Enter picks it.`);
+    }
+    tip.hidden = false;
+    this.place();
   }
-  // Clicking the floor always picks a new goal (a walk in progress is put away).
+  // Clicking the floor picks a new goal. While a walk is loaded a tap pauses it: New goal puts it away first.
   pick(xy) {
     const S = this.S;
     if (!S.world || S.mode === 'loading' || this.swallow) return;
+    if (S.walk) {
+      if (S.playing) { this.pause(); this.flash('Paused. Press New goal to pick another goal.', 'info'); }
+      else this.flash('This walk stays loaded. Press New goal to pick another goal.', 'info');
+      this.el.reset.classList.remove('nudge'); void this.el.reset.offsetWidth; this.el.reset.classList.add('nudge');
+      return;
+    }
     const cell = this.target(xy);
     if (!cell) { this.flash('Outside the recorded room. Pick a spot on the floor.'); return; }
     S.clicked = xy;
@@ -343,10 +383,13 @@ class Demo {
   selectCell(cell, { stage = false } = {}) {
     const S = this.S;
     if (!cell) return;
-    this.el.ghostTip.hidden = true;
+    this.el.ghostTip.hidden = true; this.el.cursorTip.hidden = true;
+    if (!this.el.help.hidden) this.toggleHelp(false, false);  // the legend must not cover the goal's checks
     this.pause();
     if (S.walk) this.resetRobot();
     S.selected = cell; S.staged = null; S.mode = 'pick'; S.detail = false;
+    // The link names what is on screen: a picked goal is not sent yet, so it names the room (Send adds the goal).
+    if (!stage && !this.linking) this.writeHash(S.worldId);
     if (!S.picked) { S.picked = true; this.root.classList.add('picked'); }
     this.viewer.setMarker('hoverMarker', null);
     this.viewer.setMarker('goalMarker', cell.xy, { color: cell.ok ? COLORS.amber : COLORS.red });
@@ -394,10 +437,11 @@ class Demo {
       S.walk = walk; S.mapStep = -1; S.phase = null; S.events = 0;
       this.writeHash(`${S.worldId}/${c.id}/play`);
       this.viewer.focus([S.world.start_xy, c.xy]);
-      if (this.root.classList.contains('narrow') && this.cameraMode === 'orbit') {
+      if (this.root.clientWidth < 640 && this.cameraMode === 'orbit') {
         // On a phone the room is small: walk with the robot instead (Orbit brings the room back).
         this.viewer.look([S.world.start_xy[0], S.world.start_xy[1], 0.6], { yaw: S.world.start_yaw_rad + Math.PI + 0.6, pitch: 0.55, distance: 4.2 });
         this.camera('follow');
+        this.autoFollow = true;
       }
       this.seek(at);
       if (autoplay) this.play();
@@ -428,14 +472,22 @@ class Demo {
     if (this.embedded && !this.linking) node.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
   }
   reset() {
-    const S = this.S;
+    const S = this.S, focused = this.root.contains(document.activeElement), hadWalk = !!S.walk;
     this.pause();
     if (S.walk) this.resetRobot();
     Object.assign(S, { selected: null, staged: null, mode: 'pick', clicked: null, detail: false });
     this.viewer.setMarker('goalMarker', null);
     this.viewer.setLine(this.lines.route, null);
+    this.el.ghostTip.hidden = true;
+    // Back to picking: the room in view again (a phone followed the robot during the walk), and the first hint.
+    if (hadWalk && (this.autoFollow || this.cameraMode === 'follow')) this.camera('orbit');
+    this.autoFollow = false;
+    if (S.picked) { S.picked = false; this.root.classList.remove('picked'); }
     this.writeHash(S.worldId);
     this.render();
+    // The control that was used may be hidden or disabled now: keep the keyboard in the stage.
+    const a = document.activeElement;
+    if (focused && (a === document.body || a?.disabled || !a?.getClientRects().length)) this.el.canvas.focus({ preventScroll: true });
   }
 
   // ----- playback
@@ -471,6 +523,7 @@ class Demo {
     const S = this.S;
     S.t = Math.max(0, Math.min(S.walk.duration, Number.isFinite(t) ? t : 0));
     S.mode = S.t >= S.walk.duration ? 'done' : 'playing';
+    if (S.mode === 'done') this.el.ghostTip.hidden = true;
     // Seeking does not replay the headlines of what happened before.
     S.phase = S.walk.phase(S.t); S.events = S.walk.events.filter(e => e.t <= S.t).length;
     this.apply();
@@ -484,6 +537,7 @@ class Demo {
     const ref = L.body && w.planHeld(S.t) ? w.refPose(S.t, this.refPose) : null;
     const apart = ref && !coincides(ref, this.pose);
     v.setGhost('plan', apart ? ref : null);
+    if (!apart && !this.el.ghostTip.hidden) this.el.ghostTip.hidden = true;
     // After the walking headline has gone (about 2 s into the walk), so the two never sit on top of each other.
     if (apart && S.playing && S.t > 2.2 && !this.ghostHinted && Math.hypot(ref[0] - this.pose[0], ref[1] - this.pose[1]) > 0.18) {
       this.ghostHinted = true; this.el.ghostTip.hidden = false;
@@ -556,7 +610,7 @@ class Demo {
     if (name === 'robot') { v.groups.robot.visible = L.robot; S.trailIndex = -1; if (S.walk) this.apply(); else v.dirty(); }
     if (name === 'body') { if (S.walk) this.apply(); else v.dirty(); }
     if (name === 'map') { v.groups.map.visible = v.groups.voxels.visible = L.map; v.dirty(); }
-    if (name === 'outcomes') { this.paintOutcomes(); this.renderChip(); }
+    if (name === 'outcomes') { this.paintOutcomes(); if (S.walk) v.dimOutcomes(true); this.renderChip(); }
     if (name === 'lidar') { v.groups.lidar.visible = L.lidar; S.lidarShown = undefined; if (S.walk) this.apply(); else v.setLidar(L.lidar ? S.world.start_lidar : null); }
     if (name === 'plan') { v.groups.plan.visible = L.plan; v.dirty(); }
   }
@@ -565,8 +619,11 @@ class Demo {
     if (mode === 'follow') {
       v.follow = !(this.cameraMode === 'follow');
       this.cameraMode = v.follow ? 'follow' : 'orbit';
+      this.autoFollow = false;
       if (!v.follow) v.frame(this.S.world, 'orbit');
+      else if (!this.S.walk) { const w = this.S.world; v.look([w.start_xy[0], w.start_xy[1], 0.6], { yaw: w.start_yaw_rad + Math.PI + 0.6, pitch: 0.55, distance: 4.2 }); }
     } else {
+      this.autoFollow = false;
       v.follow = false; this.cameraMode = mode;
       v.frame(this.S.world, mode);
     }
@@ -624,6 +681,7 @@ class Demo {
     for (const x of all) counts[bucket(x.grade)]++;
     const grade = GRADES[S.filter] && !['clean'].includes(S.filter) ? [[S.filter, GRADES[S.filter].short]] : [];
     for (const [k] of grade) counts[k] = all.filter(x => x.grade === k).length;
+    if (!counts[S.filter]) S.filter = 'all';
     E.filters.innerHTML = [['all', 'All'], ['clean', 'Clean'], ['flagged', 'Flagged'], ['failed', 'Failed'], ...grade].filter(([k]) => counts[k])
       .map(([k, label]) => `<button data-filter="${k}" aria-pressed="${S.filter === k}">${label} <small>${counts[k]}</small></button>`).join('');
     const rows = this.pool().sort((a, b) => S.folder === 'wrong' ? WRONG_ORDER.indexOf(a.grade) - WRONG_ORDER.indexOf(b.grade) || b.contact - a.contact : a.dist - b.dist || (a.turn ?? 0) - (b.turn ?? 0));
@@ -635,16 +693,23 @@ class Demo {
       return `<li><button data-room="${x.room}" data-walk="${x.id}" aria-label="${escape(`${S.folder === 'wrong' ? `${titles[x.room]}, ` : ''}${fmt(x.dist, 1)} m ${direction(x.turn)}, ${g.label}, ${detail}`)}"><i style="background:${g.css}"></i><span class="w-main">${where}${S.folder === 'wrong' ? `${escape(titles[x.room])} · ` : ''}${fmt(x.dist, 1)} m ${escape(direction(x.turn))}</span><span class="w-grade">${escape(g.label)}</span><span class="w-detail mono">${detail}</span></button></li>`;
     }).join('') : '<li class="empty">No walks here.</li>';
   }
-  toggleHelp(open = this.el.help.hidden) {
+  toggleHelp(open = this.el.help.hidden, restoreFocus = true) {
     const was = !this.el.help.hidden;
     this.el.help.hidden = !open;
+    this.el.helpBtn.setAttribute('aria-expanded', String(!!open));
     if (open) { this.togglePicker(false); this.el.helpClose.focus({ preventScroll: true }); }
-    else if (was) this.el.helpBtn.focus({ preventScroll: true });
+    else if (was && restoreFocus) this.el.helpBtn.focus({ preventScroll: true });
   }
 
   // ----- chrome
   live(text) { if (this.el.live.textContent !== text) this.el.live.textContent = text; }
-  flash(text) { const n = this.el.flash; n.textContent = text; n.hidden = false; clearTimeout(this._flash); this._flash = setTimeout(() => { n.hidden = true; }, 4000); }
+  flash(text, tone = 'warn') {
+    const n = this.el.flash, R = this.root.getBoundingClientRect();
+    const under = Math.max(0, ...[...this.root.querySelectorAll('.chrome.top-left, .chrome.top-right')].filter(c => c.getClientRects().length).map(c => c.getBoundingClientRect().bottom - R.top));
+    n.style.top = `${Math.round(under + 10)}px`;
+    n.textContent = text; n.dataset.tone = tone; n.hidden = false;
+    clearTimeout(this._flash); this._flash = setTimeout(() => { n.hidden = true; }, 4000);
+  }
   splash(title, sub = '', tone = '') {
     const n = this.el.splash;
     n.querySelector('b').textContent = title; n.querySelector('span').textContent = sub;
@@ -668,8 +733,7 @@ class Demo {
   // The operator's steps, until the first walk plays: pick a goal, send it (Studio checks and reads it back), Go.
   renderGuide() {
     const S = this.S, g = this.el.guide;
-    if (S.walk) S.guided = true;
-    g.hidden = !!S.guided || (this.root.classList.contains('narrow') && !!S.selected);
+    g.hidden = !!S.walk || (this.root.classList.contains('narrow') && !!S.selected);
     if (g.hidden) return;
     const now = S.mode === 'staged' || S.mode === 'loading' ? 'go' : S.selected && verdict(S.selected).sendable ? 'send' : 'pick';
     const order = ['pick', 'send', 'go'];
@@ -681,7 +745,9 @@ class Demo {
   }
   renderDock() {
     const S = this.S, w = S.walk, E = this.el;
+    // Go lives on the goal's card once it is sent; the dock offers it only if that card is not there.
     E.go.disabled = S.mode !== 'staged';
+    E.go.hidden = !(S.mode === 'staged' || S.mode === 'loading') || !E.chip.hidden;
     E.go.textContent = S.mode === 'loading' ? 'Loading…' : 'Go';
     E.go.classList.toggle('armed', S.mode === 'staged');
     E.reset.disabled = !S.selected && !w;
@@ -711,7 +777,9 @@ class Demo {
     const deferredNow = w && phase === 'ARRIVED' && w.events.find(e => e.type === 'stand_deferred' && e.t <= S.t);
     const stoodNow = deferredNow && w.events.some(e => (e.type === 'stand' || e.type === 'stand_forced') && e.t > deferredNow.t && e.t <= S.t);
     const g = w && S.mode === 'done' ? grade(w) : null;
-    const badge = !w ? (S.mode === 'staged' || S.mode === 'loading' ? { label: 'Waiting for Go', color: '#9fd8ff' } : { label: 'Waiting for a goal', color: '#8aa0ad' })
+    const badge = !w ? (S.mode === 'staged' || S.mode === 'loading' ? { label: 'Sent · press Go', color: '#9fd8ff' }
+      : S.selected ? (verdict(S.selected).sendable ? { label: 'Goal picked · send it', color: '#bccffa' } : { label: 'Pick another spot', color: '#f0c27a' })
+      : { label: 'Waiting for a goal', color: '#8aa0ad' })
       : g ? { label: g.short === 'Clean' ? 'Arrived' : g.short, color: hex(g.color) }
       : deferredNow && !stoodNow ? { label: 'Arrived · stand deferred', color: '#efbb70' } : p;
     if (E.phase.textContent !== badge.label) E.phase.textContent = badge.label;
@@ -770,12 +838,14 @@ class Demo {
     E.chip.dataset.state = staged ? 'staged' : v.tone;
     E.chip.innerHTML = staged
       ? `<p class="gc-verdict pass"><span class="icon" aria-hidden="true">✓</span>Sent · read back · verified</p>
-         <p class="gc-note">On the robot Studio would now have sent this goal to <code>node.py</code> and read it back. Nothing moves until the operator presses <kbd>g</kbd>.</p>
+         <p class="gc-note">On the robot Studio would now have sent this goal to <code>node.py</code> and read it back. Nothing moves until the operator presses <kbd>g</kbd> on the node's console; here, press Go.</p>
          <div class="gc-actions"><button class="btn go armed" data-act="go"${S.mode === 'loading' ? ' disabled' : ''}>${S.mode === 'loading' ? 'Loading…' : 'Go <kbd>g</kbd>'}</button><button class="btn ghost" data-act="clear">Clear</button></div>`
       : `<p class="gc-verdict ${v.tone}"><span class="icon" aria-hidden="true">${STATUS[v.tone === 'pass' ? 'p' : v.tone === 'warn' ? 'w' : 'b'][1]}</span>${escape(v.text)}</p>
          <p class="gc-meta">${meta}</p>
          ${S.detail ? `<ul class="checks">${rows}</ul>${v.common ? '<p class="fineprint">From the start mark the robot has seen little of the room, so Studio warns about unseen space; the planner explores as it walks.</p>' : ''}` : ''}
-         <div class="gc-actions"><button class="btn primary" data-act="send"${v.sendable ? '' : ' disabled'}>Send goal</button><button class="btn ghost" data-act="more" aria-expanded="${S.detail}">${S.detail ? 'Hide checks' : 'Six checks'}</button></div>`;
+         <div class="gc-actions"><button class="btn primary" data-act="send"${v.sendable ? '' : ' disabled'}>Send goal</button><button class="btn ghost" data-act="more" aria-expanded="${S.detail}">${S.detail ? 'Hide checks' : 'Six checks'}</button><button class="btn ghost" data-act="clear">Clear</button></div>`;
+    // Its height just changed (the checks, the outcome line): place it now, the render loop may be idle.
+    this.place();
   }
   renderResult() {
     const S = this.S, w = S.walk, box = this.el.result;
@@ -808,7 +878,11 @@ class Demo {
     const tr = bottomOf(this.root.querySelector('.chrome.top-right'));
     const minY = Math.max(bottomOf(this.root.querySelector('.chrome.top-left')), tr) + 10;
     // The readout hangs under whatever the top-right chrome holds (the phase, Open full screen, Stop).
-    const top = !E.hud.hidden && !this.root.classList.contains('narrow') ? `${Math.round(tr + 8)}px` : '';
+    // ...or under the layer pills when they reach across to it.
+    const tl = this.root.querySelector('.chrome.top-left'), tlBox = tl?.getClientRects().length ? tl.getBoundingClientRect() : null;
+    const hudLeft = R.right - (E.hud.offsetWidth || 236) - 14;
+    const reach = tlBox && tlBox.right > hudLeft - 6 ? tlBox.bottom - R.top : 0;
+    const top = !E.hud.hidden && !this.root.classList.contains('narrow') ? `${Math.round(Math.max(tr, reach) + 8)}px` : '';
     if (E.hud.style.top !== top) E.hud.style.top = top;
     const maxY = H - (E.dock.offsetHeight || 50) - 24 - (E.guide.hidden || this.root.classList.contains('narrow') ? 0 : E.guide.offsetHeight + 10);
     const put = (node, xyz, dy, flip, keep = false) => {
@@ -816,25 +890,36 @@ class Demo {
       const off = !p || p[0] < -40 || p[0] > W + 40 || p[1] < -40 || p[1] > H + 40;
       // A hint goes with its point; the goal checks stay on screen (clamped, without their arrow) so Send is reachable.
       if (off && !keep) { node.style.visibility = 'hidden'; return; }
-      node.classList.toggle('adrift', off);
       if (off) p = [W / 2, minY + node.offsetHeight + dy];
       node.style.visibility = '';
       const w = node.offsetWidth, h = node.offsetHeight;
-      const x = Math.max(8, Math.min(W - w - 8, p[0] - w / 2));
-      let y = p[1] - h - dy, below = false;
+      let x = Math.max(8, Math.min(W - w - 8, p[0] - w / 2));
+      let y = p[1] - h - dy, below = false, side = false;
       if (flip && y < minY) {  // no room above the pin: hang it below the goal's foot
-        const foot = v.project(xyz[0], xyz[1], 0);
-        y = (foot ? foot[1] : p[1]) + 16; below = true;
+        const foot = v.project(xyz[0], xyz[1], 0), footY = (foot ? foot[1] : p[1]) + 16;
+        if (footY + h <= maxY) { y = footY; below = true; }
+        else {
+          // Nor below: beside the goal, so the card never covers what it describes (when there is room).
+          const right = p[0] + 28, left = p[0] - 28 - w;
+          if (right + w <= W - 8) { x = right; side = true; } else if (left >= 8) { x = left; side = true; }
+          y = side ? p[1] - h / 2 : y;
+        }
       }
       y = Math.max(minY, Math.min(maxY - h, y));
+      node.classList.toggle('adrift', off || side);
       node.classList.toggle('below', below);
       node.style.setProperty('--ax', `${Math.round(Math.max(16, Math.min(w - 16, p[0] - x)))}px`);
       node.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
     };
     if (!S.picked) put(E.hint, [S.world.start_xy[0], S.world.start_xy[1], 1.75], 10, false);
-    if (!E.ghostTip.hidden && this.viewer.ghosts.plan?.root.visible) { const r = this.refPose; put(E.ghostTip, [r[0], r[1], 1.55], 12, false); }
+    if (!E.ghostTip.hidden) { if (this.viewer.ghosts.plan?.root.visible) { const r = this.refPose; put(E.ghostTip, [r[0], r[1], 1.55], 12, false); } else E.ghostTip.hidden = true; }
+    if (!E.cursorTip.hidden && S.cursor) put(E.cursorTip, [S.cursor[0], S.cursor[1], 0.3], 14, false);
+    // Narrow stages show the checks and the result as sheets above the dock, sized to what is left of the height.
+    const sheet = `${Math.max(140, Math.round(H - (E.dock.offsetHeight || 50) - 34 - minY))}px`;
+    if (this.root.classList.contains('narrow') && !E.result.hidden && E.result.style.maxHeight !== sheet) E.result.style.maxHeight = sheet;
+    if (!this.root.classList.contains('narrow') && E.result.style.maxHeight) E.result.style.maxHeight = '';
     if (E.chip.hidden) return;
-    if (this.root.classList.contains('narrow')) { E.chip.style.transform = ''; E.chip.style.visibility = ''; E.chip.style.maxHeight = ''; return; }
+    if (this.root.classList.contains('narrow')) { E.chip.style.transform = ''; E.chip.style.visibility = ''; if (E.chip.style.maxHeight !== sheet) E.chip.style.maxHeight = sheet; return; }
     const room = `${Math.max(160, Math.round(maxY - minY))}px`;
     if (E.chip.style.maxHeight !== room) E.chip.style.maxHeight = room;
     put(E.chip, [S.selected.xy[0], S.selected.xy[1], 0.78], 12, true, true);
@@ -892,7 +977,7 @@ function template({ embedded, home, stop }) {
   <div class="stage-canvas" data-el="canvas" tabindex="0" role="application" aria-label="3D view of the room and the robot. Click the floor to pick a goal, or use the arrow keys to move a goal cursor and Enter to pick it."></div>
   <div class="chrome top-left">
     ${embedded ? '' : `<a class="title-chip" href="${home ?? '../'}"><span class="mark">G1</span><span>Deploy Studio <small>Navigate demo · recorded walks</small></span></a>`}
-    <div class="layers" role="group" aria-label="Layers (also the legend)">${layers}<button class="legend-btn" data-el="helpBtn" aria-label="Legend and keys (?)" title="Legend and keys (?)">?</button></div>
+    <div class="layers" role="group" aria-label="Layers (also the legend)">${layers}<button class="legend-btn" data-el="helpBtn" aria-label="Legend and keys (?)" title="Legend and keys (?)" aria-expanded="false">?</button></div>
   </div>
   <div class="chrome top-right">
     <span class="phase" data-el="phase">WAIT</span>
@@ -901,7 +986,8 @@ function template({ embedded, home, stop }) {
   </div>
   <div class="hud" data-el="hud" hidden></div>
   <ol class="guide" data-el="guide" aria-label="The operator's three steps"><li data-step="pick"><b>1</b> Pick a goal</li><li data-step="send"><b>2</b> Send it</li><li data-step="go"><b>3</b> Go</li></ol>
-  <div class="hint" data-el="hint"><b>${matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click'} the floor.</b> It has to find its own way.</div>
+  <div class="hint" data-el="hint"><b>${tap()} the floor.</b> It has to find its own way.</div>
+  <div class="hint cursor-tip" data-el="cursorTip" hidden aria-hidden="true"></div>
   <div class="goal-chip" data-el="chip" hidden role="group" aria-label="Goal checks"></div>
   <p class="ghost-tip" data-el="ghostTip" hidden><b>The pink ghost</b> is the pose the tracker is chasing. Where it pulls ahead or aside, the body is behind its plan. ${embedded ? '<a href="#closer">Side by side ›</a>' : `<a href="${home ?? '../'}#closer">Side by side ›</a>`}</p>
   <div class="splash" data-el="splash" aria-hidden="true"><b></b><span></span></div>
@@ -909,7 +995,7 @@ function template({ embedded, home, stop }) {
   <div class="result" data-el="result" hidden role="region" aria-labelledby="demo-result-title"></div>
   <div class="flash" data-el="flash" role="status" hidden></div>
   <div class="dock" data-el="dock" role="toolbar" aria-label="Walk and rooms">
-    <button class="dk" data-el="reset" title="New goal (R)" aria-label="New goal (R)">↺</button>
+    <button class="dk new" data-el="reset" title="Put this goal or walk away and pick another (R)">New goal</button>
     <button class="dk" data-el="play" aria-label="Play (space)">▶</button>
     <button class="dk go" data-el="go" title="Go (G): the operator's key">Go</button>
     <div class="scrub"><div class="bands" data-el="bands"></div><input type="range" data-el="scrub" min="0" max="1000" value="0" aria-label="Walk time"></div>
