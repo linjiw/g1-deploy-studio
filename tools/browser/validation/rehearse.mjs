@@ -165,7 +165,7 @@ await R.check('4.8', 'Run preset (bundle K2/ODE4, 2 s): live attach, frames grow
   assert(tab === 'health' && live.worker, `health tab ${tab} worker card ${live.worker}`);
   assert(cam === 'follow', `camera ${cam}`);
   assert(job.status === 'completed' && done.outcome && outcome.trim(), `job ${job.status} outcome ${done.outcome} chip ${outcome}`);
-  assert(/REPLAY · CPU REHEARSAL · L1/.test(done.badge), `result badge ${done.badge}`);
+  assert(/replay · CPU rehearsal · L1/i.test(done.badge), `result badge ${done.badge}`);
   return { id, live, job: { status: job.status, outcome: job.summary?.report?.outcome ?? job.summary?.outcome }, done, shot, shot2 };
 });
 

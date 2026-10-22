@@ -42,7 +42,7 @@ await R.check('8.2a', 'Reload the page mid-run (in Rehearse) re-attaches to the 
   const a = await S(); await sleep(2000); const b = await S();
   const job = (await api(page, `/api/jobs?id=${killedJob}&light=1`)).body;
   const shot = await R.shot('reload-in-rehearse');
-  assert(b.frames > a.frames && /LIVE/.test(b.badge), `re-attach frames ${a.frames} → ${b.frames} badge ${b.badge} job ${job.status}`);
+  assert(b.frames > a.frames && /\blive\b/i.test(b.badge), `re-attach frames ${a.frames} → ${b.frames} badge ${b.badge} job ${job.status}`);
   return { a, b, status: job.status, shot };
 });
 

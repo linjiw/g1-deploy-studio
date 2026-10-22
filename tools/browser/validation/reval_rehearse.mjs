@@ -87,7 +87,7 @@ await R.check('4.8', 'Run preset (bundle K2/ODE4, 2 s, lat 200 predict): live at
   assert(/Owned CPU worker/.test(health), 'Health worker card');
   assert(cam === 'follow', `camera ${cam}`);
   assert(job.status === 'completed' && done.chip.trim(), `job ${job.status} ${job.error ?? ''} chip ${done.chip}`);
-  assert(/REPLAY · CPU REHEARSAL/.test(done.badge), `result badge ${done.badge}`);
+  assert(/replay · CPU rehearsal/i.test(done.badge), `result badge ${done.badge}`);
   return { id, a, b, done, wall_s: timing.bundle2s_wall_s, shot, shot2 };
 });
 
@@ -169,7 +169,7 @@ await R.check('B.priv-chip', 'WX recording: PRIVILEGED MAP chip visible (and hid
   await page.selectOption('#session-picker', jobs.bundle); await replayOf(jobs.bundle);
   const bundleVis = await page.locator('#privileged-badge').isVisible();
   await page.selectOption('#session-picker', id); await replayOf(id);
-  assert(vis && /PRIVILEGED MAP/.test(text) && !bundleVis, `wx chip visible ${vis} "${text}", bundle chip visible ${bundleVis}`);
+  assert(vis && /privileged map/i.test(text) && !bundleVis, `wx chip visible ${vis} "${text}", bundle chip visible ${bundleVis}`);
   return { text, title, bundleVisible: bundleVis, shot };
 });
 

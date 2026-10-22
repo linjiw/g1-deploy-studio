@@ -122,7 +122,9 @@ function resolvePending() {
   const seq = nav.pendingSeq; if (!seq) return;
   const reply = navState()?.commands?.find(c => c.seq === seq);
   if (!reply) return;
-  nav.pendingSeq = null;
+  nav.pendingSeq = null; nav.pendingCmd = null;
+  // A goal that reached the node (applied, or sent but not read back) replaces the pick: the node holds it now.
+  if (reply.cmd === 'goal' && (reply.status !== 'rejected' || reply.sent)) { nav.pick = null; nav.pickToken = (nav.pickToken ?? 0) + 1; }
   if (reply.status === 'rejected') nav.notice = { kind: 'warning', text: `${label(reply.cmd)} refused: ${reply.reason}` };
   else if (reply.cmd === 'stand' && navState()?.pending_stand) {
     nav.notice = { kind: 'warning', text: 'Stand requested; the node defers it here (see above).' };
@@ -139,7 +141,7 @@ async function command(cmd, extra = {}) {
   nav.busy = true; nav.notice = null; renderLive();
   try {
     const result = await request('/api/nav/command', { id: nav.job.id, cmd, ...extra });
-    nav.pendingSeq = result.seq;
+    nav.pendingSeq = result.seq; nav.pendingCmd = cmd;
     if (cmd === 'end') nav.endRequestedAt = Date.now();
     schedule(100);
   } catch (error) { nav.notice = { kind: 'warning', text: error.message }; }
@@ -565,6 +567,8 @@ function stageModel() {
     detail: real ? 'Waiting for the node status and the LIO pose.' : 'Loading the planner and SONIC on the CPU, about 10–30 s.', actions: '' };
   const can = n.can ?? {}, goal = n.goal, pick = nav.pick;
   const notice = nav.notice?.kind === 'warning' ? nav.notice.text : null;
+  if (nav.pendingSeq && nav.pendingCmd === 'goal') return { real, step: 'send', icon: 'spin', title: real ? 'Sending the goal to the node…' : 'Staging the goal…',
+    detail: real ? 'Studio reads it back from the node status before it counts as staged.' : '', actions: '' };
   if (n.fallen) return { real, step: null, icon: 'block', tone: 'block', title: 'E-stop: the robot tilted past the limit', detail: 'End the session to keep the recording.', actions: button('nsb-end', 'End session', 'danger', can.end) };
   if (['RUN', 'PRESCAN'].includes(n.phase)) return { real, step: 'go', icon: 'live', title: n.phase === 'PRESCAN' ? 'Pre-scanning' : 'Walking',
     detail: notice ?? (goal ? `To ${xyText(goal.xy)}` : ''), live: true, tone: notice ? 'warn' : '',
@@ -584,9 +588,14 @@ function stageModel() {
   }
   if (!real && goal && can.go) return { real, step: 'go', icon: 'pass', tone: 'ready', title: `Goal staged at ${xyText(goal.xy)}`,
     detail: notice ?? `Press Go to walk there, or ${tapWord().toLowerCase()} elsewhere to change it.`, actions: button('nsb-go', 'Go', 'go-action armed', true) };
-  if (real && goal) return { real, step: 'go', icon: n.ready_ok ? 'pass' : 'block', tone: n.ready_ok ? 'ready' : 'block',
-    title: goal.verification === 'verified' ? `Goal staged at ${xyText(goal.xy)}` : 'The node goal is not verified',
-    detail: n.ready_ok ? 'Ready: the operator may press g on the node console once the area is clear.' : 'Not ready, do not press g. The panel lists what blocks.', actions: '' };
+  if (real && goal) {
+    const verified = goal.verification === 'verified';
+    // An unverified goal sends the operator back to picking: Studio must stage one it can read back.
+    return { real, step: verified ? 'go' : 'pick', icon: verified && n.ready_ok ? 'pass' : 'block', tone: verified && n.ready_ok ? 'ready' : 'block',
+      title: verified ? `Goal staged at ${xyText(goal.xy)}` : 'The node goal is not verified',
+      detail: !verified ? `The node holds a goal Studio could not read back: do not press g. ${tapWord()} the map to stage a new one.`
+        : n.ready_ok ? 'Ready: the operator may press g on the node console once the area is clear.' : 'Not ready, do not press g. The panel lists what blocks.', actions: '' };
+  }
   const last = (n.legs ?? []).filter(l => l.outcome).at(-1);
   const LAST = { arrived: 'arrived', stopped: 'was stopped', timeout: 'timed out', estop: 'ended in an E-stop', fell: 'fell' };
   if (can.goal) return { real, step: 'pick', title: `${tapWord()} the floor to place a goal`, tone: notice ? 'warn' : '',

@@ -66,7 +66,7 @@ await R.check('8.2b', 'Reload while in Replay during a live run keeps the live v
   assert(statusAtB === 'running' || b.frames > a.frames, `run finished before the post-reload sample (${statusAtB}); cannot observe following`);
   assert(a.id === r9 && a.workspace === 'replay', `reload did not reopen the live job in Replay: ${JSON.stringify(a)}`);
   assert(b.frames > a.frames, `live view frozen after reload in Replay: frames ${a.frames} → ${b.frames} (${b.badge}, ${b.playback}), job ${statusAtB}`);
-  assert(done.id === r9 && done.mode === 'replay' && /REPLAY · CPU REHEARSAL/.test(done.badge), `after completion: ${JSON.stringify(done)}`);
+  assert(done.id === r9 && done.mode === 'replay' && /replay · CPU rehearsal/i.test(done.badge), `after completion: ${JSON.stringify(done)}`);
   return { a, b, statusAtB, done, shot, shotDone };
 });
 
@@ -77,7 +77,7 @@ await R.check('8.2a', 'Reload the page mid-run (in Rehearse) re-attaches to the 
   await page.waitForFunction(id => window.__studio.rehearse.job?.id === id && window.__studio.state.sessionId === id && window.__studio.state.session.metadata.mode === 'simulation', r10, { timeout: 30000 });
   const a = await S(); await sleep(1000); const b = await S();
   const shot = await R.shot('reload-in-rehearse');
-  assert(b.frames > a.frames && /LIVE/.test(b.badge), `re-attach frames ${a.frames} → ${b.frames} badge ${b.badge} job ${(await jobApi(r10)).status}`);
+  assert(b.frames > a.frames && /\blive\b/i.test(b.badge), `re-attach frames ${a.frames} → ${b.frames} badge ${b.badge} job ${(await jobApi(r10)).status}`);
   return { a, b, shot };
 });
 
@@ -112,10 +112,10 @@ await R.check('8.1', 'Restart the gateway and its worker mid-run → job recover
 await R.check('4.9b-restart', 'After a gateway-restart failure the header/badge/chip/transport/Health leave LIVE → RUN FAILED · PARTIAL LIVE SAMPLES', async () => {
   const ui = jobs.afterKill; if (!ui) return R.blocked('8.1 did not run');
   assert(ui.id === r10, `viewport left the run: ${ui.id}`);
-  assert(/RUN FAILED · PARTIAL LIVE SAMPLES/.test(ui.badge) && !/LIVE CPU/.test(ui.badge), `badge "${ui.badge}"`);
+  assert(/run failed · partial live samples/i.test(ui.badge) && !/live CPU/i.test(ui.badge), `badge "${ui.badge}"`);
   assert(!/running/i.test(ui.chip) && /fail|error/i.test(ui.chip), `chip "${ui.chip}"`);
   assert(/RUN FAILED/.test(ui.playback), `transport "${ui.playback}"`);
-  assert(/PARTIAL LIVE SAMPLES/.test(ui.health ?? ''), `Health "${ui.health}"`);
+  assert(/partial live samples/i.test(ui.health ?? ''), `Health "${ui.health}"`);
   return ui;
 });
 
@@ -184,7 +184,7 @@ await R.check('8.1d', 'A detached job that completes after the restart is replay
 
 await R.check('8.1e', 'The page that was open across the gateway-only restart follows the detached run to its recording (no reload)', async () => {
   const o = jobs.detachedOpenPage; if (!o) return R.blocked('8.1d did not run');
-  assert(o.id === r11 && o.mode === 'replay' && /REPLAY · CPU REHEARSAL/.test(o.badge), `open page after the detached run completed: ${JSON.stringify(o)}`);
+  assert(o.id === r11 && o.mode === 'replay' && /replay · CPU rehearsal/i.test(o.badge), `open page after the detached run completed: ${JSON.stringify(o)}`);
   return o;
 });
 

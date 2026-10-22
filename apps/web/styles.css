@@ -253,7 +253,7 @@ body.stage-2d .vp-toolbar, body.stage-2d .vp-hud, body.stage-2d .viewport-meta, 
 .sensor-dock .sensor-card { flex: 0 0 300px; }
 /* Narrow stages: fewer words on the canvas. */
 @container stage (max-width: 700px) {
-  .viewport-meta { display: none; }
+  .viewport-meta, .policy-chip { display: none; }
   .vp-hud { bottom: 12px; gap: 5px; }
   .hud-item { min-width: 0; padding: 4px 9px; border-radius: 10px; }
   .hud-item strong { font-size: 13.5px; }
@@ -502,13 +502,15 @@ body.arena-preview .vp-hud, body.arena-preview .viewport-meta { display: none; }
 /* Medium (tablet landscape, small laptops): the inspector is a drawer, opened with Details. */
 .inspector-backdrop { position: fixed; inset: 0; z-index: 45; min-height: 0; padding: 0; border: 0; border-radius: 0; background: rgba(16, 22, 28, .14); cursor: default; }
 .inspector-backdrop:hover:not(:disabled) { background: rgba(16, 22, 28, .14); }
+/* body.drawer-mode is set by app.js (updateDrawerMode): 1024–1279 px, and up to 1599 px in Navigate. */
+body.drawer-mode .shell, body.drawer-mode.no-inspector .shell { grid-template-columns: var(--rail-w) auto minmax(0, 1fr); }
+body.drawer-mode .inspector-toggle { display: inline-flex; align-items: center; }
+body.drawer-mode.no-inspector .inspector-toggle { display: none; }
+body.drawer-mode .shell > .inspector { display: none; }
+body.drawer-mode.show-inspector .shell > .inspector { display: flex; position: fixed; z-index: 46; top: calc(var(--topbar-h) + 8px); right: 8px; bottom: 8px; width: min(400px, calc(100vw - 16px)); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow-pop); overflow: hidden; }
+body.drawer-mode .inspector-resize { display: none; }
 @media (max-width: 1279px) {
-  .shell, body.no-inspector .shell { grid-template-columns: var(--rail-w) auto minmax(0, 1fr); }
-  .inspector-toggle { display: inline-flex; align-items: center; }
-  body.no-inspector .inspector-toggle, #evidence-button { display: none; }
-  .shell > .inspector { display: none; }
-  body.show-inspector .shell > .inspector { display: flex; position: fixed; z-index: 46; top: calc(var(--topbar-h) + 8px); right: 8px; bottom: 8px; width: min(400px, calc(100vw - 16px)); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow-pop); overflow: hidden; }
-  .inspector-resize { display: none; }
+  #evidence-button { display: none; }
   :root { --panel-w: 332px; }
 }
 /* Stacked (tablet portrait, phones): the stage first, the workspace below it, workspaces in a bottom tab bar. */

@@ -21,7 +21,7 @@ await R.check('4.9b', 'After Cancel the header, outcome chip and transport stop 
   const ui = await page.evaluate(() => ({ badge: document.getElementById('mode-badge').textContent, chip: document.getElementById('run-outcome').textContent, playback: document.getElementById('playback-state').textContent,
     picker: document.getElementById('session-picker').selectedOptions[0]?.textContent, card: document.getElementById('rh-job').querySelector('.job-line')?.textContent, health: document.querySelector('#health-content .tab-intro')?.textContent }));
   const shot = await R.shot('after-cancel');
-  assert(!/LIVE/.test(ui.badge) && !/running/i.test(ui.chip) && !/^LIVE$/.test(ui.playback.trim()), `job ${id} cancelled, but header still shows "${ui.badge}" / chip "${ui.chip}" / transport "${ui.playback}" / picker "${ui.picker}" / Health "${ui.health}"`);
+  assert(!/live CPU simulation/i.test(ui.badge) && !/running/i.test(ui.chip) && !/^live$/i.test(ui.playback.trim()), `job ${id} cancelled, but header still shows "${ui.badge}" / chip "${ui.chip}" / transport "${ui.playback}" / picker "${ui.picker}" / Health "${ui.health}"`);
   return { id, ui, shot };
 });
 await R.save();

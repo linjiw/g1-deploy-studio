@@ -36,7 +36,8 @@ function unavailableList(rows) {
 function renderIntent(state) {
   const f = state.frame, r = f.reference, p = f.plan, m = state.measuredFrame, h = sampleHealth(state);
   const meta = state.session.metadata, wire = meta.recording_kind === 'recorded-wire-transport';
-  const goal = meta.goal_xy, crit = meta.navigation_criteria;
+  // A navigation session carries each walk's goal in its frames (none between walks), as the HUD and Stage read it.
+  const goal = f.navigation ? f.navigation.goal_xy : meta.goal_xy, crit = meta.navigation_criteria;
   const dist = goal && hasPose(m) ? Math.hypot(m.position[0] - goal[0], m.position[1] - goal[1]) : null;
   const windowRows = r?.window ?? [];
   const nav = goal ? card('Navigation target', `${fact('Goal · world XY', `[${vector(goal, 2)}] m`)}${fact('Distance now', num(dist, 3, 'm'), dist !== null && crit && dist <= crit.goal_radius_m ? 'value-good' : '')}

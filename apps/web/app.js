@@ -451,8 +451,8 @@ async function attachNav(job) {
 // Navigate's map view: top-down on the robot, closer on narrow stages; the camera buttons say Top.
 function navTopView(position) {
   const width = $('viewport').clientWidth || 800;
-  // The stage bar sits at the bottom: the robot sits above the middle, so the floor ahead of it stays clickable.
-  scene.topView(position, width < 520 ? 3.2 : width < 900 ? 4 : 5, { lift: width < 520 ? 0.32 : 0.22 });
+  // Centred: the title card above and the stage bar below cover about as much of the map.
+  scene.topView(position, width < 520 ? 3.2 : width < 900 ? 4 : 5);
   markCamera('top');
 }
 function navLayers(entering) {
@@ -615,6 +615,7 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
   const ws = WORKSPACES[name], previous = state.workspace;
   state.workspace = name;
   for (const key of Object.keys(WORKSPACES)) document.body.classList.toggle(`ws-${key}`, key === name);
+  updateDrawerMode();
   document.querySelectorAll('[data-workspace]').forEach(b => { const a = b.dataset.workspace === name; b.classList.toggle('active', a); b.setAttribute('aria-pressed', String(a)); });
   $('workbench-error').hidden = true;
   $('tool-panel').hidden = !ws.panel;
@@ -701,8 +702,14 @@ function togglePopover(id, button) {
   closePopovers(id);
   node.hidden = !open; button?.setAttribute('aria-expanded', String(open));
 }
+// The inspector is a drawer from 1024 to 1279 px, and up to 1599 px in Navigate, where the map needs the room.
+function updateDrawerMode() {
+  const w = innerWidth, on = w >= 1024 && (w < 1280 || (state.workspace === 'navigate' && w < 1600));
+  if (document.body.classList.contains('drawer-mode') !== on) { document.body.classList.toggle('drawer-mode', on); if (!on) setInspectorDrawer(false); scene.markDirty?.(); }
+}
+window.addEventListener('resize', () => updateDrawerMode());
 function setInspectorDrawer(open) {
-  open = !!open && matchMedia('(min-width: 1024px) and (max-width: 1279px)').matches;
+  open = !!open && document.body.classList.contains('drawer-mode');
   document.body.classList.toggle('show-inspector', open);
   $('inspector-backdrop').hidden = !open;
   $('inspector-toggle').setAttribute('aria-expanded', String(open));
@@ -782,7 +789,6 @@ function bindChrome() {
   $('hardware-chip').addEventListener('click', () => togglePopover('evidence-legend', $('evidence-button')));
   $('help-evidence').addEventListener('click', () => togglePopover('evidence-legend', $('evidence-button')));
   $('inspector-backdrop').addEventListener('click', () => setInspectorDrawer(false));
-  matchMedia('(min-width: 1024px) and (max-width: 1279px)').addEventListener('change', () => setInspectorDrawer(false));
   $('help-button').addEventListener('click', () => togglePopover('help-overlay', $('help-button')));
   document.addEventListener('click', e => {
     const inspect = e.target.closest('[data-inspect-pipeline]');

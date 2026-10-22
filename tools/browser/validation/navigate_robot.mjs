@@ -128,7 +128,7 @@ await R.check('R7', 'End: Studio stops its link only; the robot session opens in
   await page.click('#nav-end');
   const s = await waitNav(s => s.status === 'completed' && s.recording === 'robot-link' && s.mode === 'replay', 60000, 'recording');
   const badge = await page.locator('#mode-badge').textContent();
-  assert(/ROBOT SESSION · M5/.test(badge), badge);
+  assert(/robot session · M5/i.test(badge), badge);
   await R.shot('replay');
   return { badge };
 });
