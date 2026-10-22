@@ -50,7 +50,69 @@ SNAPSHOT_PERIOD_S = 0.5
 LAYER_POINTS = 1500
 LIDAR_POINTS = 800             # per recorded snapshot (raw and filtered); the map layers keep LAYER_POINTS
 DEFER_LIMIT_S = 20.0           # Studio's bound on a deferred stand in simulation (node.py keeps deferring)
+# Stand chunk variants (docs/DEPLOY_FIDELITY.md). 'default' is node.py stand() exactly: all 29 joints blend to SONIC's
+# default pose (arms out: shoulder roll +-0.2, elbow 0.6). 'hold_upper' is Flow round SLR2's variant
+# (closed_loop/callback.py stand_chunk(hold_upper=True)): only the legs settle; waist and arms keep the measured pose.
+STAND_MODES = ('default', 'hold_upper')
+UPPER_MJ = 12                  # MuJoCo joints 12..28 are waist (12-14) and arms (15-28); 0..11 are the legs
+BODY_GROUPS = ('arm', 'leg', 'torso', 'head')
+MAX_CONTACT_EPISODES = 100     # per walk; later episodes are counted, not listed
 _TERM = {'flag': False}        # SIGTERM from the gateway (cancel or a limit): end now and keep the recording
+
+
+def stand_chunk(np, q, default_mj, mode='default', settle_s=SETTLE_S, hold_s=HOLD_S):
+    """node.py StudentNode.stand's settle-to-stand chunk from the measured qpos ``q`` (36): joints -> SONIC default
+    pose over ``settle_s`` (smoothstep), pelvis pose held, upright at the measured yaw, then ``hold_s`` of standing.
+
+    mode 'default' is node.py's chunk, unchanged; 'hold_upper' keeps the waist and arms (MuJoCo joints 12..28) exactly
+    at the measured pose for the whole chunk while the legs settle as before."""
+    if mode not in STAND_MODES:
+        raise ValueError(f'stand mode must be one of {list(STAND_MODES)}')
+    q = np.asarray(q, dtype=np.float64)
+    n_settle, n = int(settle_s / DT), int((settle_s + hold_s) / DT)
+    a = np.clip(np.arange(1, n + 1) / n_settle, 0.0, 1.0)[:, None]
+    a = a * a * (3 - 2 * a)
+    frames = np.repeat(q[None], n, 0)
+    frames[:, 7:] = (1 - a) * q[7:] + a * default_mj
+    if mode == 'hold_upper':
+        frames[:, 7 + UPPER_MJ:] = q[7 + UPPER_MJ:]  # exactly the measured pose, zero reference velocity
+    w, x, y, z = q[3:7]
+    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    rot = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+    return {'qpos': frames, 'rotation': np.repeat(rot[None], n, 0), 'stand': True,
+            'joint_velocity': np.vstack([np.zeros((1, 29)), np.diff(frames[:, 7:], axis=0) / DT])}
+
+
+def body_group(body_name, mesh_name=''):
+    """Body group of a robot collision geom: arm, leg, torso or head (the head mesh rides on torso_link)."""
+    name = f'{body_name} {mesh_name}'.lower()
+    if 'head' in name:
+        return 'head'
+    if any(k in name for k in ('shoulder', 'elbow', 'wrist', 'hand')):
+        return 'arm'
+    if any(k in name for k in ('hip', 'knee', 'ankle', 'foot')):
+        return 'leg'
+    return 'torso'
+
+
+def summarize_contacts(episodes, threshold_n=0.0):
+    """Contact episodes of one walk (or many) split by whether a stand chunk was in force at first contact, counted
+    by the body group that carried the largest force at first contact (Flow round SLR2's readout)."""
+    out = {'episodes': 0, 'peak_n': 0.0}
+    for key in ('stand', 'walking'):
+        out[key] = {'episodes': 0, 'by_group': {g: 0 for g in BODY_GROUPS}, 'peak_n': 0.0}
+    for ep in episodes:
+        if ep['peak_n'] <= threshold_n:
+            continue
+        part = out['stand' if ep.get('stand') else 'walking']
+        out['episodes'] += 1
+        part['episodes'] += 1
+        if ep.get('first_group') in part['by_group']:
+            part['by_group'][ep['first_group']] += 1
+        part['peak_n'] = max(part['peak_n'], ep['peak_n'])
+        out['peak_n'] = max(out['peak_n'], ep['peak_n'])
+    out['threshold_n'] = threshold_n
+    return out
 
 
 def validate_request(request):
@@ -84,6 +146,7 @@ def validate_request(request):
             'initial_goal': None if initial_goal is None else _xy(initial_goal, 'initial_goal'),
             'map_mode': _map_mode(request.get('map_mode', 'keep')),
             'record_grids': _flag(request.get('record_grids', False), 'record_grids'),
+            'stand_mode': validate_stand_mode(request.get('stand_mode', 'default')),
             'policy': {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle',
                        'identity_sha256': str((request.get('policy') or {}).get('identity_sha256') or '')[:64] or None}}
 
@@ -91,6 +154,12 @@ def validate_request(request):
 def _map_mode(value):
     if value not in MAP_MODES:
         raise ValueError(f'map_mode must be one of {list(MAP_MODES)}')
+    return value
+
+
+def validate_stand_mode(value):
+    if value not in STAND_MODES:
+        raise ValueError(f'stand_mode must be one of {list(STAND_MODES)}')
     return value
 
 
@@ -226,6 +295,30 @@ def _run(req, output, inbox, started):
     cloud_memory.CloudMemory = ObservedMemory
 
     sim = Physics([dict(b) for b in req['map']['boxes']], bundle.sonic_onnx())
+    # Contact attribution (read-only): the source's max robot-obstacle normal force per substep is returned unchanged;
+    # when it is positive, the same contacts are also split by robot body group for the walk record.
+    import mujoco
+    geom_group = [body_group(sim.model.body(sim.model.geom_bodyid[g]).name,
+                             (mujoco.mj_id2name(sim.model, mujoco.mjtObj.mjOBJ_MESH, int(sim.model.geom_dataid[g])) or '')
+                             if sim.model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH else '')
+                  if sim.index.robot_geom[g] else None for g in range(sim.model.ngeom)]
+    original_contact_force = episode.obstacle_contact_force
+
+    def observed_contact_force(model, data, index):
+        best = original_contact_force(model, data, index)
+        if best > 0:
+            obst, f6, groups = set(index.obstacles.tolist()), np.zeros(6), current['contact_groups']
+            for i in range(data.ncon):
+                c = data.contact[i]
+                g1, g2 = int(c.geom1), int(c.geom2)
+                robot = g2 if g1 in obst and index.robot_geom[g2] else g1 if g2 in obst and index.robot_geom[g1] else None
+                if robot is not None:
+                    mujoco.mj_contactForce(model, data, i, f6)
+                    group = geom_group[robot]
+                    groups[group] = max(groups.get(group, 0.0), abs(float(f6[0])))
+        return best
+    episode.obstacle_contact_force = observed_contact_force
+    current['contact_groups'] = {}
     receipt = _actuators.apply(sim.model, contract.MJ_JOINTS, req['actuators'])
     torque['tracker'] = TorqueTracker(np, sim.model, contract.MJ_JOINTS, contract.EFFORT_MJ)
     original_policy = sim.tracker.policy
@@ -265,19 +358,9 @@ def _run(req, output, inbox, started):
         win = c[a0:a1, b0:b1]
         return bool(np.any(np.isfinite(win) & (win < below_m)))
 
-    def stand_plan(q, tick):  # node.py StudentNode.stand: joints -> SONIC default pose, pelvis yaw kept, then hold
+    def stand_plan(q, tick, mode='default'):  # node.py StudentNode.stand (module-level stand_chunk), then hold
         q = np.asarray(q, dtype=np.float64)
-        n_settle, n = int(SETTLE_S / DT), int((SETTLE_S + HOLD_S) / DT)
-        a = np.clip(np.arange(1, n + 1) / n_settle, 0.0, 1.0)[:, None]
-        a = a * a * (3 - 2 * a)
-        frames = np.repeat(q[None], n, 0)
-        frames[:, 7:] = (1 - a) * q[7:] + a * contract.DEFAULT_MJ
-        w, x, y, z = q[3:7]
-        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        rot = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
-        plan = {'qpos': frames, 'rotation': np.repeat(rot[None], n, 0), 'stand': True,
-                'joint_velocity': np.vstack([np.zeros((1, 29)), np.diff(frames[:, 7:], axis=0) / DT])}
-        return (plan, tick, q, np.zeros(29))
+        return (stand_chunk(np, q, contract.DEFAULT_MJ, mode), tick, q, np.zeros(29))
 
     # ---------------------------------------------------------------- session state
     checkout = _git_provenance(REFERENCE_ROOT)
@@ -308,6 +391,12 @@ def _run(req, output, inbox, started):
                              'as each evaluated rehearsal starts'},
                 'node_rules': {'goal_radius_m': req['goal_radius_m'], 'prescan_s': req['prescan_s'],
                                'tilt_estop_rad': TILT_ESTOP_RAD, 'stand': f'{SETTLE_S:g} s settle + {HOLD_S:g} s hold',
+                               'stand_mode': req['stand_mode'],
+                               'stand_mode_basis': ('node.py stand(): all 29 joints to the SONIC default pose'
+                                                    if req['stand_mode'] == 'default' else
+                                                    'NOT node.py: legs settle, waist and arms (MuJoCo 12-28) held at the '
+                                                    'measured pose (Flow round SLR2 stand_chunk hold_upper)'),
+                               'takeover_stand': 'default (the remote D-up stand is not node.py stand())',
                                'stand_deferral': 'near a remembered ceiling below 1.35 m within 0.8 m (node.py)',
                                'source': 'g1deploy/node.py'},
                 'actuators': receipt, 'hardware_validated': False, 'command_path_enabled': False, 'fixture': False,
@@ -322,6 +411,8 @@ def _run(req, output, inbox, started):
                     'Simulated time pauses while the robot waits for the operator; the real robot keeps scanning meanwhile.']}
     S = {'phase': 'BOOT', 'tick': 0, 'paused': True, 'goal': None, 'staged': None, 'leg': None, 'legs': [],
          'commands': [], 'events': [], 'last_seq': 0, 'active': stand_plan(start_q, 0), 'pending': [],
+         # The boot chunk is the runner's own standing start (node.py streams nothing before its first plan): default.
+         'stand_reason': 'boot', 'stand_mode': 'default', 'contact_open': None, 'session_contacts': [],
          'last_request': -10**9, 'route': None, 'goal_fn': None, 'pending_stand': None, 'stand_tick': None,
          'fallen': False, 'ending': False, 'end_reason': None, 'last_command_wall': time.monotonic(),
          'map_seq': 0, 'map_written': -math.inf, 'map_dirty': True, 'last_write': -math.inf, 'check': None,
@@ -336,9 +427,11 @@ def _run(req, output, inbox, started):
         S['events'].append({'time': S['tick'] * DT, 'type': kind, 'message': message, 'source': 'nav_worker', **fields})
 
     def leg_dict(leg):
-        return {k: leg.get(k) for k in ('index', 'goal_xy', 'staged_at_s', 'go_at_s', 'start_xy', 'end_s', 'outcome',
-                                        'duration_s', 'path_m', 'final_dist_m', 'final_dist_true_m', 'distance_basis',
-                                        'max_contact_n', 'plans', 'reason')}
+        out = {k: leg.get(k) for k in ('index', 'goal_xy', 'staged_at_s', 'go_at_s', 'start_xy', 'end_s', 'outcome',
+                                       'duration_s', 'path_m', 'final_dist_m', 'final_dist_true_m', 'distance_basis',
+                                       'max_contact_n', 'plans', 'reason', 'contacts', 'contacts_unlisted')}
+        out['contact_summary'] = summarize_contacts(leg.get('contacts') or [])
+        return out
 
     def can():
         standing = S['paused'] and S['phase'] in ('WAIT', 'ARRIVED', 'STOPPED') and not S['fallen'] and not S['ending']
@@ -449,6 +542,7 @@ def _run(req, output, inbox, started):
         event('command', f"{cmd.get('cmd')} {status}" + (f': {reason}' if reason else ''), seq=cmd.get('seq'), status=status)
 
     def stand(reason, force=False):  # node.py stand(), including the ceiling deferral (force: the remote's D-up)
+        mode = 'default' if reason == 'takeover' else req['stand_mode']
         q = np.asarray(S['q'], dtype=np.float64)
         if not force and ceiling_near(q[:2]):
             if S['pending_stand'] is None:
@@ -459,9 +553,10 @@ def _run(req, output, inbox, started):
             return False
         S['pending_stand'] = S['deferred_since'] = None
         S['pending'] = []
-        S['active'] = stand_plan(q, S['tick'])
+        S['active'] = stand_plan(q, S['tick'], mode)
         S['stand_tick'] = S['tick']
-        event('stand', f'stand ({reason})', reason=reason)
+        S['stand_reason'], S['stand_mode'] = reason, mode
+        event('stand', f'stand ({reason})', reason=reason, stand_mode=mode)
         return True
 
     def clear_memory():
@@ -486,7 +581,8 @@ def _run(req, output, inbox, started):
         q = np.asarray(S['q'], dtype=np.float64)
         S['leg'] = {'index': len(S['legs']) + 1, 'goal_xy': goal['xy'], 'staged_at_s': goal['staged_at_s'],
                     'go_at_s': S['tick'] * DT, 'start_xy': _r(np, q[:2]), 'outcome': None, 'path_m': 0.0, 'max_contact_n': 0.0,
-                    'plans': 0, 'start_tick': S['tick'], 'arrived_tick': None}
+                    'plans': 0, 'start_tick': S['tick'], 'arrived_tick': None, 'contacts': [], 'contacts_unlisted': 0}
+        S['contact_open'] = None
         metadata['goal_xy'] = goal['xy']
         event('goal', f"walk {len(S['legs']) + 1} to ({goal['xy'][0]:.2f}, {goal['xy'][1]:.2f})", goal_xy=goal['xy'])
 
@@ -613,6 +709,32 @@ def _run(req, output, inbox, started):
             executing_starts.append((tick, len(plans) - 1))
         else:
             S['pending'].append((tick + lat_ticks, len(plans) - 1) + anchor)
+
+    def track_contact(force_n, groups, t, standing, chunk_age_ticks, leg):
+        """Contact episodes (maximal runs of ticks with any robot-obstacle force), attributed at first contact to the
+        body group carrying the largest force and to whether a stand chunk was in force (Flow round SLR2's readout)."""
+        ep = S['contact_open']
+        if force_n <= 0:
+            S['contact_open'] = None
+            return
+        if ep is None:
+            ep = {'start_s': t, 'end_s': t + DT, 'peak_n': force_n, 'groups': dict(groups),
+                  'first_group': max(groups, key=groups.get) if groups else None, 'phase': S['phase'],
+                  'stand': standing, 'stand_reason': S['stand_reason'] if standing else None,
+                  'stand_mode': S['stand_mode'] if standing else None,
+                  'stand_age_s': chunk_age_ticks * DT if standing else None}
+            S['contact_open'] = ep
+            if leg is None:
+                if len(S['session_contacts']) < MAX_CONTACT_EPISODES:
+                    S['session_contacts'].append(ep)
+            elif len(leg['contacts']) < MAX_CONTACT_EPISODES:
+                leg['contacts'].append(ep)
+            else:
+                leg['contacts_unlisted'] += 1
+            return
+        ep['end_s'], ep['peak_n'] = t + DT, max(ep['peak_n'], force_n)
+        for g, f in groups.items():
+            ep['groups'][g] = max(ep['groups'].get(g, 0.0), f)
 
     def finish_settle():
         """After a stand: once settled, pause and close the walk."""
@@ -761,9 +883,12 @@ def _run(req, output, inbox, started):
         tgt, _ = flow.feed.target(plan, anchor_q, anchor_dq, tick - anchor_tick, q, limits)
         t = tick * DT
         tic = time.perf_counter()
+        current['contact_groups'] = {}
         pos, quat, force, target = sim.step(tgt[:, :29], tgt[:, 29:58], tgt[:, 58:64])
         torque['tracker'].end_tick()
         interval = contact_interval(force, t, t + DT)
+        groups = {g: round(f, 1) for g, f in current['contact_groups'].items() if f > 0}
+        track_contact(interval['max_force_n'], groups, t, bool(plan.get('stand')), tick - anchor_tick, leg)
         post = sim.measure()
         reference = decode_reference(tgt, true_q)
         reference.pop('raw', None)
@@ -809,7 +934,9 @@ def _run(req, output, inbox, started):
                  'joint_velocity_rad_s': _r(np, meas['dq'], 3),
                  'post_action': {'time': t + DT, 'qpos': _r(np, post['qpos'], 5),
                                  'root_linear_velocity_w': _r(np, post['root_linear_velocity_w']),
-                                 'contact': {k: interval[k] for k in ('start_s', 'end_s', 'max_force_n')},
+                                 'contact': dict({k: interval[k] for k in ('start_s', 'end_s', 'max_force_n')},
+                                                 **({'groups': groups, 'stand_in_force': bool(plan.get('stand'))}
+                                                    if groups else {})),
                                  'classification': 'simulator-ground-truth'},
                  'navigation': {'phase': S['phase'], 'walk': leg['index'] if leg else None,
                                 'goal_xy': goal['xy'] if goal else None},
@@ -854,7 +981,11 @@ def _run(req, output, inbox, started):
                                   'p95': float(np.quantile([p['latency_s'] for p in plans], 0.95))} if plans else None),
               'worker_real_time_factor': (S['motion_ticks'] * DT) / S['motion_wall'] if S['motion_wall'] else None,
               'torque': torque['tracker'].summary(contract.EFFORT_MJ), 'actuators': receipt,
-              'elapsed_s': S['tick'] * DT}
+              'elapsed_s': S['tick'] * DT, 'stand_mode': req['stand_mode'],
+              'contacts': dict(summarize_contacts([ep for leg in S['legs'] for ep in leg['contacts']] + S['session_contacts']),
+                               unlisted=sum(leg['contacts_unlisted'] for leg in S['legs']),
+                               outside_walks=S['session_contacts'],
+                               basis='episodes of any robot-obstacle force; stand = a stand chunk in force at first contact')}
     metadata.update(duration_s=max(DT, frames[-1]['time']), executed_sim_duration_s=S['tick'] * DT,
                     source_samples=len(frames), mode='replay', recording_complete=True, test_result=report,
                     navigation={'legs': legs, 'end_reason': S['end_reason'], 'goal_radius_m': req['goal_radius_m']})

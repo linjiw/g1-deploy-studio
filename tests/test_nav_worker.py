@@ -36,16 +36,115 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(clean['odometry'], 'truth')
         self.assertIsNone(clean['initial_goal'])
         self.assertEqual(clean['policy']['loader'], 'deploy-bundle')
+        self.assertEqual(clean['stand_mode'], 'default')    # node.py stand(): arms to the default pose
+        self.assertEqual(nav_worker.validate_request(request(stand_mode='hold_upper'))['stand_mode'], 'hold_upper')
 
     def test_rejects_bad_values(self):
         for bad in ({'odometry': 'gps'}, {'seed': -1}, {'goal_radius_m': 3}, {'initial_goal': [1]}, {'id': '../x'},
-                    {'map': {'kind': 'scan'}}, {'planner': {'candidates': 99}}, {'latency': {'ms': 5000}}):
+                    {'map': {'kind': 'scan'}}, {'planner': {'candidates': 99}}, {'latency': {'ms': 5000}},
+                    {'stand_mode': 'arms_up'}, {'stand_mode': None}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 nav_worker.validate_request(request(**bad))
 
     def test_lio_noise_is_the_g4_configuration(self):
         self.assertEqual(nav_worker.ODOMETRY['lio']['noise'],
                          {'xy_rw_m': 0.01, 'yaw_rw_rad': 0.005, 'xy_white_m': 0.002, 'yaw_white_rad': 0.001})
+
+
+class StandChunkTests(unittest.TestCase):
+    """stand_mode: 'default' is node.py stand() bitwise; 'hold_upper' holds waist and arms at the measured pose."""
+    # SONIC's default joint pose in MuJoCo order (g1deploy/contract.py DEFAULT_MJ, as Flow's callback copies it).
+    DEFAULT = [-0.312, 0.0, 0.0, 0.669, -0.363, 0.0] * 2 + [0.0] * 3 + [0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0] \
+        + [0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0]
+
+    @staticmethod
+    def reference_chunk(np, q, default_mj):
+        """The nav worker's stand_plan before stand_mode existed (commit cbc7fcb), verbatim apart from the return."""
+        import math
+        DT, SETTLE_S, HOLD_S = 0.02, 1.0, 3.0
+        q = np.asarray(q, dtype=np.float64)
+        n_settle, n = int(SETTLE_S / DT), int((SETTLE_S + HOLD_S) / DT)
+        a = np.clip(np.arange(1, n + 1) / n_settle, 0.0, 1.0)[:, None]
+        a = a * a * (3 - 2 * a)
+        frames = np.repeat(q[None], n, 0)
+        frames[:, 7:] = (1 - a) * q[7:] + a * default_mj
+        w, x, y, z = q[3:7]
+        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        rot = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+        return {'qpos': frames, 'rotation': np.repeat(rot[None], n, 0), 'stand': True,
+                'joint_velocity': np.vstack([np.zeros((1, 29)), np.diff(frames[:, 7:], axis=0) / DT])}
+
+    def poses(self):
+        import numpy as np
+        rng = np.random.default_rng(7)
+        default = np.asarray(self.DEFAULT)
+        for _ in range(20):
+            quat = rng.normal(size=4)
+            yield np.concatenate([rng.uniform(-3, 3, 2), [rng.uniform(0.6, 0.8)], quat / np.linalg.norm(quat),
+                                  default + rng.normal(scale=0.4, size=29)])
+
+    def test_default_chunk_is_bitwise_unchanged(self):
+        import numpy as np
+        default = np.asarray(self.DEFAULT)
+        for q in self.poses():
+            new, old = nav_worker.stand_chunk(np, q, default, 'default'), self.reference_chunk(np, q, default)
+            self.assertEqual(sorted(new), sorted(old))
+            self.assertTrue(new['stand'])
+            for key in ('qpos', 'rotation', 'joint_velocity'):
+                self.assertEqual(new[key].dtype, old[key].dtype)
+                self.assertEqual(new[key].tobytes(), old[key].tobytes(), key)
+
+    def test_hold_upper_holds_waist_and_arms_exactly(self):
+        import numpy as np
+        default = np.asarray(self.DEFAULT)
+        for q in self.poses():
+            held, base = nav_worker.stand_chunk(np, q, default, 'hold_upper'), nav_worker.stand_chunk(np, q, default)
+            upper = 7 + nav_worker.UPPER_MJ
+            self.assertEqual(held['qpos'][:, :upper].tobytes(), base['qpos'][:, :upper].tobytes())  # pelvis + legs as node.py
+            self.assertTrue((held['qpos'][:, upper:] == q[upper:]).all())                          # measured pose, exactly
+            self.assertTrue((held['joint_velocity'][:, nav_worker.UPPER_MJ:] == 0).all())
+            self.assertEqual(held['joint_velocity'][:, :nav_worker.UPPER_MJ].tobytes(),
+                             base['joint_velocity'][:, :nav_worker.UPPER_MJ].tobytes())
+            self.assertEqual(held['rotation'].tobytes(), base['rotation'].tobytes())
+        self.assertEqual(nav_worker.UPPER_MJ, 12)  # MuJoCo 12..28 = waist yaw/roll/pitch + both arms (contract.MJ_JOINTS)
+        with self.assertRaises(ValueError):
+            nav_worker.stand_chunk(np, next(self.poses()), default, 'arms_up')
+
+    @unittest.skipUnless((DEPLOY_PYTHON.parents[2] / 'g1deploy/node.py').is_file(), 'needs the g1-student-deploy checkout')
+    def test_default_chunk_matches_node_stand_source(self):
+        """The default chunk is node.py stand()'s formula (read from its source; node.py is not imported here)."""
+        source = (DEPLOY_PYTHON.parents[2] / 'g1deploy/node.py').read_text()
+        body = source[source.index('    def stand(self, now_tick, reason, settle_s=1.0, hold_s=3.0):'):]
+        body = body[:body.index('    # -- main loop')]
+        for line in ('n_settle, n = int(settle_s / DT), int((settle_s + hold_s) / DT)',
+                     'a = np.clip(np.arange(1, n + 1) / n_settle, 0.0, 1.0)[:, None]', 'a = a * a * (3 - 2 * a)',
+                     'frames = np.repeat(q[None], n, 0)', 'frames[:, 7:] = (1 - a) * q[7:] + a * C.DEFAULT_MJ',
+                     'yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))',
+                     '"joint_velocity": np.vstack([np.zeros((1, 29)), np.diff(frames[:, 7:], axis=0) / DT])}'):
+            self.assertIn(line, body)
+        self.assertEqual((nav_worker.SETTLE_S, nav_worker.HOLD_S), (1.0, 3.0))
+
+
+class ContactAttributionTests(unittest.TestCase):
+    def test_body_groups(self):
+        cases = {('left_wrist_yaw_link', 'left_rubber_hand'): 'arm', ('right_elbow_link', ''): 'arm',
+                 ('left_shoulder_yaw_link', ''): 'arm', ('right_knee_link', ''): 'leg', ('left_ankle_roll_link', ''): 'leg',
+                 ('left_hip_pitch_link', ''): 'leg', ('torso_link', 'head_link'): 'head', ('torso_link', 'logo_link'): 'torso',
+                 ('torso_link', 'waist_support_link'): 'torso', ('pelvis', 'pelvis_contour_link'): 'torso'}
+        for (body, mesh), group in cases.items():
+            self.assertEqual(nav_worker.body_group(body, mesh), group, (body, mesh))
+
+    def test_summary_splits_stand_time_by_first_group(self):
+        eps = [{'peak_n': 40.0, 'stand': True, 'first_group': 'arm'}, {'peak_n': 300.0, 'stand': True, 'first_group': 'arm'},
+               {'peak_n': 5.0, 'stand': False, 'first_group': 'leg'}, {'peak_n': 150.0, 'stand': True, 'first_group': 'head'}]
+        s = nav_worker.summarize_contacts(eps)
+        self.assertEqual(s['episodes'], 4)
+        self.assertEqual(s['stand']['episodes'], 3)
+        self.assertEqual(s['stand']['by_group'], {'arm': 2, 'leg': 0, 'torso': 0, 'head': 1})
+        self.assertEqual(s['walking']['by_group']['leg'], 1)
+        self.assertEqual(s['peak_n'], 300.0)
+        hard = nav_worker.summarize_contacts(eps, 100.0)
+        self.assertEqual((hard['stand']['episodes'], hard['walking']['episodes']), (2, 0))
 
 
 class InboxTests(unittest.TestCase):

@@ -878,7 +878,7 @@ class Workbench:
     # ----- Navigation sessions: the simulated robot (studio/nav_worker.py), docs/NAVIGATE.md.
     def start_navigation(self, document):
         """An interactive session: the robot stands in a world and walks to goals the operator stages."""
-        from studio import policies, actuators
+        from studio import policies, actuators, nav_worker
         if not isinstance(document, dict):
             raise ValueError('Navigation request must be an object')
         map_id = ident(document.get('map_id', 'flat-ground'), 'map_id')
@@ -892,6 +892,7 @@ class Workbench:
         if map_mode not in ('keep', 'fresh'):
             raise ValueError("map_mode must be 'keep' (one memory, as node.py) or 'fresh' (cleared at every Go)")
         actuator_profile = actuators.validate(document.get('actuators', 'g1-current'))
+        stand_mode = nav_worker.validate_stand_mode(document.get('stand_mode', 'default'))
         seed = integer(document.get('seed', 0), 'seed', 0, 2**31-1)
         # The worker's rehearsal-parity mode (a goal and Go at t = 0, unchecked) is for tests that run it directly;
         # the public API never offers it (review L7).
@@ -929,7 +930,7 @@ class Workbench:
             navigation = {'robot': 'simulated', 'label': label, 'map_id': map_id, 'map_label': world.get('label'),
                           'start_xy': start_xy, 'start_yaw_rad': start_yaw, 'planner': document.get('planner', 'quick'),
                           'planner_label': preset['label'], 'latency': latency, 'actuators': actuator_profile,
-                          'odometry': odometry, 'map_mode': map_mode, 'seed': seed}
+                          'odometry': odometry, 'map_mode': map_mode, 'seed': seed, 'stand_mode': stand_mode}
             job = {'id': key, 'status': 'starting', 'kind': 'navigation', 'navigation': navigation,
                    'scenario': {'label': label, 'map_id': map_id}, 'scenario_id': None,
                    'started_unix_s': time.time(), 'output': output, 'process': None, 'latest': None,
@@ -946,7 +947,7 @@ class Workbench:
                            'start_yaw_rad': start_yaw, 'seed': seed,
                            'planner': {k: preset[k] for k in ('candidates', 'ode_steps')}, 'latency': latency,
                            'actuators': actuator_profile, 'odometry': odometry, 'map_mode': map_mode,
-                           'policy': {'identity_sha256': policy_identity['identity_sha256']}}
+                           'stand_mode': stand_mode, 'policy': {'identity_sha256': policy_identity['identity_sha256']}}
                 job['process'] = self._launch(output, 'nav_worker.py', request, lease_fd)
                 self.catalog.register(key, output/'run/session.json', f'LIVE · {label}', provider=lambda: self.session_data(key),
                                       extra={'group': 'Navigation sessions', 'status': 'running', 'policy_id': profile['id'],
