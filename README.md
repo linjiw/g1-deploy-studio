@@ -34,7 +34,7 @@ First-time setup on a new machine:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && npm ci
-.venv/bin/python tools/build_policy_bundle.py   # pins the adopted Flow WX-RF block (read-only to Flow)
+.venv/bin/python tools/build_policy_bundle.py   # pins Flow's WX-RF block (read-only to Flow); WXD: --block WXD, see the script
 tools/studio_service.sh install                 # release worktree + systemd --user unit
 ```
 
@@ -44,7 +44,7 @@ tools/studio_service.sh install                 # release worktree + systemd --u
 |---|---|
 | **Replay** | The 3D twin, fitted to the scene for navigation runs. Pinned transport with tick stepping, plus a timeline whose lanes show events, goal distance, planner compute against the 160 ms deploy replan budget, SONIC inference against the 20 ms tick, tracking RMSE, and obstacle contact against the collision threshold. Cameras: Orbit (auto-recenters during playback), Follow, Top, Fit, and a **Robot view** inset from the LiDAR mount. A HUD shows goal distance, speed, tilt, contact, plan rule and execution check. The inspector has Intent, Joints, Health, Map, Pipeline, Graph and Source tabs. |
 | **Arena** | Top-down editor. Draw walls and overhead beams, place pillars, and drag, resize or rotate boxes. Drag the start, its heading tip, and the goal. Templates: corridor, doorway, slalom, overhead beam, U-trap, seeded clutter. Up to 16 named start/goal presets (or seeded random goals and starts), with the server's standing-footprint preflight shown live. Earlier runs on the arena are overlaid. Saved arenas are immutable and hashed; JSON import/export is supported. |
-| **Rehearse** | Pick a **policy profile** (the adopted Flow block is preselected), an arena and a preset, then the success criterion (*arrive & hold* or *reach*), the planner latency (L2) with *measured* or *predictive* anchoring, the **G1 actuator limits** (per hardware revision), duration, seed and K/ODE budget. Run one preset, or a **suite** (every preset × up to 4 seeds) through the single owned worker. The live run attaches to the viewport; when it finishes, its recording opens. |
+| **Rehearse** | Pick a **policy profile** (preselected: the pinned profile of the block Flow's `research/BEST_MODEL.md` names as adopted, when one is built and available; otherwise the deploy bundle), an arena and a preset, then the success criterion (*arrive & hold* or *reach*), the planner latency (L2) with *measured* or *predictive* anchoring, the **G1 actuator limits** (per hardware revision), duration, seed and K/ODE budget. Run one preset, or a **suite** (every preset × up to 4 seeds) through the single owned worker. The live run attaches to the viewport; when it finishes, its recording opens. |
 | **Runs** | Every rehearsal with outcome, policy, criterion, latency, budget, goal distance, contact and planner p95, filterable. A **robustness report** gives Wilson 95% intervals, failure categories and post-hoc Flow-protocol reach. Selected trajectories are overlaid on their arena; CSV and JSON export are available. |
 | **Sensors** | What the robot perceives at the cursor: raw and self-filtered ray LiDAR, support and ceiling maps, IMU, joints, contacts. Missing channels stay listed with the reason. Pin up to three views; point clouds overlay the 3D scene. |
 | **System** | The deployment chain (sensors → perception → route → Flow → reference → SONIC → PD → robot), drawn per source with orthogonally routed DDS, ZMQ and in-process edges styled as observed, configured or not exercised. It also shows the source-verified **Unitree G1 contract**: the joint table in motor, MuJoCo and IsaacLab order with gains and limits per source, DDS topics, safety thresholds, and 15 recorded source discrepancies, each marked open, mitigated or resolved (the hip limit is resolved by the per-revision actuator profiles). |
@@ -55,8 +55,9 @@ Every value carries an evidence chip: MEASURED, SIM-TRUTH, ESTIMATED, COMMANDED,
 
 | Profile | Planner | Notes |
 |---|---|---|
-| `flow-wx-rf-23326aa-s0` | **Flow WX, retrieval-free**: the block `flow/research/BEST_MODEL.md` names as adopted (2026-10-16). Pinned at Flow `23326aa`, config `closed_loop_wxr0_c3.json` (sha `1ffc4069…`), teacher `sk1_s0`, WM-v2 execution check | Flow's own closed-loop callback on MuJoCo. Privileged: plans from the exact boxes, not LiDAR. Default budget K8/ODE6 (evaluated 16/10) |
-| `flow-bundle-20261008` | Frozen g1-student-deploy bundle (student s2-kcsc) | LiDAR-driven sensor route through `sim.lockstep` |
+| `flow-wxd-rf-5658a6d-s0` | **Flow WXD, retrieval-free** (WX + the DP2 duck keys): the block `flow/research/BEST_MODEL.md` names as adopted since 2026-10-20. Pinned at Flow `5658a6d`, config `closed_loop_dp2_xdg.json` arm `XGD-g-s0` (the guard config's arm uses clips), teacher `sk1_s0`, WM-v2 execution check. Built locally with `tools/build_policy_bundle.py --block WXD` | Same adapter and caveats as WX-RF; privileged. Not yet run in Studio beyond the bundle check |
+| `flow-wx-rf-23326aa-s0` | **Flow WX, retrieval-free**: adopted 2026-10-16, superseded by WXD on 2026-10-20. Pinned at Flow `23326aa`, config `closed_loop_wxr0_c3.json` (sha `1ffc4069…`), teacher `sk1_s0`, WM-v2 execution check | Flow's own closed-loop callback on MuJoCo. Privileged: plans from the exact boxes, not LiDAR. Default budget K8/ODE6 (evaluated 16/10) |
+| `flow-bundle-20261008` | Frozen g1-student-deploy bundle: student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1 | LiDAR-driven sensor route through `sim.lockstep`; the only profile Navigate and the robot run |
 
 Details, caveats and how to add a policy: [docs/POLICIES.md](docs/POLICIES.md). Rehearse shows the Flow research sync status and pins the identity hash into every scenario and run.
 

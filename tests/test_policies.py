@@ -301,6 +301,28 @@ class BundleProfileTests(CacheIsolation):
         self.assertTrue(row['matches_adopted'])
         self.assertEqual(row['identity']['config_sha256'], manifest['flow']['config_sha256'])
 
+    def test_other_block_bundles_register_and_old_labels_say_what_flow_adopts_now(self):
+        """A WXD bundle (tools/build_policy_bundle.py --block WXD) is registered beside WX-RF; a WX bundle built when WX
+        was adopted no longer claims to be the adopted block once Flow adopts WXD."""
+        _, wx = write_bundle(self.policy_root, 'flow-wx-rf-abcdef0-s0')
+        wx['label'] = 'Flow WX-RF · adopted block · teacher sk1_s0'
+        (self.policy_root / 'flow-wx-rf-abcdef0-s0/manifest.json').write_text(json.dumps(wx))
+        root, wxd = write_bundle(self.policy_root, 'flow-wxd-rf-5658a6d-s0', block='WXD')
+        wxd['short_label'] = 'WXD-RF 5658a6d'
+        (root / 'manifest.json').write_text(json.dumps(wxd))
+        (self.policy_root / 'flow-wx-rf-zzzzzzz-s0').mkdir()   # not a bundle id: never listed
+        table = policies.profiles()
+        self.assertEqual(sorted(table), ['flow-wx-rf-abcdef0-s0', 'flow-wxd-rf-5658a6d-s0'])
+        self.assertEqual(table['flow-wxd-rf-5658a6d-s0']['short_label'], 'WXD-RF 5658a6d')
+        self.assertEqual(table['flow-wx-rf-abcdef0-s0']['short_label'], 'WX-RF abcdef0')   # manifests without one: as before
+        result = policies.catalog({'available': True, 'adopted_block': 'WXD'})
+        rows = {r['id']: r for r in result['policies']}
+        self.assertEqual(result['default_policy_id'], 'flow-wxd-rf-5658a6d-s0', 'the adopted block is preselected')
+        self.assertEqual(rows['flow-wx-rf-abcdef0-s0']['label'],
+                         'Flow WX-RF · previously adopted (Flow now adopts WXD) · teacher sk1_s0')
+        self.assertEqual(policies.catalog({'available': True, 'adopted_block': 'WX'})['policies'][0]['label'],
+                         'Flow WX-RF · adopted block · teacher sk1_s0')
+
     def test_bundle_with_missing_artifact_is_listed_unavailable(self):
         root, manifest = write_bundle(self.policy_root)
         Path(manifest['artifacts'][1]['path']).unlink()
@@ -319,6 +341,38 @@ class BundleProfileTests(CacheIsolation):
         table = policies.profiles()
         self.assertIn('flow-wx-rf-abcdef0-s0', table)
         self.assertTrue(table['flow-wx-rf-abcdef0-s0']['available'])
+
+
+class BuildPolicyBundleTests(CacheIsolation):
+    """tools/build_policy_bundle.py refuses before writing anything; ids follow the block."""
+
+    def build(self, arm, **kw):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from tools import build_policy_bundle as bpb
+        config = json.dumps({'arms': [arm], 'planner_defaults': {}}).encode()
+
+        def fake_git(repo, *args, binary=False):
+            if args[0] == 'rev-parse':
+                return '5658a6d37ce06579ba94a431e0290937f0ff33c7'
+            if args[0] == 'show':
+                return config
+            raise AssertionError(f'unexpected git call {args}')
+        root = self.base / 'policies'
+        with patch.object(bpb, 'git', fake_git), patch.object(bpb, 'POLICY_ROOT', root):
+            with self.assertRaises(SystemExit) as raised:
+                bpb.build('5658a6d', 'configs/x.json', arm['name'], 'sk1_s0', **kw)
+        self.assertFalse(root.exists() and any(root.iterdir()), 'a refused build left files behind')
+        return str(raised.exception)
+
+    def test_arm_with_clips_is_refused_before_any_write(self):
+        arm = {'name': 'GD2-g-s0', 'planner': {'run': '/x/sk1_s0'}, 'gate_side': {'level': {'retrieval_k': 16}}}
+        self.assertIn('not retrieval-free', self.build(arm, block='WXD'))
+
+    def test_teacher_and_block_are_checked_first(self):
+        arm = {'name': 'XGD-g-s0', 'planner': {'run': '/x/sk1_s1'}, 'gate_side': {'level': {'retrieval_k': 0}}}
+        self.assertIn('not sk1_s0', self.build(arm, block='WXD'))
+        self.assertIn('--block', self.build(dict(arm, planner={'run': '/x/sk1_s0'}), block='WX D'))
 
 
 class BundleVerifyTests(CacheIsolation):
@@ -406,6 +460,11 @@ class BundleVerifyTests(CacheIsolation):
     def test_bundle_path_accepts_only_pinned_identifiers(self):
         self.assertEqual(pb.bundle_path('flow-wx-rf-23326aa-s0', root=self.base), self.base / 'flow-wx-rf-23326aa-s0')
         self.assertEqual(pb.bundle_path('flow-wx-rf-0123456-s2'), pb.POLICY_ROOT / 'flow-wx-rf-0123456-s2')
+        self.assertEqual(pb.bundle_path('flow-wxd-rf-5658a6d-s0'), pb.POLICY_ROOT / 'flow-wxd-rf-5658a6d-s0')
+        for bad in ('flow-WXD-rf-5658a6d-s0', 'flow-wx.d-rf-5658a6d-s0', 'flow--rf-5658a6d-s0', 'flow-wxd-5658a6d-s0',
+                    'flow-abcdefghijklmnopq-rf-5658a6d-s0', 'flow-wx/../x-rf-5658a6d-s0'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pb.bundle_path(bad)
         for bad in ('../x', 'flow-wx-rf-23326aa-s3', 'flow-wx-rf-23326AA-s0', 'flow-wx-rf-23326a-s0',
                     'flow-wx-rf-23326aa0-s0', 'flow-wx-rf-23326aa-s0/../../etc', '../flow-wx-rf-23326aa-s0',
                     'flow-wx-rf-23326aa-s0\n', ' flow-wx-rf-23326aa-s0', '', None, 23326,

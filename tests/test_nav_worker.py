@@ -47,6 +47,12 @@ class RequestTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 nav_worker.validate_request(request(**bad))
 
+    def test_bundle_label_names_the_bundle_student_not_flows_current_one(self):
+        from studio import policies, policy_worker
+        self.assertEqual(nav_worker.BUNDLE_LABEL, policies.BUNDLE_LABEL)
+        self.assertEqual(policy_worker.BUNDLE_LABEL, policies.BUNDLE_LABEL)
+        self.assertEqual(policies.BUNDLE_LABEL, "student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1")
+
     def test_lio_noise_is_the_g4_configuration(self):
         self.assertEqual(nav_worker.ODOMETRY['lio']['noise'],
                          {'xy_rw_m': 0.01, 'yaw_rw_rad': 0.005, 'xy_white_m': 0.002, 'yaw_white_rad': 0.001})

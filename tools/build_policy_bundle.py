@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pin the adopted Flow WX (retrieval-free) planner as a Studio policy bundle.
+"""Pin a retrieval-free Flow planner block as a Studio policy bundle (default: WX-RF, adopted 2026-10-16).
 
 Read-only against Flow: ``git archive``/``git show`` of one commit, plus two
 individual artifact symlinks the planner resolves relative to its source root.
@@ -8,6 +8,12 @@ copied into Git and no Flow file, environment or running job is modified.
 
     .venv/bin/python tools/build_policy_bundle.py              # WX-RF @ 23326aa, teacher sk1_s0
     .venv/bin/python tools/build_policy_bundle.py --verify-only
+    # WXD = WX + DP2 duck keys (Flow's adopted block since 2026-10-20), retrieval-free arm of the DP2 xdg config:
+    .venv/bin/python tools/build_policy_bundle.py --block WXD --commit 5658a6d \
+        --config configs/closed_loop_dp2_xdg.json --arm XGD-g-s0 --teacher sk1_s0 \
+        --variant 'WXD-RF (WX + DP2 duck keys, retrieval-free; XGD arm)' --adopted-commit 5658a6d
+
+The bundle id is ``flow-<block>-rf-<commit7>-s<seed>`` (studio.policy_bundle.BUNDLE_ID).
 """
 from __future__ import annotations
 
@@ -22,7 +28,11 @@ import tarfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from studio.policy_bundle import ARTIFACT_LINKS, POLICY_ROOT, sha256, tree_hashes, verify  # noqa: E402
+import re  # noqa: E402
+
+from studio.policy_bundle import ARTIFACT_LINKS, BUNDLE_ID, POLICY_ROOT, sha256, tree_hashes, verify  # noqa: E402
+
+BLOCK = re.compile(r'[A-Za-z0-9]{1,16}')
 
 FLOW = Path('/home/linjiw/flow')
 DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
@@ -49,9 +59,24 @@ def git(repo, *args, binary=False):
     return out.stdout if binary else out.stdout.decode().strip()
 
 
-def build(commit, config_path, arm_name, teacher, force=False):
+def build(commit, config_path, arm_name, teacher, force=False, block='WX', variant=None, label=None, adopted_commit=None,
+          pin_basis=None):
+    if not BLOCK.fullmatch(block):
+        raise SystemExit('--block must be 1-16 letters or digits')
     commit = git(FLOW, 'rev-parse', '--verify', f'{commit}^{{commit}}')
-    bundle_id = f"flow-wx-rf-{commit[:7]}-{teacher.split('_')[-1]}"
+    bundle_id = f"flow-{block.lower()}-rf-{commit[:7]}-{teacher.split('_')[-1]}"
+    if not BUNDLE_ID.fullmatch(bundle_id):
+        raise SystemExit(f'Bundle id {bundle_id} does not match {BUNDLE_ID.pattern}')
+    # Check the arm before anything is written: a refused build leaves no partial bundle behind.
+    config_blob = git(FLOW, 'show', f'{commit}:{config_path}', binary=True)
+    config = json.loads(config_blob)
+    arm = next((a for a in config['arms'] if a['name'] == arm_name), None)
+    if arm is None:
+        raise SystemExit(f'No arm {arm_name} in {config_path} at {commit[:7]}')
+    if arm['gate_side']['level'].get('retrieval_k', 0) != 0:
+        raise SystemExit('Selected arm is not retrieval-free')
+    if Path(arm['planner']['run']).name != teacher:
+        raise SystemExit(f"Arm {arm_name} uses {Path(arm['planner']['run']).name}, not {teacher}")
     root = POLICY_ROOT / bundle_id
     if root.exists() and not force:
         raise SystemExit(f'{root} exists; use --verify-only or --force')
@@ -66,12 +91,7 @@ def build(commit, config_path, arm_name, teacher, force=False):
             if m.name.startswith('/') or '..' in Path(m.name).parts:
                 raise SystemExit(f'Unsafe archive member {m.name}')
         tar.extractall(root, members=members)
-    config_blob = git(FLOW, 'show', f'{commit}:{config_path}', binary=True)
     (root / 'config.json').write_bytes(config_blob)
-    config = json.loads(config_blob)
-    arm = next(a for a in config['arms'] if a['name'] == arm_name)
-    if arm['gate_side']['level'].get('retrieval_k', 0) != 0:
-        raise SystemExit('Selected arm is not retrieval-free')
     for rel in ARTIFACT_LINKS:
         link = root / rel
         link.parent.mkdir(parents=True, exist_ok=True)
@@ -88,11 +108,14 @@ def build(commit, config_path, arm_name, teacher, force=False):
     artifacts += [ident(FLOW / rel, 'planner geometry/reference artifact') for rel in ARTIFACT_LINKS]
     manifest = {
         'schema_version': 1, 'id': bundle_id, 'created_unix_s': time.time(),
-        'label': f'Flow WX-RF · adopted block · teacher {teacher}',
-        'research_block': 'WX', 'variant': 'WX-RF (retrieval-free; WXR0 arm)',
+        'label': label or f'Flow {block}-RF · adopted block · teacher {teacher}',
+        **({} if block == 'WX' else {'short_label': f'{block}-RF {commit[:7]}'}),
+        'research_block': block, 'variant': variant or ('WX-RF (retrieval-free; WXR0 arm)' if block == 'WX' else f'{block}-RF ({arm_name})'),
         'flow': {'repo': str(FLOW), 'commit': commit, 'committed_at': git(FLOW, 'log', '-1', '--format=%cI', commit),
-                 'adopted_commit': DEFAULT['adopted_commit'], 'src_tree': git(FLOW, 'rev-parse', f'{commit}:src'),
-                 'pin_basis': 'Adoption commit lacks arena/probe.py imported by tight-mode arm posture; this commit keeps the WX arm config identical.',
+                 'adopted_commit': adopted_commit or (DEFAULT['adopted_commit'] if block == 'WX' else commit[:7]),
+                 'src_tree': git(FLOW, 'rev-parse', f'{commit}:src'),
+                 'pin_basis': pin_basis or ('Adoption commit lacks arena/probe.py imported by tight-mode arm posture; this commit keeps the WX arm config identical.'
+                                            if block == 'WX' else f'Flow commit {commit[:7]}, config {config_path}, arm {arm_name}.'),
                  'config_path': config_path, 'config_blob': git(FLOW, 'rev-parse', f'{commit}:{config_path}'),
                  'config_sha256': hashlib.sha256(config_blob).hexdigest(), 'arm': arm_name},
         'planner_overrides': {'device': 'cpu'},
@@ -107,7 +130,8 @@ def build(commit, config_path, arm_name, teacher, force=False):
         'caveats': [
             'Privileged block: map, selection, guidance, execution check and route use the exact configured boxes (simulator ground truth), not LiDAR.',
             'WM-v2 execution check was trained on Isaac SONIC executions; its accuracy under MuJoCo is unmeasured.',
-            'WX was evaluated in Isaac (guard 121/156, V-learn 172/213); MuJoCo CPU results do not transfer automatically.',
+            ('WX was evaluated in Isaac (guard 121/156, V-learn 172/213); MuJoCo CPU results do not transfer automatically.'
+             if block == 'WX' else f'{block} was evaluated in Isaac (Flow research/BEST_MODEL.md); MuJoCo CPU results do not transfer automatically.'),
             'Studio starts standing; Isaac arena tasks start from a recorded walk near 1 m/s.',
             'CPU planner randomness differs from Isaac CUDA runs; identical states can give different candidates.',
             'Lockstep: physics waits for each replan, so planner latency does not delay plans in simulation.',
@@ -123,20 +147,26 @@ def main(argv=None):
     ap.add_argument('--config', default=DEFAULT['config'])
     ap.add_argument('--arm', default=DEFAULT['arm'])
     ap.add_argument('--teacher', default=DEFAULT['teacher'])
+    ap.add_argument('--block', default='WX', help="Flow research block name (BEST_MODEL.md), e.g. WX or WXD; sets the id prefix")
+    ap.add_argument('--variant', default=None, help='variant text in the manifest (default: WX-RF text for WX)')
+    ap.add_argument('--label', default=None, help="profile label (default 'Flow <block>-RF · adopted block · teacher <teacher>')")
+    ap.add_argument('--adopted-commit', default=None, help='the adoption commit to record (default: 4ba73cb for WX, else --commit)')
+    ap.add_argument('--pin-basis', default=None, help='why this commit is pinned (default: the WX note for WX)')
     ap.add_argument('--verify-only', action='store_true')
     ap.add_argument('--force', action='store_true')
     args = ap.parse_args(argv)
     if args.verify_only:
-        roots = sorted(POLICY_ROOT.glob('flow-wx-rf-*'))
+        roots = sorted(p for p in POLICY_ROOT.glob('flow-*') if BUNDLE_ID.fullmatch(p.name))
         if not roots:
-            raise SystemExit('No WX bundle built yet')
+            raise SystemExit('No Flow bundle built yet')
         status = 0
         for root in roots:
             problems = verify(root)
             print(json.dumps({'bundle': str(root), 'verified': not problems, 'problems': problems}))
             status |= bool(problems)
         return status
-    root, manifest = build(args.commit, args.config, args.arm, args.teacher, args.force)
+    root, manifest = build(args.commit, args.config, args.arm, args.teacher, args.force, block=args.block, variant=args.variant,
+                           label=args.label, adopted_commit=args.adopted_commit, pin_basis=args.pin_basis)
     problems = verify(root)
     print(json.dumps({'bundle': str(root), 'id': manifest['id'], 'flow_commit': manifest['flow']['commit'],
                       'config_sha256': manifest['flow']['config_sha256'], 'src_files': len(manifest['src_files']),

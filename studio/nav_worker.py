@@ -2,7 +2,8 @@
 
 It behaves like g1-student-deploy's ``g1deploy/node.py`` on the robot, with MuJoCo + SONIC ONNX in place of
 the robot and its MID-360. The robot stands and waits for a goal, pre-scans, walks with the frozen Flow
-student, arrives and settles to a stand, and keeps one perception memory for the whole session.
+student of the deploy bundle (student-s2-kcsc, 2026-10-08; not Flow's current student-sk1), arrives and settles to a
+stand, and keeps one perception memory for the whole session.
 Phases follow node.py: WAIT -> PRESCAN -> RUN -> ARRIVED | STOPPED, plus BOOT and ENDED.
 
 Planning in RUN is the source lockstep loop (``sim/lockstep.py`` run_episode): the same history, memory,
@@ -31,6 +32,8 @@ from studio.policy_worker import (REFERENCE_ROOT, TorqueTracker, _atomic, _hash,
                                   clean_map, contact_interval, validate_latency, validate_planner)
 
 DT = 0.02
+# The deploy bundle's planner (studio/policies.py BUNDLE_LABEL): never call it Flow's current student.
+BUNDLE_LABEL = "student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1"
 ODOMETRY = {
     'truth': {'label': 'Simulator truth', 'noise': None},
     # g1-student-deploy jobs/g4r.sh LIO and jobs/g4b.sh ODOM configurations (flow StateEstimate).
@@ -505,9 +508,10 @@ def _run(req, output, inbox, started):
                 'frame_id': 'world', 'quaternion_convention': 'wxyz', 'units': {'position': 'm', 'joint': 'rad', 'time': 's'},
                 'start_xy': req['start_xy'], 'start_yaw_rad': req['start_yaw_rad'], 'goal_xy': None,
                 'map_id': req['map']['id'], 'map_label': req['map']['label'],
-                'policy_profile': {'id': req['policy']['id'], 'label': 'Flow student s2-kcsc · frozen deploy bundle',
+                'policy_profile': {'id': req['policy']['id'], 'label': BUNDLE_LABEL,
                                    'identity_sha256': req['policy'].get('identity_sha256'), 'loader': 'deploy-bundle',
-                                   'revision': 'bundle 2026-10-08'},
+                                   'revision': 'bundle 2026-10-08', 'student': 'student-s2-kcsc_s0',
+                                   'current_flow_student': 'student-sk1 (not in the deploy bundle)'},
                 'planner_configuration': dict(req['planner'], device='cpu', implementation='eager', route_source='sensor',
                                               lidar='mjray', start='stand',
                                               latency_s=None if node_mode else req['latency']['ms'] / 1000,
