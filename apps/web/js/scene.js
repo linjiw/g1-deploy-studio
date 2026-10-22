@@ -25,6 +25,34 @@ export const view = {
 const quat = v => new THREE.Quaternion(v[1], v[2], v[3], v[0]);
 export const markDirty = () => { view.dirty = true; };
 
+// Presentation only: the same articulated poses, references and physics data
+// remain underneath the quiet, light stage. Restore exact material settings on exit.
+function focusMaterial(material, color, opacity = material.opacity) {
+  material.userData.studioPalette ??= { color: material.color.clone(), opacity: material.opacity };
+  const saved = material.userData.studioPalette;
+  material.color.copy(view.focusMode ? new THREE.Color(color) : saved.color);
+  material.opacity = view.focusMode ? opacity : saved.opacity;
+}
+function focusSessionPalette() {
+  if (view.ghost?.material) focusMaterial(view.ghost.material, 0x147aaf, 0.34);
+  for (const p of view.futures) if (p.material) focusMaterial(p.material, 0xa66a13, 0.14);
+  for (const [name, color] of Object.entries({ trajectory: 0x607482, reference: 0x147aaf, future: 0xa66a13, travelled: 0x26866e })) {
+    if (view.lines[name]) focusMaterial(view.lines[name].material, color);
+  }
+}
+export function setFocusMode(enabled) {
+  view.focusMode = Boolean(enabled);
+  if (!view.scene) return;
+  view.scene.fog.color.set(enabled ? 0xf1f4f6 : 0x101820);
+  view.scene.fog.density = enabled ? 0.035 : 0.02;
+  focusMaterial(view.floor.material, 0xe8edf1, 0.6);
+  view.studioGrids.forEach(g => { g.visible = !enabled; });
+  view.focusGrid.visible = enabled;
+  focusSessionPalette();
+  view.renderer.shadowMap.needsUpdate = true;
+  markDirty();
+}
+
 // ----- Preallocated renderables -------------------------------------------------
 function polyline(color, opacity = 1, capacity = 4096, width = 1) {
   const geometry = new THREE.BufferGeometry();
@@ -146,10 +174,16 @@ export function initScene(host, { onPick } = {}) {
   const rim = new THREE.DirectionalLight(0x72bcd2, 1.6); rim.position.set(-2, 3, 3); scene.add(rim);
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x18242f, roughness: 1, metalness: 0, transparent: true, opacity: 0.8 }));
   floor.position.z = -0.015; floor.receiveShadow = true; scene.add(floor);
+  view.floor = floor;
   const grid = new THREE.GridHelper(100, 100, 0x4a6472, 0x2a3b47); grid.rotation.x = Math.PI / 2; grid.position.z = -0.01;
   grid.material.transparent = true; grid.material.opacity = 0.5; scene.add(grid);
   const fine = new THREE.GridHelper(20, 80, 0x22323d, 0x22323d); fine.rotation.x = Math.PI / 2; fine.position.z = -0.012;
   fine.material.transparent = true; fine.material.opacity = 0.35; scene.add(fine);
+  view.studioGrids = [grid, fine];
+  view.focusGrid = new THREE.GridHelper(100, 100, 0xa7b5c1, 0xc4cdd5);
+  view.focusGrid.rotation.x = Math.PI / 2; view.focusGrid.position.z = -0.01;
+  view.focusGrid.material.transparent = true; view.focusGrid.material.opacity = 0.38;
+  view.focusGrid.visible = false; scene.add(view.focusGrid);
   view.worldAxes = new THREE.AxesHelper(0.6); view.worldAxes.position.z = 0.015; scene.add(view.worldAxes);
 
   view.content = new THREE.Group(); scene.add(view.content);
@@ -314,6 +348,7 @@ export async function loadSessionScene(session, id, isCurrent) {
     view.futures = previews; previews.forEach(p => view.content.add(p.root));
   }
   view.robotViewReady = worldAvailable;
+  focusSessionPalette();
   view.renderer.shadowMap.needsUpdate = true;
   applyLayers(); markDirty();
   return { worldAvailable };

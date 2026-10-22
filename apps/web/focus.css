@@ -1,0 +1,172 @@
+/* Flow stage: presentation over the same Studio data and controls. */
+.focus-details-header { display: none; }
+body.flow-focus {
+  --bg: #f1f4f6; --panel: #fbfcfd; --panel-2: #f1f4f6; --raise: #fff;
+  --text: #24343d; --muted: #52636f; --dim: #637580;
+  --border: #d7e0e5; --border-strong: #b1c3cc;
+  --c-cyan: #126d87; --c-green: #277154; --c-amber: #936015; --c-red: #ab343d; --c-purple: #795391;
+  color: var(--text); color-scheme: light; display: block; overflow: hidden;
+}
+.flow-focus .topbar, .flow-focus .statusbar, .flow-focus .rail,
+.flow-focus .dock, .flow-focus .vp-title, .flow-focus .vp-toolbar,
+.flow-focus #hud, .flow-focus .viewport-meta, .flow-focus #preview-note,
+.flow-focus #sensor-dock, .flow-focus #recording-warning, .flow-focus #robot-view-label,
+.flow-focus #layers-popover { display: none !important; }
+.flow-focus .shell { position: static; display: block !important; height: 100%; min-height: 0; }
+.flow-focus .stage, .flow-focus .stage-main { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; }
+.flow-focus .viewport-shell { height: 100%; width: 100%; min-height: 0; flex: 1; background: #f1f4f6; }
+.flow-focus .shell > .tool-panel, .flow-focus .shell > .inspector { display: none !important; }
+.flow-focus .loading-overlay { background: #f1f4f6dd; color: #52636f; z-index: 5; }
+.flow-focus .scene-unavailable { background: #f1f4f6df; color: #52636f; }
+.flow-focus #error-banner { position: fixed; top: 240px; left: 24px; right: auto; transform: none; max-width: min(560px, calc(100vw - 48px)); z-index: 120; background: #fff4f1; color: #92372d; border-color: #e3b8ae; }
+.flow-focus #render-rate { top: auto; bottom: 180px; color: #75591e; background: #fff8e9; }
+.flow-focus button:focus-visible, .flow-focus input:focus-visible, .flow-focus select:focus-visible, .flow-focus summary:focus-visible { outline: 3px solid #1b789b; outline-offset: 3px; }
+
+#focus-root { position: fixed; inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); z-index: 20; pointer-events: none; color: #293e4b; font-family: var(--font); }
+#focus-root button, #focus-root input { pointer-events: auto; }
+#focus-root button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; color: #435662; background: transparent; border: 1px solid transparent; border-radius: 9px; padding: 8px 11px; transition: background .15s, color .15s, border-color .15s; }
+#focus-root button:hover:not(:disabled) { background: #e8eef1; color: #1d3848; border-color: #d9e3e8; }
+#focus-root button:disabled { opacity: .38; }
+.focus-heading { position: absolute; top: 30px; left: 34px; width: min(480px, calc(100vw - 175px)); text-shadow: 0 1px 10px #f1f4f6; }
+.focus-wordmark { display: flex; align-items: center; gap: 9px; margin-bottom: 17px; }
+.focus-mark { font: italic 600 27px Georgia, serif; color: #25718c; display: grid; place-items: center; border: 1px solid #c4d8e0; border-radius: 9px; width: 33px; height: 33px; background: #f9fcfd; }
+.focus-wordmark h1 { font-size: 25px; letter-spacing: -.9px; font-weight: 650; }
+.focus-wordmark h1 span { font-weight: 400; color: #5a6f7b; }
+.focus-local { font-size: 9px; color: #6a7f8b; letter-spacing: .14em; border: 1px solid #cfdce2; border-radius: 4px; padding: 3px 5px; margin-left: 3px; }
+.focus-mode { margin: 0 0 6px; color: #347089; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; line-height: 1.5; }
+.focus-outcome { display: inline-block; margin: 0 0 7px; padding: 3px 7px; border: 1px solid #e3cfac; border-radius: 5px; background: #fff8e7; font-size: 11px; line-height: 1.3; color: #886029; }
+.focus-outcome[data-outcome="goal_completion"] { background: #edf8ef; border-color: #badcc1; color: #3f7050; }
+.focus-outcome[data-outcome="obstacle_collision"], .focus-outcome[data-outcome="fall"], .focus-outcome[data-outcome="runtime_error"] { background: #fff0ec; border-color: #e4bdb5; color: #985047; }
+#focus-scene-name { font-size: 15px; font-weight: 550; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0 10px; color: #3b515f; }
+.focus-source { display: flex; align-items: baseline; gap: 8px; line-height: 1.5; font-size: 11px; }
+.focus-source > span { color: #6c7c86; flex: 0 0 51px; }
+.focus-source > strong { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#focus-provenance { font-size: 11px; color: #627782; margin: 3px 0 8px; line-height: 1.45; }
+.focus-next { color: #5c727e; }
+#focus-root .focus-exit { position: absolute; right: 30px; top: 29px; border: 1px solid #cedae1; background: #ffffffb3; padding: 8px 13px; font-size: 12px; box-shadow: 0 2px 10px #3e596407; }
+.focus-facts { position: absolute; top: 92px; right: 34px; display: grid; gap: 15px; text-align: right; color: #49606e; }
+.focus-facts > div { display: flex; flex-direction: column; gap: 4px; }
+.focus-facts span { color: #627782; font-size: 11px; }
+.focus-facts strong { font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+#focus-root[data-preview="true"] .focus-facts strong { font-size: 11px; color: #7b8991; }
+.focus-bottom { position: absolute; bottom: 17px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); text-align: center; }
+.focus-hint { color: #6c7f8a; font-size: 11px; line-height: 1.5; margin: 0 0 12px; padding: 0 12px; text-shadow: 0 1px 8px #fff; }
+.focus-dock { padding: 7px 10px 6px; border: 1px solid #d4dfe6; background: #fffffff0; border-radius: 16px; box-shadow: 0 12px 45px #284b6310, 0 2px 8px #284b6308; backdrop-filter: blur(16px); }
+.focus-controls { display: flex; align-items: center; gap: 2px; }
+#focus-root .focus-controls button { font-size: 11px; padding: 8px 12px; }
+#focus-root .focus-controls .focus-play { background: #225d76; color: #fff; min-width: 85px; border-color: #225d76; margin: 0 6px; }
+#focus-root .focus-controls .focus-play:hover:not(:disabled) { background: #174d65; color: #fff; }
+#focus-root .focus-controls .focus-cancel { color: #a33738; border-color: #efd5d5; }
+.focus-scrub { display: flex; align-items: center; gap: 10px; padding: 7px 6px 4px; }
+.focus-scrub input { width: 100%; min-width: 0; height: 15px; padding: 0; margin: 0; accent-color: #357a96; cursor: pointer; }
+.focus-scrub input:disabled { cursor: default; opacity: .35; }
+.focus-scrub output { min-width: 76px; text-align: right; color: #627782; font: 11px var(--mono); }
+.focus-layers { display: flex; align-items: center; justify-content: center; gap: 3px; border-top: 1px solid #e5ebef; padding-top: 4px; margin-top: 3px; }
+#focus-root .focus-layers button { min-height: 30px; font-size: 11px; padding: 5px 9px; border-radius: 6px; }
+.focus-layers i { width: 6px; height: 6px; border-radius: 50%; background: #9baab3; }
+#focus-root .focus-layers button[aria-pressed="true"] { background: #f0f4f6; color: #354d5d; border-color: transparent; }
+#focus-layer-robot[aria-pressed="true"] i { background: #53616a; }
+#focus-layer-reference[aria-pressed="true"] i { background: #147aaf; }
+#focus-layer-future[aria-pressed="true"] i { background: #a66a13; }
+#focus-layer-trajectory[aria-pressed="true"] i { background: #418a75; }
+#focus-layer-environment[aria-pressed="true"] i { background: #a097ad; }
+.focus-boundary { margin: 9px 0 0; font-size: 11px; letter-spacing: .01em; color: #627782; }
+.focus-boundary span { padding: 0 6px; }
+#focus-root .focus-notice { position: absolute; top: 228px; left: 34px; width: min(480px, calc(100vw - 68px)); max-height: 150px; overflow: auto; pointer-events: auto; padding: 12px 15px; border: 1px solid #e5c9aa; border-radius: 10px; background: #fff8ecf5; color: #7c552d; font-size: 12px; line-height: 1.5; box-shadow: 0 5px 18px #70502d0b; }
+
+/* The panels are the existing Studio panels, with their actions and errors intact. */
+#focus-root .focus-backdrop { position: fixed; inset: 0; z-index: 24; width: 100%; height: 100%; border: 0; border-radius: 0; background: #1e354033; backdrop-filter: blur(2px); cursor: default; }
+#focus-root .focus-backdrop:hover { background: #1e354033; border: 0; }
+.flow-focus.focus-setup-open .shell > .tool-panel,
+.flow-focus.focus-inspect-open .shell > .inspector {
+  display: flex !important; position: fixed; top: max(22px, env(safe-area-inset-top, 0px)); bottom: max(22px, env(safe-area-inset-bottom, 0px)); left: max(22px, env(safe-area-inset-left, 0px)); z-index: 60;
+  width: min(450px, calc(100vw - 44px)); max-height: none; border: 1px solid #cbd8e1;
+  border-radius: 17px; background: #fbfcfd; box-shadow: 0 16px 70px #1b35482b; overflow: hidden;
+}
+.flow-focus.focus-inspect-open .shell > .inspector { left: auto; right: 22px; width: min(470px, calc(100vw - 44px)); }
+.flow-focus .tool-header { flex-shrink: 0; background: #f7f9fb; padding: 18px; }
+.flow-focus .tool-body { overflow-y: auto; min-height: 0; }
+.flow-focus .inspector-content { overflow-y: auto; min-height: 0; }
+.flow-focus .tool-panel .sticky-actions { background: #f7fafb; }
+.flow-focus .tool-panel .panel-section, .flow-focus .tool-panel .fact { border-color: var(--border); }
+.flow-focus .tool-panel .outcome-good { background: #e7f5ec; }
+.flow-focus .tool-panel .outcome-warn { background: #fff3da; }
+.flow-focus .tool-panel .outcome-bad { background: #ffe9e7; }
+.flow-focus .tool-panel .outcome-live { background: #e6f2f7; }
+.flow-focus .focus-details-header { display: flex; align-items: center; justify-content: space-between; padding: 13px 17px; border-bottom: 1px solid #d7e0e5; }
+.flow-focus .inspector-resize { display: none; }
+.flow-focus .previewing .inspector-content, .flow-focus.previewing .inspector-content { opacity: 1; filter: none; }
+.flow-focus .policy-card { background: #f9fbfc; }
+.flow-focus .policy-card.selected { background: #eef7fa; border-color: #8bb5c5; }
+.flow-focus .tool-panel button:hover:not(:disabled), .flow-focus .inspector button:hover:not(:disabled) { background: #e7f0f4; color: #28566c; }
+.flow-focus .tool-panel button.active { color: #25627c; background: #e4f1f7; border-color: #a2c5d5; }
+.flow-focus .tool-panel button.primary-action { background: #245f77; border-color: #245f77; color: #fff; }
+.flow-focus .tool-panel button.primary-action:hover:not(:disabled) { background: #174d65; color: #fff; }
+.flow-focus .tabs button.active { color: #25627c; border-bottom-color: #4284a1; }
+.flow-focus .chip { border-color: #c4d9e2; background: #edf4f8; color: #34667c; }
+
+/* The detailed inspector includes source diagrams with a dark palette. Keep
+   that established diagnostic surface legible inside the light scene. */
+.flow-focus.focus-inspect-open .shell > .inspector {
+  --panel: #121821; --panel-2: #0f141c; --raise: #18212c;
+  --text: #e6ebf0; --muted: #a3afbd; --dim: #8794a6; --border: #26313e; --border-strong: #3a4a5c;
+  --c-cyan: #56d9d0; --c-amber: #efbb70; --c-green: #5fd39b; --c-red: #f08c85; --c-purple: #c4a0d9;
+  background: var(--panel); color: var(--text); color-scheme: dark;
+}
+.flow-focus .inspector .tabs button.active { color: var(--c-cyan); border-bottom-color: var(--c-cyan); }
+.flow-focus .inspector .focus-details-header { border-color: var(--border); }
+
+@media (max-width: 700px) {
+  .focus-heading { top: 22px; left: 20px; width: calc(100vw - 40px); }
+  .focus-wordmark { margin-bottom: 15px; }
+  .focus-wordmark h1 { font-size: 22px; }
+  #focus-root .focus-exit { top: 21px; right: 18px; font-size: 11px; min-height: 35px; padding: 6px 10px; }
+  .focus-facts { top: auto; bottom: calc(var(--focus-footer-height, 190px) + max(13px, env(safe-area-inset-bottom, 0px)) + 18px); left: 20px; right: 20px; display: flex; justify-content: center; gap: 28px; text-align: center; padding: 8px 4px; border-radius: 10px; background: #f1f4f6ed; backdrop-filter: blur(8px); }
+  .focus-facts strong { font-size: 14px; }
+  .focus-bottom { bottom: 13px; max-width: calc(100vw - 24px); width: min(480px, calc(100vw - 24px)); }
+  .focus-dock { padding: 7px 6px 5px; }
+  .focus-controls { justify-content: center; gap: 0; flex-wrap: wrap; }
+  #focus-root .focus-controls button { padding: 7px 10px; font-size: 11px; gap: 5px; }
+  #focus-root .focus-controls .focus-play { min-width: 70px; margin: 0 3px; }
+  .focus-hint { margin-bottom: 10px; font-size: 11px; min-height: 15px; }
+  #focus-root .focus-notice { top: 236px; left: 20px; width: calc(100vw - 40px); max-height: min(140px, 20vh); font-size: 11px; }
+  .flow-focus #error-banner { top: 232px; left: 20px; max-width: calc(100vw - 40px); }
+}
+@media (max-width: 420px) {
+  .focus-heading { top: 17px; left: 16px; width: calc(100vw - 32px); }
+  .focus-wordmark { gap: 7px; margin-bottom: 14px; }
+  .focus-wordmark h1 { font-size: 21px; }
+  .focus-mark { width: 28px; height: 28px; font-size: 24px; }
+  .focus-local { display: none; }
+  #focus-root .focus-exit { top: 14px; right: 13px; }
+  #focus-scene-name { font-size: 12px; margin-bottom: 7px; }
+  .focus-mode { font-size: 11px; letter-spacing: .025em; }
+  .focus-source { font-size: 11px; gap: 5px; }
+  #focus-provenance { font-size: 11px; margin-bottom: 5px; }
+  .focus-facts { gap: 23px; left: 12px; right: 12px; }
+  .focus-facts span { font-size: 11px; }
+  #focus-root .focus-controls button { min-width: 48px; padding: 6px 8px; flex-direction: column; gap: 4px; min-height: 49px; }
+  #focus-root .focus-controls .focus-play { min-width: 62px; }
+  #focus-root .focus-controls .focus-cancel { flex-direction: row; min-height: 30px; margin-top: 4px; }
+  #focus-root .focus-layers button { font-size: 11px; padding: 5px 5px; gap: 4px; }
+  .focus-layers { gap: 1px; }
+  .focus-scrub { gap: 5px; }
+  .focus-scrub output { font-size: 11px; min-width: 76px; }
+  .focus-boundary { font-size: 11px; }
+  .flow-focus.focus-setup-open .shell > .tool-panel,
+  .flow-focus.focus-inspect-open .shell > .inspector { top: max(9px, env(safe-area-inset-top, 0px)); bottom: max(9px, env(safe-area-inset-bottom, 0px)); left: max(8px, env(safe-area-inset-left, 0px)); right: max(8px, env(safe-area-inset-right, 0px)); width: calc(100vw - 16px); border-radius: 12px; }
+  .flow-focus .tool-panel .grid-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .flow-focus .tool-panel .field-row { flex-wrap: wrap; }
+  .flow-focus .policy-card { overflow-wrap: anywhere; }
+  .flow-focus .inspector-content { padding: 10px; }
+}
+@media (max-height: 590px) and (min-width: 701px) {
+  .focus-heading { top: 18px; left: 24px; }
+  .focus-wordmark { margin-bottom: 10px; }
+  .focus-bottom { bottom: 10px; }
+  .focus-hint { margin-bottom: 5px; }
+  #focus-root .focus-notice { top: 200px; max-height: 100px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #focus-root *, .flow-focus .tool-panel *, .flow-focus .inspector * { transition: none !important; animation: none !important; }
+}

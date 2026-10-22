@@ -30,6 +30,8 @@ tools/studio_service.sh status        # served commit + unit state
 
 Open **http://127.0.0.1:8790/**. From another computer, use an SSH tunnel: `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open `http://localhost:8790/`. See [service and access](docs/SERVICE.md).
 
+**Flow stage:** choose **Flow stage** in the toolbar, or open [the focused rehearsal view](http://127.0.0.1:8790/?workspace=rehearse&focus=1). It gives the robot and reference body a full-window scene, with floating layer controls and a **Setup** sheet for the existing policy and arena controls. Rehearse uses the available adopted research profile; the stage labels the policy of the displayed recording separately. See [the design lessons and usage](docs/FLOW_STAGE.md).
+
 First-time setup on a new machine:
 
 ```bash

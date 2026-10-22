@@ -12,6 +12,7 @@ import { rh, initRehearse, render as renderRehearse, selectMap as rehearseSelect
 import { runs, initRuns, refreshRuns, drawCompare, selectedRuns, runColor } from './js/runs.js';
 import { renderSystemMap, renderRobotContract, KIND_LABEL, sessionKind } from './js/system.js';
 import { nav, initNavigate, render as renderNavigate, pickGoal, overlay as navOverlay } from './js/navigate.js';
+import { initFocus } from './js/focus.js';
 
 const state = {
   session: null, sessionId: null, frame: null, measuredFrame: null, frozenFrame: null, frameIndex: -1, time: 0,
@@ -20,6 +21,8 @@ const state = {
 };
 // Playback clock anchor (see tick): wall time and simulated time at the last re-anchor.
 let anchor = { wall: performance.now(), sim: 0, speed: 1 }, frameTimes = [];
+let focus;
+let rehearsePreviewSuspensions = 0;
 state.freeze = on_ => { state.frozenFrame = on_ ? state.frame : null; renderFrame(true); };
 
 const WORKSPACES = {
@@ -501,7 +504,7 @@ function setPreviewing(on) {
   if (on) $('preview-note').textContent = `Inspector, timeline and HUD show the last opened recording (${state.session?.metadata?.title ?? state.sessionId ?? 'none'}), not this preview.`;
 }
 on('rehearse:preview', markers => {
-  if (state.workspace !== 'rehearse' || rh.attached) return;
+  if (state.workspace !== 'rehearse' || rh.attached || rehearsePreviewSuspensions) return;
   setPreviewing(true);
   scene.setArenaPreview(markers.map, { start: markers.start, yaw: markers.yaw, goal: markers.goal });
   scene.fitScene(scene.sceneBounds([markers.start, markers.goal]));
@@ -556,7 +559,7 @@ async function ensureCatalog() {
 // After a gateway restart the per-process POST token changes: refresh it once and retry.
 setTokenRefresher(async () => { const fresh = await request('/api/workbench'); setToken(fresh.csrf_token); state.catalog = fresh; });
 
-async function setWorkspace(name) {
+async function setWorkspace(name, { preserveScene = false } = {}) {
   if (!WORKSPACES[name]) name = 'replay';
   const ws = WORKSPACES[name], previous = state.workspace;
   state.workspace = name;
@@ -577,6 +580,8 @@ async function setWorkspace(name) {
   }
   updateView({ workspace: name === 'replay' ? null : name });
   setStage(name === 'arena' && arena.preview3d ? '3d' : ws.stage);
+  const preserving = name === 'rehearse' && preserveScene && !!state.session && !document.body.classList.contains('previewing');
+  if (preserving) rehearsePreviewSuspensions++;
   try {
     if (name === 'arena') {
       const catalog = await ensureCatalog();
@@ -607,6 +612,8 @@ async function setWorkspace(name) {
     if (name === 'sensors') { renderSensors(state); refreshSensors(state, true); }
     if (name === 'system') await renderSystem();
   } catch (error) { emit('workbench:error', error.message); }
+  finally { if (preserving) rehearsePreviewSuspensions--; }
+  emit('workspace', name);
 }
 
 async function renderSystem() {
@@ -656,6 +663,7 @@ function initInspectorResize() {
 }
 
 function onKey(e) {
+  if (focus?.handleKey(e)) return;
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
   if (state.workspace === 'arena' && e.key !== '?') return;  // the arena editor owns the keyboard
   const k = e.key;
@@ -698,7 +706,7 @@ function bindChrome() {
     });
   });
   document.querySelectorAll('[data-workspace]').forEach(b => b.addEventListener('click', () => setWorkspace(b.dataset.workspace)));
-  $('tool-close').addEventListener('click', () => setWorkspace('replay'));
+  $('tool-close').addEventListener('click', () => focus?.active ? focus.closeSheet() : setWorkspace('replay'));
   $('evidence-button').addEventListener('click', () => togglePopover('evidence-legend', $('evidence-button')));
   $('help-button').addEventListener('click', () => togglePopover('help-overlay', $('help-button')));
   document.addEventListener('click', e => {
@@ -720,6 +728,7 @@ async function initialize() {
   } catch (error) { showError(`3D renderer could not start: ${error.message}`); $('loading-overlay').hidden = true; return; }
   initTimeline({ onSeek: t => { setPlaying(false); seek(t); } });
   initSensors(); buildLegend(); initInspectorResize(); bindChrome();
+  focus = initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, cameraView, previewMarkers, sampleHealth });
   requestAnimationFrame(tick);
   request('/api/version').then(v => { $('build-info').textContent = `build ${v.commit ? v.commit.slice(0, 7) : 'unknown'}${v.dirty ? ' · modified tree' : ''}`; $('build-info').title = v.describe ?? ''; }).catch(() => {});
   window.__studio = {
@@ -732,6 +741,7 @@ async function initialize() {
     selectTab: name => selectTab(name, state), setRobotView,
     get arena() { return arena; }, get runs() { return runs; }, get rehearse() { return rh; }, selectedRuns,
     get navigate() { return nav; }, pickGoal, get navOverlay() { return scene.view.navGroup?.children.length ?? 0; },
+    get focus() { return focus; },
   };
   try {
     const sessions = await refreshSessionList();
@@ -761,6 +771,7 @@ async function initialize() {
       rh.attached = state.sessionId;
     }
     if (view.get('play') === '1') setPlaying(true);
+    if (view.get('focus') === '1') await focus.enter();
   } catch (error) { showError(error.message); $('loading-overlay').hidden = true; }
 }
 initialize();
