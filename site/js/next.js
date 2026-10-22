@@ -34,8 +34,12 @@ if (ex) {
 const b = f.beam, d = f.doorway, dr = f.deferral_drift;
 const falls = catalog.reduce((n, w) => n + (w.outcomes.estop ?? 0) + (w.outcomes.fell ?? 0), 0), walks = catalog.reduce((n, w) => n + w.walks, 0);
 const rows = [
-  c.corridor && ['Wall end', 'corridor walks with contact over 100 N', `${c.corridor.over_100n} of ${c.corridor.walks}`],
-  b?.walks_under && ['Low beam', 'lowest pelvis under the beam, body (plan)', `${fmt(Math.min(...b.pelvis_under_m), 2)} m (${b.planned_under_m?.some(v => v !== null) ? fmt(Math.min(...b.planned_under_m.filter(v => v !== null)), 2) : '—'} m)`],
+  c.corridor && ['Wall end', "corridor walks with contact over 100 N within 0.6 m of a wall's end", `${c.corridor.at_wall_end ?? '—'} of ${c.corridor.walks}`],
+  b?.walks_under && (() => {
+    // One walk's two numbers, the one that went lowest: its executed pelvis and its plan's, under the beam.
+    const i = b.pelvis_under_m.indexOf(Math.min(...b.pelvis_under_m)), planned = b.planned_under_m?.[i];
+    return ['Low beam', 'lowest pelvis under the beam: body (its plan), the walk that went lowest', `${fmt(b.pelvis_under_m[i], 2)} m (${planned == null ? '—' : `${fmt(planned, 2)} m`})`];
+  })(),
   d?.far_goals && ['Tight passage', 'far-side walks through the 1 m door, clean', `${d.through_door} of ${d.far_goals}, ${d.through_clean} clean`],
   dr?.walks && ['Deferred stand', 'walks that moved more than 0.5 m while deferred', `${dr.over_0_5m} of ${dr.walks}`],
   ex && ['Walking', 'plan to body, median (95th percentile)', `${fmt(ex.lag_m.median, 2)} m (${fmt(ex.lag_m.p95, 2)} m)`],

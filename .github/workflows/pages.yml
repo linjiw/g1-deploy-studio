@@ -26,6 +26,8 @@ jobs:
       - name: Fetch the site data and media (checksums pinned in tools/site/release.json)
         run: tools/site/fetch_release.sh _data _media
       - run: tools/site/build.sh _site _data _media
+      - name: The public build carries no local-only material (docs/SITE.md)
+        run: test "$(cat _site/data/next-local.json)" = "{}"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

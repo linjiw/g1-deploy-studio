@@ -38,6 +38,8 @@ def grade_key(walk):
             return 'contact'
         if (walk.get('final_dist_m') or 0) > 0.6:
             return 'away' if (walk.get('final_dist_estimate_m') or 0) > 0.6 else 'off'
+        if walk.get('final_dist_m') is None or walk.get('max_contact_n') is None:
+            return 'ungraded'  # nothing flagged, but a missing value is not a clean walk
         return 'clean'
     return walk.get('outcome') or 'unknown'
 
@@ -91,7 +93,7 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
     picked = frames[::STRIDE]
     if picked[-1] is not frames[-1]:
         picked.append(frames[-1])
-    q, est, tilt, force, dist, times, ref = [], [], [], [], [], [], []
+    q, est, tilt, force, dist, times, ref, est_missing = [], [], [], [], [], [], [], []
     phases = []
     ref_basis = None
     for k, f in enumerate(picked):
@@ -105,7 +107,10 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
             ref_basis = ref_basis or r.get('position_basis')
         else:
             ref.append(None)
-        est += _ints((f.get('estimate') or {}).get('position', qpos[:3])[:2], 1000)
+        position = (f.get('estimate') or {}).get('position')
+        if position is None:
+            est_missing.append(k)  # drawn at the true position; measured nowhere
+        est += _ints((position or qpos[:3])[:2], 1000)
         h = f.get('health') or {}
         tilt.append(None if h.get('tilt_rad') is None else int(round(h['tilt_rad'] * 1000)))
         force.append(None if h.get('contact_force_n') is None else int(round(h['contact_force_n'])))
@@ -150,7 +155,7 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
             'final_dist_m': leg.get('final_dist_true_m'), 'final_dist_estimate_m': leg.get('final_dist_m'),
             'path_m': leg.get('path_m'), 'max_contact_n': leg.get('max_contact_n'), 'plans_n': leg.get('plans'),
             'fps': 50 / STRIDE, 'n': len(picked), 'time': times,
-            'q': q, 'ref': ref, 'ref_basis': ref_basis, 'est': est, 'tilt_mrad': tilt, 'contact_n': force, 'goal_cm': dist, 'phases': phases,
+            'q': q, 'ref': ref, 'ref_basis': ref_basis, 'est': est, 'est_missing': est_missing, 'tilt_mrad': tilt, 'contact_n': force, 'goal_cm': dist, 'phases': phases,
             'plans': plans, 'plan_starts': [[round(t * 0.02, 3), i] for t, i in starts] if starts else None,
             'lidar': lidar, 'map': map_steps, 'events': events,
             'rtf': report.get('worker_real_time_factor')}
@@ -382,10 +387,14 @@ def featured(out, worlds):
                 (under if inside else other).append(z)
                 if inside and first is None:
                     first = d['time'][k]
-                # The plan's pelvis under the beam: the reference root, where the reference itself is under it.
+                # The plan's pelvis under the beam: the reference root, where the reference itself is under it. The
+                # root is in the planner's frame (the robot's estimate): shift it by this frame's estimate error.
                 r = (d.get('ref') or [None] * d['n'])[k]
-                if r and _box_distance([r[0] / 1000, r[1] / 1000], b) == 0:
-                    planned.append(r[2] / 1000)
+                if r and k not in set(d.get('est_missing') or []):
+                    rx = r[0] / 1000 + x - d['est'][2 * k] / 1000
+                    ry = r[1] / 1000 + y - d['est'][2 * k + 1] / 1000
+                    if _box_distance([rx, ry], b) == 0:
+                        planned.append(r[2] / 1000)
             if under and other:
                 dips.append((float(np.median(other) - min(under)), d, min(under), float(np.median(other)),
                              min(planned) if planned else None, first))
@@ -432,6 +441,17 @@ def featured(out, worlds):
     return pick, facts
 
 
+def _moved_while_deferred(d):
+    """(metres, seconds) the robot moved, by simulator truth, from a deferred stand until it stood; None if none."""
+    ev = next((e for e in d['events'] if e['type'] == 'stand_deferred'), None)
+    if ev is None:
+        return None
+    stood = next((e['t'] for e in d['events'] if e['type'] in ('stand', 'stand_forced') and e['t'] > ev['t']), d['time'][-1])
+    k0 = max(0, int(np.searchsorted(d['time'], ev['t'], side='right')) - 1)
+    k1 = max(0, int(np.searchsorted(d['time'], stood, side='right')) - 1)
+    return math.dist(d['q'][36 * k0:36 * k0 + 2], d['q'][36 * k1:36 * k1 + 2]) / 1000, stood - ev['t']
+
+
 def _phase_per_frame(d):
     marks = d['phases'] + [[d['n'], None]]
     out = [None] * d['n']
@@ -445,10 +465,11 @@ def execution(d):
     the robot's own estimate of its pelvis (both in the planner's frame: SONIC never receives the root position, it
     tracks joints and orientation), the pelvis height gap (plan minus truth) and the RMS gap over the 29 joints."""
     ref = d.get('ref') or []
+    missing = set(d.get('est_missing') or [])
     lag, dz, rms = [], [], []
     for k, phase in enumerate(_phase_per_frame(d)):
         r = ref[k] if k < len(ref) else None
-        if phase != 'RUN' or not r:
+        if phase != 'RUN' or not r or k in missing:
             continue
         lag.append(math.hypot(r[0] / 1000 - d['est'][2 * k] / 1000, r[1] / 1000 - d['est'][2 * k + 1] / 1000))
         dz.append(r[2] / 1000 - d['q'][36 * k + 2] / 1000)
@@ -492,7 +513,7 @@ def closer_scenarios(walks, pick):
         deferred = next((e for e in d['events'] if e['type'] == 'stand_deferred'), None)
         text = (f"node.py's arrival rule uses the robot's own estimate: within 0.4 m of the goal."
                 + (f" It arrived at {arrived['t']:.1f} s with its estimate {arrived['dist']:.2f} m from the goal." if arrived and arrived.get('dist') is not None else '')
-                + (f" Its stand was then deferred and it kept moving." if deferred else '')
+                + (lambda m: f" Its stand was then deferred; it moved {m[0]:.2f} m (simulator truth) in the {m[1]:.1f} s it waited." if m else '')(_moved_while_deferred(d))
                 + f" At the end it is {d['final_dist_estimate_m']:.2f} m from the goal by its estimate and {d['final_dist_m']:.2f} m by simulator truth;"
                   f" the estimate is {error[k]:.2f} m off there (at most {max(error):.2f} m during the walk).")
         out.append({'id': 'estimate', 'mode': 'estimate', 'world': w, 'goal': d['goal_id'], 'at': 0,

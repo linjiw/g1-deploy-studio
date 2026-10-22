@@ -24,12 +24,14 @@ export const GRADES = {
   stopped: { label: 'Stopped', short: 'Stopped', color: 0xefbb70, css: 'var(--warn)' },
   estop: { label: 'E-stop', short: 'E-stop', color: 0xf07870, css: 'var(--bad)' },
   fell: { label: 'Fell', short: 'Fell', color: 0xf07870, css: 'var(--bad)' },
+  ungraded: { label: 'Arrived, not fully graded', short: 'Ungraded', color: 0x8aa0ad, css: 'var(--ink-3)' },
 };
 export function gradeKey(walk) {
   if (walk.outcome === 'arrived') {
     if ((walk.max_contact_n ?? 0) > 100) return 'contact';
     // Off by truth: its estimate was wrong, or (its estimate agreeing) it moved away after arriving, as in a deferred stand.
     if ((walk.final_dist_m ?? 0) > 0.6) return (walk.final_dist_estimate_m ?? 0) > 0.6 ? 'away' : 'off';
+    if (walk.final_dist_m == null || walk.max_contact_n == null) return 'ungraded';  // nothing flagged, but a missing value is not clean
     return 'clean';
   }
   return walk.outcome;

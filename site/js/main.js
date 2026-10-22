@@ -26,13 +26,19 @@ async function stats() {
   const [catalog, featured] = await Promise.all([json('worlds.json'), json('featured.json').catch(() => ({}))]);
   const W = catalog.worlds, walks = sum(W, w => w.walks);
   if (!walks) return;
-  const arrived = sum(W, w => w.outcomes.arrived), contact = sum(W, w => w.contact);
-  const off = sum(W, w => (w.grades?.off ?? 0) + (w.grades?.away ?? 0)), failed = walks - arrived;
-  const pct = n => `${Math.round(n / walks * 100)} %`;
+  // Every walk's row (worlds.json list): its grade, max contact and final distance by simulator truth.
+  const rows = W.flatMap(w => (w.list ?? []).map(r => Object.fromEntries((w.list_fields ?? []).map((k, i) => [k, r[i]]))));
+  const arrivedRows = rows.filter(r => ['clean', 'contact', 'off', 'away', 'ungraded'].includes(r.grade));
+  const arrived = arrivedRows.length, contact = arrivedRows.filter(r => (r.contact_n ?? 0) > 100).length;
+  const off = arrivedRows.filter(r => (r.final_m ?? 0) > 0.6).length;
+  const outcomes = {};
+  for (const w of W) for (const [k, n] of Object.entries(w.outcomes)) if (k !== 'arrived') outcomes[k] = (outcomes[k] ?? 0) + n;
+  const NAMES = { estop: ['E-stop', 'E-stops'], fell: ['fall', 'falls'], stopped: ['stop', 'stops'] };
+  const failed = Object.entries(outcomes).map(([k, n]) => `${n} ${(NAMES[k] ?? [k, k])[n === 1 ? 0 : 1]}`);
   const set = (key, text) => { for (const n of document.querySelectorAll(`[data-stat="${key}"]`)) n.textContent = text; };
   set('walks', walks.toLocaleString('en-US'));
-  set('arrived', pct(arrived));
-  set('arrived-text', `But ${contact} of them (${pct(contact)}) pushed an obstacle with more than 100 N on the way, ${off} ended more than 0.6 m from the goal by simulator truth${failed ? `, and ${failed} did not arrive (E-stop or fall)` : ''}.`);
+  set('arrived', `${Math.round(arrived / walks * 100)} %`);
+  set('arrived-text', `But ${contact} of the ${arrived} that arrived (${Math.round(contact / arrived * 100)} %) pushed an obstacle with more than 100 N on the way, and ${off} ended more than 0.6 m from the goal by simulator truth.${failed.length ? ` The other ${walks - arrived}: ${failed.join(', ')}.` : ''}`);
   $('claim-highlights').textContent = `${walks.toLocaleString('en-US')} walks, ${W.length} rooms, zero motor commands.`;
   const ex = featured.facts?.execution;
   if (ex) set('lag-line', `In ${ex.walks} recorded walks, the plan body's pelvis is a median ${fmt(ex.lag_m.median, 2)} m from where the robot thinks its pelvis is while it walks (95th percentile ${fmt(ex.lag_m.p95, 2)} m).`);

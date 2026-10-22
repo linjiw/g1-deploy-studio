@@ -67,7 +67,9 @@ export function initPipeline(container, detail) {
     for (const g of container.querySelectorAll('.node')) g.classList.toggle('on', g.dataset.id === id);
     detail.innerHTML = `<h3>${escape(n.title)}</h3><p>${escape(n.text)}</p><dl>${n.facts.map(([a, b]) => `<dt>${escape(a)}</dt><dd><code>${escape(b)}</code></dd>`).join('')}</dl>`;
   };
-  container.addEventListener('click', e => { const g = e.target.closest('.node'); if (g) select(g.dataset.id); });
-  container.addEventListener('keydown', e => { const g = e.target.closest('.node'); if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); select(g.dataset.id); } });
+  // The detail is announced once a visitor picks a part, not when the page builds the diagram.
+  const chosen = id => { detail.setAttribute('aria-live', 'polite'); select(id); };
+  container.addEventListener('click', e => { const g = e.target.closest('.node'); if (g) chosen(g.dataset.id); });
+  container.addEventListener('keydown', e => { const g = e.target.closest('.node'); if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); chosen(g.dataset.id); } });
   select('studio');
 }

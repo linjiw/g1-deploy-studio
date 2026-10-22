@@ -1,5 +1,6 @@
 // Booting a stage on demand: a progress card, a WebGL check, then the module (the demo or a split view).
 // Nothing heavy loads before this runs: the page itself is text, images and two small JSON files.
+import { escape } from './util.js';
 export function webgl() {
   try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch { return false; }
 }
@@ -17,7 +18,7 @@ function card(root) {
     fail: message => {
       boot.classList.add('failed');
       label.textContent = 'This part could not start';
-      boot.querySelector('small').innerHTML = `${message} The <a href="${root.dataset.tour ?? '#tour'}" style="color:#fff">tour video</a> shows the same workflow.`;
+      boot.querySelector('small').innerHTML = `${escape(message)} The <a href="${escape(root.dataset.tour ?? '#tour')}" style="color:#fff">tour video</a> shows the same workflow.`;
     },
   };
 }

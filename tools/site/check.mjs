@@ -40,7 +40,8 @@ const totalWalks = catalog.reduce((n, w) => n + w.walks, 0);
 // The outcome rule, restated here from the site's documentation so the page is checked against the raw data.
 function expectedGrade(walk) {
   const contact = (walk.max_contact_n ?? 0) > 100;
-  if (walk.outcome === 'arrived') return contact ? 'Arrived, with contact' : (walk.final_dist_m ?? 0) > 0.6 ? ((walk.final_dist_estimate_m ?? 0) > 0.6 ? 'Arrived, then moved away' : 'Arrived by its estimate, off by truth') : 'Arrived';
+  if (walk.outcome === 'arrived') return contact ? 'Arrived, with contact' : (walk.final_dist_m ?? 0) > 0.6 ? ((walk.final_dist_estimate_m ?? 0) > 0.6 ? 'Arrived, then moved away' : 'Arrived by its estimate, off by truth')
+    : walk.final_dist_m == null || walk.max_contact_n == null ? 'Arrived, not fully graded' : 'Arrived';
   return { stopped: 'Stopped', estop: 'E-stop', fell: 'Fell' }[walk.outcome] ?? walk.outcome;
 }
 
@@ -134,12 +135,20 @@ await check('layer keys toggle the layers and their buttons', async () => {
   if ((await pressed('map')) !== 'true' || (await pressed('body')) !== 'true') throw new Error('not restored');
   return 'M and B toggle the map and the plan body';
 });
-await check('Escape puts a staged goal away; R starts over', async () => {
+await check('Escape puts a staged goal away, R starts over, and Escape during a load wins over the load', async () => {
+  const state = () => D(() => ({ m: window.studioDemo.S.mode, sel: !!window.studioDemo.S.selected, walk: !!window.studioDemo.S.walk }));
   await D(() => { const d = window.studioDemo; d.selectCell(d.S.recorded[0], { stage: true }); });
   await page.keyboard.press('Escape');
-  const mode = await D(() => ({ m: window.studioDemo.S.mode, sel: !!window.studioDemo.S.selected }));
-  if (mode.m !== 'pick' || mode.sel) throw new Error(JSON.stringify(mode));
-  return 'Escape returns to picking';
+  const a = await state();
+  await D(() => { const d = window.studioDemo; d.selectCell(d.S.recorded[1], { stage: true }); });
+  await page.keyboard.press('r');
+  const b = await state();
+  await D(() => { const d = window.studioDemo; d.selectCell(d.S.recorded[2], { stage: true }); window.__going = d.go(); });
+  await page.keyboard.press('Escape');
+  await D(() => window.__going);
+  const c = await state();
+  for (const [name, s] of [['Escape', a], ['R', b], ['Escape while loading', c]]) if (s.m !== 'pick' || s.sel || s.walk) throw new Error(`${name}: ${JSON.stringify(s)}`);
+  return 'each returns to picking, with no walk left playing';
 });
 await check('the picker: rooms with counts, and a Went wrong folder that lists every walk not graded clean', async () => {
   await page.click('#demo-stage [data-el="rooms"]');
@@ -151,10 +160,14 @@ await check('the picker: rooms with counts, and a Went wrong folder that lists e
   await page.screenshot({ path: path.join(OUT, 'desktop-picker.png') });
   if (folders !== catalog.length + 1) throw new Error(`${folders} folders for ${catalog.length} rooms`);
   if (rows !== expected) throw new Error(`Went wrong lists ${rows}, the grades say ${expected}`);
-  await page.locator('#demo-stage .walks [data-walk]').first().click();
+  // A walk from another room: the one clicked plays, in its own room (goal ids repeat across rooms).
+  const row = page.locator('#demo-stage .walks [data-walk]').nth(1);
+  const want = { room: await row.getAttribute('data-room'), walk: await row.getAttribute('data-walk') };
+  await row.click();
   await page.waitForFunction(() => window.studioDemo.S.mode === 'playing', null, { timeout: 20000 });
-  const g = await D(() => window.studioDemo.S.walk.outcome);
-  return `${folders - 1} rooms + Went wrong (${rows} walks); the first plays: ${g}`;
+  const got = await D(() => ({ room: window.studioDemo.S.worldId, walk: window.studioDemo.S.walk.goal_id, outcome: window.studioDemo.S.walk.outcome }));
+  if (got.room !== want.room || got.walk !== want.walk) throw new Error(`clicked ${want.room}/${want.walk}, playing ${got.room}/${got.walk}`);
+  return `${folders - 1} rooms + Went wrong (${rows} walks); the clicked one plays: ${got.room}/${got.walk}, ${got.outcome}`;
 });
 await check('every room loads (keys 1–5)', async () => {
   const ids = [];
@@ -175,11 +188,13 @@ await check('the split view: plan body against executed body, in step; scenarios
   if (f0 === f1) throw new Error(`frame counter stuck at ${f0}`);
   const split = await D(() => !!window.studioCloser.viewer.views && window.studioCloser.viewer.views.length === 2);
   await page.locator('#closer-stage').screenshot({ path: path.join(OUT, 'desktop-closer.png') });
-  const ids = featured.closer.map(c => c.id);
-  await page.click(`#closer-chips [data-sc="${ids[ids.length - 1]}"]`);
-  await page.waitForFunction(i => window.studioCloser.S.scenario.id === i, ids[ids.length - 1], { timeout: 20000 });
-  if (!split) throw new Error('not split in two');
-  return `${f0} → ${f1}; ${ids.length} scenarios (${ids.join(', ')})`;
+  const left = await D(() => window.studioCloser.ghostOn && window.studioCloser.viewer.ghosts.plan != null);
+  const ids = featured.closer.map(c => c.id), last = featured.closer[featured.closer.length - 1];
+  await page.click(`#closer-chips [data-sc="${last.id}"]`);
+  // The scenario counts as switched once its own walk is loaded and drawn.
+  await page.waitForFunction(sc => window.studioCloser.S.scenario.id === sc.id && window.studioCloser.S.walk.goal_id === sc.goal && window.studioCloser.S.world.id === sc.world, last, { timeout: 20000 });
+  if (!split || !left) throw new Error(`split ${split}, plan body shown ${left}`);
+  return `${f0} → ${f1}; ${ids.length} scenarios (${ids.join(', ')}); switched to ${last.world}/${last.goal}`;
 });
 await check('the system diagram answers a click', async () => {
   await page.locator('#how').scrollIntoViewIfNeeded();
@@ -258,10 +273,17 @@ await check('the standalone demo opens a walk by link and plays from the given m
   await demo.waitForFunction(() => window.studioDemo?.S.walk, null, { timeout: 60000 });
   const s = await demo.evaluate(() => ({ t: window.studioDemo.S.t, goal: window.studioDemo.S.walk.goal_id, world: window.studioDemo.S.worldId, full: getComputedStyle(document.getElementById('demo')).position }));
   await demo.waitForTimeout(1500);
+  const later = await demo.evaluate(() => window.studioDemo.S.t);
   await demo.screenshot({ path: path.join(OUT, 'standalone.png') });
+  // A malformed moment opens the walk from its start, never at a time that is not a number.
+  await demo.goto(URL_ + `demo/#${ex.world}/${ex.goal}/play@1.2.3`);
+  await demo.waitForTimeout(800);
+  const bad = await demo.evaluate(() => window.studioDemo?.S.t ?? 0);
   await demo.context().close();
-  if (s.goal !== ex.goal || s.world !== ex.world || s.t < at - 0.05 || s.full !== 'fixed') throw new Error(JSON.stringify(s));
-  return `${s.world}/${s.goal} from ${at.toFixed(1)} s, full-bleed`;
+  if (s.goal !== ex.goal || s.world !== ex.world || !Number.isFinite(s.t) || s.t < at - 0.05 || s.full !== 'fixed') throw new Error(JSON.stringify(s));
+  if (!(later > s.t)) throw new Error(`not playing: ${s.t} → ${later}`);
+  if (!Number.isFinite(bad)) throw new Error(`a malformed link gave t = ${bad}`);
+  return `${s.world}/${s.goal} from ${at.toFixed(1)} s, playing (${later.toFixed(1)} s), full-bleed; a malformed link is ignored`;
 });
 
 await check('phone: the demo fits, a tap picks a goal, its checks sit above the dock', async () => {

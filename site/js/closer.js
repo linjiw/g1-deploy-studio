@@ -9,6 +9,17 @@ import { DATA, json, walkJson, decodeWorld, Walk } from './data.js';
 import { fmt, escape, reducedMotion } from './util.js';
 
 const FPS = 25, CLIP_S = 9;
+// The readouts: [label, kind of value, what it is].
+const FACTS = {
+  body: [['Plan to body', 'while walking', "The plan body's pelvis from where the robot thinks its pelvis is, both in the planner's frame"],
+         ['Pelvis', 'plan / body', 'Pelvis height: planned, and executed (simulator truth)'],
+         ['Joints apart', 'plan / body', 'Root-mean-square gap over the 29 joint angles'],
+         ['Contact', 'truth', 'Obstacle contact force, simulator truth']],
+  estimate: [['Estimate off by', 'estimate / truth', 'Distance between its estimate and simulator truth'],
+             ['To goal', 'its estimate', "node.py's arrival rule uses this: within 0.4 m"],
+             ['To goal', 'truth', 'Simulator truth'],
+             ['Phase', 'node.py', "node.py's phase"]],
+};
 const SIDES = {
   body: [['Plan body', 'the reference pose SONIC is chasing'], ['Executed body', 'the simulated G1, simulator truth']],
   estimate: [['Simulator truth', 'where the robot is'], ['Its estimate', 'where it thinks it is']],
@@ -27,7 +38,7 @@ class Closer {
     this.S = { scenario: null, walk: null, world: null, t: 0, playing: false, last: null, speed: 1, overlay: false, clip: [0, 0], token: 0 };
     root.classList.add('closer');
     root.insertAdjacentHTML('beforeend', `
-      <div class="stage-canvas" data-el="canvas" role="img" aria-label="Two synchronized views of a recorded walk"></div>
+      <div class="stage-canvas" data-el="canvas" tabindex="0" role="img" aria-label="Two synchronized views of a recorded walk. Space plays or pauses; comma and period step one frame."></div>
       <div class="split-labels" aria-hidden="true"><span data-el="left"></span><span data-el="right"></span></div>
       <div class="split-divider" aria-hidden="true"></div>
       <div class="split-facts" data-el="facts" aria-live="off"></div>
@@ -77,10 +88,10 @@ class Closer {
 
   async load(sc) {
     const S = this.S, token = ++S.token;
-    S.scenario = sc; S.playing = false;
+    S.playing = false;
     const [world, walk] = await Promise.all([json(`${sc.world}/index.json`).then(decodeWorld), walkJson(`${sc.world}/g/${sc.goal}.json`).then(d => new Walk(d))]);
     if (token !== S.token) return;
-    S.world = world; S.walk = walk;
+    S.scenario = sc; S.world = world; S.walk = walk;  // the scenario changes only with its walk
     const v = this.viewer;
     // Walls as glass: the bodies are the subject, and a wall must not hide them.
     v.setWorld(world); v.setBoxesStyle('ghost');
@@ -163,42 +174,54 @@ class Closer {
     return true;
   }
   seek(t) { const S = this.S; S.t = Math.max(S.clip[0], Math.min(S.clip[1], t)); this.apply(); this.renderDock(); }
+  // Bodies move every drawn frame; lines and numbers change only when the recorded frame does.
   apply() {
     const S = this.S, w = S.walk, v = this.viewer, mode = S.scenario.mode;
     const p = w.pose(S.t, this.q);
     v.setPose(p);
-    const k = w.index(S.t);
+    this.follow(p);
+    const k = w.index(S.t), fresh = this.shown?.walk !== w || this.shown?.mode !== mode;
     if (mode === 'body') {
       const ref = w.refPose(S.t, this.r);
       v.setGhost('plan', ref); v.setGhost('est', null); this.ghostOn = !!ref;
-      this.follow(p);
+      if (fresh) { v.setLine(this.lines.truth, null); v.setLine(this.lines.est, null); }
       const plan = w.phase(S.t) === 'RUN' ? w.plan(S.t) : null;
-      v.setLine(this.lines.plan, plan ? plan.points : null);
-      v.setLine(this.lines.truth, null); v.setLine(this.lines.est, null);
-      const ex = w.est[k * 2] / 1000, ey = w.est[k * 2 + 1] / 1000;
-      let rms = null;
-      if (ref) { let s = 0; for (let j = 7; j < 36; j++) s += (ref[j] - p[j]) ** 2; rms = Math.sqrt(s / 29) * 57.2958; }
-      this.facts(ref ? [
-        ['Plan to body', `${fmt(Math.hypot(ref[0] - ex, ref[1] - ey), 2)} m`, "The plan body's pelvis from where the robot thinks its pelvis is (both in the planner's frame)"],
-        ['Pelvis, plan / body', `${fmt(ref[2], 2)} / ${fmt(p[2], 2)} m`, 'Pelvis height: planned against executed (simulator truth)'],
-        ['Joints', `${fmt(rms, 1)}° RMS apart`, 'Root-mean-square gap over the 29 joint angles'],
-        ['Contact', w.contact_n[k] > 0 ? `${w.contact_n[k]} N` : 'none', 'Obstacle contact force, simulator truth'],
-      ] : [['Plan body', 'not recorded at this frame', '']]);
+      if (fresh || plan !== this.shown.plan) v.setLine(this.lines.plan, plan ? plan.points : null);
+      if (fresh || k !== this.shown.k) {
+        // The plan body's root is the planner's only while it walks; standing, the node sets it to the robot's pose.
+        const run = w.phase(S.t) === 'RUN' && !w.est_missing?.includes(k), r = w.hasRef ? w.refFrames.subarray(k * 36, k * 36 + 36) : null;
+        const has = r && !Number.isNaN(r[0]), f = w.frames.subarray(k * 36, k * 36 + 36);
+        let rms = null;
+        if (has) { let sq = 0; for (let j = 7; j < 36; j++) sq += (r[j] - f[j]) ** 2; rms = Math.sqrt(sq / 29) * 57.2958; }
+        this.facts('body', [
+          !has ? '—' : run ? `${fmt(Math.hypot(r[0] - w.est[k * 2] / 1000, r[1] - w.est[k * 2 + 1] / 1000), 2)} m` : 'not walking',
+          has ? `${fmt(r[2], 2)} / ${fmt(f[2], 2)} m` : '—',
+          has ? `${fmt(rms, 1)}° RMS` : '—',
+          w.contact_n[k] === null ? '—' : w.contact_n[k] > 0 ? `${w.contact_n[k]} N` : 'none',
+        ], w.contact_n[k] > 100);
+      }
+      this.shown = { walk: w, mode, k, plan };
     } else {
       const e = w.estPose(S.t, this.r);
       v.setGhost('est', e); v.setGhost('plan', null); this.ghostOn = true;
-      this.follow(p);
-      v.setLine(this.lines.plan, null);
-      v.setLine(this.lines.truth, w.trail.slice(0, k + 1));
-      const est = []; for (let i = 0; i <= k; i++) est.push([w.est[i * 2] / 1000, w.est[i * 2 + 1] / 1000, 0.03]);
-      v.setLine(this.lines.est, est);
-      const g = w.goal;
-      this.facts([
-        ['Estimate off by', `${fmt(Math.hypot(e[0] - p[0], e[1] - p[1]), 2)} m`, 'Distance between its estimate and simulator truth'],
-        ['To goal, its estimate', g ? `${fmt(Math.hypot(e[0] - g[0], e[1] - g[1]), 2)} m` : '—', "node.py's arrival rule uses this: within 0.4 m"],
-        ['To goal, truth', g ? `${fmt(Math.hypot(p[0] - g[0], p[1] - g[1]), 2)} m` : '—', 'Simulator truth'],
-        ['Phase', w.phase(S.t), "node.py's phase"],
-      ]);
+      if (fresh) {
+        v.setLine(this.lines.plan, null);
+        v.setLine(this.lines.truth, w.trail);
+        const est = []; for (let i = 0; i < w.n; i++) est.push([w.est[i * 2] / 1000, w.est[i * 2 + 1] / 1000, 0.03]);
+        v.setLine(this.lines.est, est);
+      }
+      if (fresh || k !== this.shown.k) {
+        v.setLineCount(this.lines.truth, k + 1); v.setLineCount(this.lines.est, k + 1);
+        const g = w.goal, f = w.frames.subarray(k * 36, k * 36 + 2), ex = w.est[k * 2] / 1000, ey = w.est[k * 2 + 1] / 1000;
+        const missing = w.est_missing?.includes(k);
+        this.facts('estimate', [
+          missing ? '—' : `${fmt(Math.hypot(ex - f[0], ey - f[1]), 2)} m`,
+          g && !missing ? `${fmt(Math.hypot(ex - g[0], ey - g[1]), 2)} m` : '—',
+          g ? `${fmt(Math.hypot(f[0] - g[0], f[1] - g[1]), 2)} m` : '—',
+          w.phaseAt(k),
+        ]);
+      }
+      this.shown = { walk: w, mode, k };
     }
   }
   // The camera keeps its direction and distance and moves with the executed pelvis (the left half's camera is
@@ -207,9 +230,16 @@ class Closer {
     const v = this.viewer, dx = p[0] - v.controls.target.x, dy = p[1] - v.controls.target.y;
     v.controls.target.x += dx; v.controls.target.y += dy; v.camera.position.x += dx; v.camera.position.y += dy;
   }
-  facts(rows) {
-    const html = rows.map(([a, b, t]) => `<div title="${escape(t)}"><span>${escape(a)}</span><b>${escape(b)}</b></div>`).join('');
-    if (this.el.facts.innerHTML !== html) this.el.facts.innerHTML = html;
+  // The readout's rows are built once per mode; afterwards only their values change.
+  facts(mode, values, hot = false) {
+    const E = this.el;
+    if (E.facts.dataset.mode !== mode) {
+      E.facts.dataset.mode = mode;
+      E.facts.innerHTML = FACTS[mode].map(([label, kind, title]) => `<div title="${escape(title)}"><span>${escape(label)} <i>${escape(kind)}</i></span><b></b></div>`).join('');
+      this.factCells = [...E.facts.querySelectorAll('b')];
+    }
+    values.forEach((text, i) => { if (this.factCells[i].textContent !== text) this.factCells[i].textContent = text; });
+    this.factCells[3].parentNode.classList.toggle('hot', hot);
   }
   bands() {
     const S = this.S, w = S.walk, [a, b] = S.clip;

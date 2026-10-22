@@ -26,6 +26,14 @@ const LAYERS = [
   { id: 'outcomes', label: 'Outcomes', dot: '#7be0a5', key: 'o', why: 'Every recorded goal, coloured by how its walk ended.' },
 ];
 const WRONG_ORDER = ['fell', 'estop', 'stopped', 'away', 'off', 'contact'];
+// The readout: [key, label, kind of value, what it is, class].
+const HUD = [
+  ['goal', 'To goal', 'estimate', "By the robot's own estimate (LIO-level drift), as node.py measures it", ''],
+  ['tilt', 'Tilt', 'truth', 'Simulator truth; the E-stop is at 0.75 rad (43°)', ''],
+  ['contact', 'Contact', 'truth', 'Obstacle contact force, simulator truth', ''],
+  ['body', 'Plan body', 'off by', "While walking: how far the plan body's pelvis is from where the robot thinks its pelvis is", ''],
+  ['planner', 'Planner', 'its rule', "The planner's choice among its sampled candidates", 'wide'],
+];
 
 export async function mountDemo(root, options = {}) {
   const demo = new Demo(root, options);
@@ -78,21 +86,21 @@ class Demo {
 
   // ----- hash: [#try/]<room>[/<goal>[/play[@seconds]]]
   parseHash() {
-    const m = location.hash.slice(1).match(new RegExp(`^${this.hashPrefix.replace('/', '\\/')}([a-z]+)(?:\\/(g\\d\\d-\\d\\d))?(\\/play(?:@([\\d.]+))?)?$`));
+    const m = location.hash.slice(1).match(new RegExp(`^${this.hashPrefix.replace('/', '\\/')}([a-z]+)(?:\\/(g\\d\\d-\\d\\d))?(\\/play(?:@(\\d+(?:\\.\\d+)?))?)?$`));
     return m ? { world: m[1], goal: m[2], play: !!m[3], at: m[4] ? Number(m[4]) : null } : null;
   }
   writeHash(path) {
+    if (this.el.full) this.el.full.href = `${this.fullHref}#${path}`;
     // Inside the main page, only a hash the demo owns (or none) is replaced: section links stay as they are.
     if (this.embedded && location.hash && !location.hash.startsWith(`#${this.hashPrefix}`)) return;
     history.replaceState(null, '', `#${this.hashPrefix}${path}`);
-    if (this.el.full) this.el.full.href = `${this.fullHref}#${path}`;
   }
   async fromHash() {
     const h = this.parseHash();
     if (!h) return;
     if (h.world && !this.catalog.some(w => w.id === h.world)) { this.flash('That room is not in this recording.'); return; }
-    if (h.world && h.world !== this.S.worldId) await this.loadWorld(h.world, { keepHash: true });
-    if (!h.goal) return;
+    if (h.world && h.world !== this.S.worldId && !(await this.loadWorld(h.world, { keepHash: true }))) return;
+    if (!h.goal || this.S.worldId !== h.world) return;  // goal ids repeat across rooms: only this room's
     const cell = this.S.world.cells.find(c => c.id === h.goal);
     if (!cell || !cell.walk) { this.flash('That walk is not in this recording.'); return; }
     if (this.embedded) this.root.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' });
@@ -140,7 +148,8 @@ class Demo {
     E.filters.addEventListener('click', e => { const b = e.target.closest('[data-filter]'); if (b) { this.S.filter = b.dataset.filter; this.renderPicker(); } });
     E.walkList.addEventListener('click', e => { const b = e.target.closest('[data-walk]'); if (b) this.watch(b.dataset.room, b.dataset.walk); });
     document.addEventListener('pointerdown', e => {
-      if (!E.picker.hidden && !E.picker.contains(e.target) && !E.rooms.contains(e.target)) this.togglePicker(false);
+      this.swallow = false;
+      if (!E.picker.hidden && !E.picker.contains(e.target) && !E.rooms.contains(e.target)) { this.togglePicker(false); this.swallow = true; }
     });
     window.addEventListener('keydown', e => this.key(e));
   }
@@ -152,6 +161,7 @@ class Demo {
   key(e) {
     if (e.ctrlKey || e.metaKey || e.altKey || !this.inView()) return;
     if (e.target.closest('input:not([type=range]), textarea, select, [contenteditable]')) return;
+    if (e.target.closest('.stage') && !this.root.contains(e.target)) return;  // another stage has the keys
     const k = e.key, S = this.S;
     if (k === 'Escape') {
       if (!this.el.picker.hidden) { this.togglePicker(false); this.el.rooms.focus(); }
@@ -179,7 +189,7 @@ class Demo {
   // ----- rooms
   async loadWorld(id, { keepHash = false } = {}) {
     const S = this.S;
-    if (S.worldId === id && S.world) return;
+    if (S.worldId === id && S.world) { ++S.loadToken; return true; }  // the last room asked for wins
     const token = ++S.loadToken;
     this.pause();
     this.live('Loading the room…');
@@ -188,9 +198,9 @@ class Demo {
       world = decodeWorld(await json(`${id}/index.json`));
     } catch (error) {
       if (token === S.loadToken) this.flash(`Could not load this room: ${error.message}`);
-      return;
+      return false;
     }
-    if (token !== S.loadToken) return;  // a later click won
+    if (token !== S.loadToken) return false;  // a later click won
     Object.assign(S, { worldId: id, world, walk: null, selected: null, staged: null, mode: 'pick', hover: null, clicked: null });
     const v = this.viewer;
     v.setMarker('goalMarker', null); v.setMarker('hoverMarker', null); v.setLine(this.lines.route, null);
@@ -208,13 +218,14 @@ class Demo {
     else if (this.el.full) this.el.full.href = `${this.fullHref}#${id}`;
     this.render();
     if (!keepHash) this.splash(world.title, `${S.recorded.length} recorded walks · click the floor`);
+    return true;
   }
   paintOutcomes() { this.viewer.setOutcomes(this.S.layers.outcomes ? this.S.recorded : [], c => grade(c.walk).color); }
 
   resetRobot() {
     const S = this.S, w = S.world, v = this.viewer;
     v.dimOutcomes(false);
-    Object.assign(S, { walk: null, t: 0, playing: false, mapStep: -1, trailIndex: -1, planShown: null, lidarShown: null, phase: null, events: 0 });
+    Object.assign(S, { walk: null, t: 0, playing: false, mapStep: -1, trailIndex: -1, trailWalk: null, planShown: null, lidarShown: null, phase: null, events: 0 });
     v.setMapBase(w.map);
     v.setLidar(S.layers.lidar ? w.start_lidar : null);
     v.setPose(w.startPose);
@@ -247,8 +258,7 @@ class Demo {
   // Clicking the floor always picks a new goal (a walk in progress is put away).
   pick(xy) {
     const S = this.S;
-    if (!S.world || S.mode === 'loading') return;
-    this.togglePicker(false);
+    if (!S.world || S.mode === 'loading' || this.swallow) return;
     const cell = this.target(xy);
     if (!cell) { this.flash('Outside the recorded room. Pick a spot on the floor.'); return; }
     S.clicked = xy;
@@ -301,6 +311,7 @@ class Demo {
       this.viewer.focus([S.world.start_xy, c.xy]);
       this.seek(at);
       if (autoplay) this.play();
+      if (this.root.contains(document.activeElement) && document.activeElement.disabled !== false) this.el.play.focus({ preventScroll: true });
       if (!at) this.splash('Pre-scan, then walk', 'node.py stands for 0.5 s while the LiDAR fills its map');
     } catch (error) {
       S.mode = 'staged'; this.flash(`Could not load the walk: ${error.message}`); this.render();
@@ -309,12 +320,14 @@ class Demo {
   // From the picker or a link: open the room, stage the walk's goal and play it.
   async watch(room, id) {
     this.togglePicker(false);
-    if (room !== this.S.worldId) await this.loadWorld(room);
+    if (room !== this.S.worldId && !(await this.loadWorld(room))) return;
+    if (this.S.worldId !== room) return;  // another room won meanwhile; goal ids repeat across rooms
     const cell = this.S.world.cells.find(c => c.id === id);
     if (!cell) return;
     this.S.clicked = null;
     this.selectCell(cell, { stage: true });
     await this.go();
+    this.el.play.focus({ preventScroll: true });
   }
   reset() {
     const S = this.S;
@@ -337,7 +350,10 @@ class Demo {
   }
   pause() { if (this.S.playing) { this.S.playing = false; this.renderDock(); } }
   togglePlay() { if (this.S.playing) this.pause(); else this.play(); }
-  cycleSpeed() { const i = SPEEDS.indexOf(this.S.speed); this.S.speed = SPEEDS[(i + 1) % SPEEDS.length]; this.el.speed.textContent = `${this.S.speed}×`; }
+  cycleSpeed() {
+    const i = SPEEDS.indexOf(this.S.speed); this.S.speed = SPEEDS[(i + 1) % SPEEDS.length];
+    this.el.speed.textContent = `${this.S.speed}×`; this.el.speed.setAttribute('aria-label', `Playback speed: ${this.S.speed} times`);
+  }
   frame(now) {
     const S = this.S;
     if (!S.playing || !S.walk) return false;
@@ -351,7 +367,7 @@ class Demo {
   }
   seek(t) {
     const S = this.S;
-    S.t = Math.max(0, Math.min(S.walk.duration, t));
+    S.t = Math.max(0, Math.min(S.walk.duration, Number.isFinite(t) ? t : 0));
     S.mode = S.t >= S.walk.duration ? 'done' : 'playing';
     // Seeking does not replay the headlines of what happened before.
     S.phase = S.walk.phase(S.t); S.events = S.walk.events.filter(e => e.t <= S.t).length;
@@ -370,7 +386,8 @@ class Demo {
     const k = w.index(S.t);
     if (k !== S.trailIndex) {
       S.trailIndex = k;
-      v.setLine(this.lines.trail, L.robot ? w.trail.slice(0, k + 1).concat([[this.pose[0], this.pose[1], 0.02]]) : null);
+      if (S.trailWalk !== w || !L.robot !== !this.lines.trail.visible) { S.trailWalk = w; v.setLine(this.lines.trail, L.robot ? w.trail : null); }
+      v.setLineCount(this.lines.trail, k + 1);
       v.setMarker('estMarker', L.robot ? [w.est[k * 2] / 1000, w.est[k * 2 + 1] / 1000] : null, { color: COLORS.blue, radius: 0.1, pin: false });
     }
     const phase = w.phase(S.t);
@@ -483,7 +500,12 @@ class Demo {
       return `<li><button data-room="${x.room}" data-walk="${x.id}"><i style="background:${g.css}"></i><span class="w-main">${S.folder === 'wrong' ? `${escape(titles[x.room])} · ` : ''}${fmt(x.dist, 1)} m away</span><span class="w-grade">${escape(g.label)}</span><span class="w-detail mono">${detail}</span></button></li>`;
     }).join('') : '<li class="empty">No walks here.</li>';
   }
-  toggleHelp(open = this.el.help.hidden) { this.el.help.hidden = !open; if (open) this.togglePicker(false); }
+  toggleHelp(open = this.el.help.hidden) {
+    const was = !this.el.help.hidden;
+    this.el.help.hidden = !open;
+    if (open) { this.togglePicker(false); this.el.helpClose.focus({ preventScroll: true }); }
+    else if (was) this.el.helpBtn.focus({ preventScroll: true });
+  }
 
   // ----- chrome
   live(text) { if (this.el.live.textContent !== text) this.el.live.textContent = text; }
@@ -544,14 +566,23 @@ class Demo {
     // A deferred stand is not settling: the node keeps the last plan's final frame until its memory clears or Studio forces it.
     const deferred = phase === 'ARRIVED' && w.events.find(e => e.type === 'stand_deferred' && e.t <= S.t);
     const stood = deferred && w.events.some(e => (e.type === 'stand' || e.type === 'stand_forced') && e.t > deferred.t && e.t <= S.t);
-    const rows = [
-      ['To goal', dist === null ? '—' : `${fmt(dist, 2)} m`, '', "By the robot's own estimate (LIO-level drift), as node.py measures it"],
-      ['Tilt', tilt === null ? '—' : `${fmt(tilt / 1000 * 57.2958, 1)}°`, '', 'Simulator truth; the E-stop is at 0.75 rad (43°)'],
-      ['Contact', contact === null ? '—' : contact > 0 ? `${contact} N` : 'none', contact > 100 ? 'hot' : '', 'Obstacle contact force, simulator truth'],
-      ref ? ['Plan body', `${fmt(Math.hypot(ref[0] - w.est[k * 2] / 1000, ref[1] - w.est[k * 2 + 1] / 1000), 2)} m away`, '', "How far the plan body's pelvis is from where the robot thinks its pelvis is"] : null,
-      ['Planner', plan && phase === 'RUN' ? `#${w.planNumber(S.t)} · ${RULES[plan.rule]?.label ?? plan.rule.replaceAll('_', ' ')}` : deferred && !stood ? 'stand deferred' : '—', 'wide', plan ? RULES[plan.rule]?.why ?? '' : ''],
-    ].filter(Boolean);
-    E.hud.innerHTML = rows.map(([a, b, cls, title]) => `<div class="${cls}" title="${escape(title)}"><span>${a}</span><b>${escape(b)}</b></div>`).join('');
+    const run = phase === 'RUN';
+    const values = {
+      goal: dist === null ? '—' : `${fmt(dist, 2)} m`,
+      tilt: tilt === null ? '—' : `${fmt(tilt / 1000 * 57.2958, 1)}°`,
+      contact: contact === null ? '—' : contact > 0 ? `${contact} N` : 'none',
+      // The plan body's root is the planner's only while it walks; standing, the node sets it to the robot's pose.
+      body: !ref ? (S.layers.body ? '—' : 'hidden') : run && !w.est_missing?.includes(k) ? `${fmt(Math.hypot(ref[0] - w.est[k * 2] / 1000, ref[1] - w.est[k * 2 + 1] / 1000), 2)} m` : 'not walking',
+      planner: plan && run ? `#${w.planNumber(S.t)} · ${RULES[plan.rule]?.label ?? plan.rule.replaceAll('_', ' ')}` : deferred && !stood ? 'stand deferred' : '—',
+    };
+    // The rows are built once; only their values change (their titles and kinds stay readable).
+    if (!E.hud.firstChild) {
+      E.hud.innerHTML = HUD.map(([key, label, kind, title, cls]) => `<div class="${cls}" title="${escape(title)}"><span>${escape(label)} <i>${escape(kind)}</i></span><b data-hud="${key}"></b></div>`).join('');
+      this.hudCells = Object.fromEntries([...E.hud.querySelectorAll('[data-hud]')].map(n => [n.dataset.hud, n]));
+    }
+    for (const [key, text] of Object.entries(values)) if (this.hudCells[key].textContent !== text) this.hudCells[key].textContent = text;
+    this.hudCells.contact.parentNode.classList.toggle('hot', contact > 100);
+    this.hudCells.planner.parentNode.title = plan && run ? RULES[plan.rule]?.why ?? '' : HUD[4][3];
   }
   renderChip() {
     const S = this.S, c = S.selected, E = this.el;
@@ -662,10 +693,10 @@ function template({ embedded, home }) {
   </div>
   <div class="hud" data-el="hud" hidden></div>
   <div class="hint" data-el="hint"><b>Click the floor.</b> It has to find its own way.</div>
-  <div class="goal-chip" data-el="chip" hidden aria-label="Goal checks"></div>
+  <div class="goal-chip" data-el="chip" hidden role="group" aria-label="Goal checks"></div>
   <div class="splash" data-el="splash" aria-hidden="true"><b></b><span></span></div>
   <p class="sr-only" data-el="live" aria-live="polite"></p>
-  <div class="result" data-el="result" hidden aria-labelledby="demo-result-title"></div>
+  <div class="result" data-el="result" hidden role="region" aria-labelledby="demo-result-title"></div>
   <div class="flash" data-el="flash" role="status" hidden></div>
   <div class="dock" data-el="dock" role="toolbar" aria-label="Walk and rooms">
     <button class="dk" data-el="reset" title="New goal (R)" aria-label="New goal (R)">↺</button>
@@ -673,7 +704,7 @@ function template({ embedded, home }) {
     <button class="dk go" data-el="go" title="Go (G): the operator's key">Go</button>
     <div class="scrub"><div class="bands" data-el="bands"></div><input type="range" data-el="scrub" min="0" max="1000" value="0" aria-label="Walk time"></div>
     <span class="time mono" data-el="time">0.0 s</span>
-    <button class="dk small" data-el="speed" title="Playback speed (simulated time)" aria-label="Playback speed">1×</button>
+    <button class="dk small" data-el="speed" title="Playback speed (simulated time)" aria-label="Playback speed: 1 times">1×</button>
     <button class="dk room" data-el="rooms" aria-haspopup="dialog" aria-expanded="false" title="Rooms and walks (N)"><span data-el="roomName">Room</span><small data-el="roomCount"></small><span aria-hidden="true">▾</span></button>
     <div class="seg" role="group" aria-label="Camera"><button data-camera="orbit" aria-pressed="true">Orbit</button><button data-camera="top" aria-pressed="false">Top</button><button data-camera="follow" aria-pressed="false">Follow</button></div>
   </div>

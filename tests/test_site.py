@@ -162,6 +162,9 @@ class WalkExportTests(unittest.TestCase):
         self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': None, 'final_dist_m': 0.7, 'final_dist_estimate_m': 0.3}), 'off')
         self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': 0, 'final_dist_m': 4.2, 'final_dist_estimate_m': 4.1}), 'away')
         self.assertEqual(g({'outcome': 'fell', 'max_contact_n': 300}), 'fell')
+        # Nothing flagged but a value missing: not clean.
+        self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': None, 'final_dist_m': 0.2, 'final_dist_estimate_m': 0.2}), 'ungraded')
+        self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': 10, 'final_dist_m': None, 'final_dist_estimate_m': 0.2}), 'ungraded')
 
     def test_the_walk_list_has_one_row_per_walk(self):
         index = {'start_xy': [0.0, 0.0], 'cells': [{'id': 'g00-00', 'xy': [3.0, 4.0]}],
@@ -194,6 +197,37 @@ class WalkExportTests(unittest.TestCase):
         other = (self.base[0] + 1, self.base[1])
         with self.assertRaisesRegex(ValueError, 'differs from the probe map'):
             export.walk_data('w', 'g00-00', self.run_dir, *other)
+
+
+class LocalMaterialTests(unittest.TestCase):
+    """Material for the next-step page that is not published goes only into local builds (docs/SITE.md)."""
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def run_script(self, *args, env=None):
+        import os, subprocess
+        return subprocess.run([str(self.ROOT / 'tools' / 'site' / args[0]), *args[1:]], capture_output=True, text=True,
+                              env={**os.environ, **(env or {})}, timeout=120)
+
+    def test_ci_builds_refuse_local_material(self):
+        if not (self.ROOT / 'node_modules' / 'three' / 'build' / 'three.module.min.js').is_file():
+            self.skipTest('three.js is not installed (npm ci)')
+        with tempfile.TemporaryDirectory() as tmp:
+            data, out, local = Path(tmp, 'data'), Path(tmp, 'out'), Path(tmp, 'next-local.json')
+            data.mkdir(); (data / 'worlds.json').write_text('{"worlds": []}'); local.write_text('{"sections": []}')
+            r = self.run_script('build.sh', str(out), str(data), env={'CI': 'true', 'NEXT_LOCAL': str(local)})
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('local builds only', r.stderr)
+            r = self.run_script('build.sh', str(out), str(data), env={'CI': '', 'NEXT_LOCAL': ''})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads((out / 'data' / 'next-local.json').read_text()), {})
+
+    def test_a_release_never_packs_local_material(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data, media = Path(tmp, 'data'), Path(tmp, 'media')
+            data.mkdir(); media.mkdir(); (data / 'next-local.json').write_text('{}')
+            r = self.run_script('package.sh', str(data), str(media), str(Path(tmp, 'out')), 'site-test')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('local-only', r.stderr)
 
 
 if __name__ == '__main__':

@@ -8,7 +8,9 @@ mkdir -p "$OUT"
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 # Deterministic archives: sorted names, fixed owner and time; the local mesh list (absolute paths) stays out.
 # The data carries the simplified Unitree meshes, so it carries their BSD-3-Clause notice and Studio's NOTICE too.
-tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00Z' --exclude='robot-meshes.txt' --exclude='*.tmp' \
+# next-local.json is local-only material for the next-step page (docs/SITE.md): it never goes into a release.
+[ ! -e "$DATA/next-local.json" ] || { echo "$DATA/next-local.json is local-only: move it out of the data folder" >&2; exit 1; }
+tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00Z' --exclude='robot-meshes.txt' --exclude='*.tmp' --exclude='next-local.json' \
   -C "$DATA" -cf - . -C "$ROOT" NOTICE -C "$ROOT/site" licenses/unitree_mujoco-LICENSE.txt | gzip -9n > "$OUT/site-data.tar.gz"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00Z' -C "$MEDIA" -cf - . | gzip -1n > "$OUT/site-media.tar.gz"
 python3 - "$OUT" "$TAG" <<'PY'

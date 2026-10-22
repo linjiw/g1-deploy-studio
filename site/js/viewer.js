@@ -166,6 +166,14 @@ export class Viewer {
     this.dirty();
   }
 
+  // Draw only the first n points of a line set once (a trail growing during playback, without a new geometry).
+  setLineCount(line, n) {
+    const segments = Math.max(0, n - 1);
+    if (!line.visible || line.geometry.instanceCount === segments) return;
+    line.geometry.instanceCount = segments;
+    this.dirty();
+  }
+
   // ----- the real room (simulation geometry: shown only as the sim truth it is)
   setWorld(world) {
     clear(this.groups.world);

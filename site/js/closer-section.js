@@ -6,8 +6,10 @@ import { boot } from './stage.js';
 
 export function initCloserSection({ chips, stage, caption, keep = () => true }) {
   let list = null, current = null, view = null, starting = null;
-  const show = sc => {
+  const show = (sc, chosen = false) => {
     current = sc;
+    // Announced when a visitor picks a scenario, not when the page builds the section.
+    if (chosen) caption.setAttribute('aria-live', 'polite');
     for (const b of chips.querySelectorAll('[data-sc]')) b.setAttribute('aria-pressed', String(b.dataset.sc === sc.id));
     caption.innerHTML = `<b>${escape(sc.title)}.</b> ${escape(sc.caption)}`;
   };
@@ -33,7 +35,7 @@ export function initCloserSection({ chips, stage, caption, keep = () => true }) 
     const b = e.target.closest('[data-sc]');
     if (!b || !list) return;
     const sc = list.find(x => x.id === b.dataset.sc);
-    show(sc);
+    show(sc, true);
     if (!starting) { start(); return; }
     await starting;
     view?.load(sc);

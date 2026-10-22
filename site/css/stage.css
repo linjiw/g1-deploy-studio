@@ -52,6 +52,7 @@
 .hud div { min-width: 0; }
 .hud .wide { grid-column: 1 / -1; }
 .hud span { display: block; color: var(--s-ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; }
+.hud span i { font-style: normal; text-transform: none; letter-spacing: 0; opacity: .75; }
 .hud b { font: 600 13px var(--mono); overflow-wrap: anywhere; }
 .hud .hot b { color: #ffb4ab; }
 
@@ -110,6 +111,8 @@
 .result .facts, .split-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .result .facts div, .split-facts div { background: rgba(255, 255, 255, .05); border-radius: 8px; padding: 5px 8px; min-width: 0; }
 .result .facts span, .split-facts span { display: block; color: var(--s-ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; }
+.split-facts span i { font-style: normal; text-transform: none; letter-spacing: 0; opacity: .75; }
+.split-facts .hot b { color: #ffb4ab; }
 .result .facts b, .split-facts b { font: 600 12.5px var(--mono); }
 .r-more { margin-top: 10px; font-size: 12.5px; color: var(--s-ink-2); }
 .r-more summary { cursor: pointer; color: var(--s-ink); }

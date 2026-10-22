@@ -23,7 +23,7 @@ cp "$THREE/examples/jsm/controls/OrbitControls.js" "$OUT/vendor/three/addons/con
 cp "$THREE/examples/jsm/lines/"{Line2,LineGeometry,LineMaterial,LineSegments2,LineSegmentsGeometry}.js "$OUT/vendor/three/addons/lines/"
 cp "$THREE/examples/jsm/utils/BufferGeometryUtils.js" "$OUT/vendor/three/addons/utils/"
 # Data: everything the exporter wrote except the local mesh list (absolute source paths).
-(cd "$DATA" && tar --exclude='robot-meshes.txt' --exclude='*.tmp' -cf - .) | tar -xf - -C "$OUT/data"
+(cd "$DATA" && tar --exclude='robot-meshes.txt' --exclude='*.tmp' --exclude='next-local.json' -cf - .) | tar -xf - -C "$OUT/data"
 if [ -n "$MEDIA" ] && [ -d "$MEDIA" ]; then cp -r "$MEDIA/." "$OUT/media/"; fi
 if [ -n "${NEXT_LOCAL:-}" ]; then
   [ -z "${CI:-}" ] || { echo "NEXT_LOCAL is for local builds only" >&2; exit 1; }
