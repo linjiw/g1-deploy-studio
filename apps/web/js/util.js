@@ -67,8 +67,9 @@ export function outcomeChip(outcome, status) {
   const o = OUTCOMES[outcome] ?? { label: outcome.replaceAll('_', ' '), tone: 'muted' };
   return `<span class="outcome outcome-${o.tone}">${escape(o.label)}</span>`;
 }
+// Outcome colours on white (js/palette.js): green, amber, red, the accent for a live run, grey when unknown.
 export const outcomeColor = outcome =>
-  ({ good: '#5fd39b', warn: '#efbb70', bad: '#f08c85', live: '#56d9d0' })[(OUTCOMES[outcome] ?? {}).tone] ?? '#8e9aa9';
+  ({ good: '#1f9d5a', warn: '#e0a030', bad: '#dc5348', live: '#2456e6' })[(OUTCOMES[outcome] ?? {}).tone] ?? '#8f99a4';
 
 let token = '', refreshToken = null;
 export const setToken = value => { token = value ?? ''; };

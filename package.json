@@ -7,7 +7,7 @@
     "test:browser": "node tools/browser/ui_acceptance.mjs",
     "test:browser:forwarded": "node tools/browser/forwarded.mjs",
     "test:rehearsal": "node tools/browser/rehearsal_flow.mjs",
-    "test:flow-stage": "node tools/browser/flow_stage.mjs",
+    "test:stage": "node tools/browser/stage.mjs",
     "site:check": "node tools/site/check.mjs"
   },
   "dependencies": {

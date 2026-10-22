@@ -1,5 +1,6 @@
 // Local scenario preparation, owned CPU jobs and read-only sensor views.
 // All coordinates and sensor values originate in server-normalized data.
+import { UI, SERIES } from './js/palette.js';
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? 'Unavailable').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const finite = value => typeof value === 'number' && Number.isFinite(value);
@@ -201,15 +202,15 @@ function sensorCard(sensor,pinned=false) {
 }
 function drawSensorPreview(canvas,sensor) {
   const width=Math.max(1,canvas.clientWidth),height=Math.max(1,canvas.clientHeight),ratio=Math.min(2,devicePixelRatio||1);canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
-  const points=sensor?.payload?.points??[];const context=canvas.getContext('2d');context.setTransform(ratio,0,0,ratio,0,0);context.fillStyle='#101a23';context.fillRect(0,0,width,height);
+  const points=sensor?.payload?.points??[];const context=canvas.getContext('2d');context.setTransform(ratio,0,0,ratio,0,0);context.fillStyle=UI.canvas;context.fillRect(0,0,width,height);
   const selected=points.filter((_,index)=>index%Math.max(1,Math.ceil(points.length/2500))===0);if(!selected.length)return;
   const pose=api()?.state.measuredFrame,robot=sensor.overlay_compatible&&Array.isArray(pose?.position)?pose.position:null;
   const xy=robot?[...selected,robot]:selected,xs=xy.map(point=>point[0]),ys=xy.map(point=>point[1]);
   const lo=[Math.min(...xs),Math.min(...ys)],hi=[Math.max(...xs),Math.max(...ys)],extent=[Math.max(.1,hi[0]-lo[0]),Math.max(.1,hi[1]-lo[1])];const scale=Math.min((width-24)/extent[0],(height-28)/extent[1]);
   const toPixel=point=>[12+(point[0]-lo[0])*scale,height-12-(point[1]-lo[1])*scale];
-  context.fillStyle='#83cdbb';for(const point of selected){const[x,y]=toPixel(point);context.fillRect(x,y,1.7,1.7);}
-  if(robot){const[x,y]=toPixel(robot),q=pose.quaternion_wxyz??[1,0,0,0],yaw=Math.atan2(2*(q[0]*q[3]+q[1]*q[2]),1-2*(q[2]*q[2]+q[3]*q[3]));context.save();context.translate(x,y);context.rotate(-yaw);context.fillStyle='#efbb70';context.strokeStyle='#101a23';context.lineWidth=1.5;context.beginPath();context.moveTo(7,0);context.lineTo(-5,-4);context.lineTo(-3,0);context.lineTo(-5,4);context.closePath();context.fill();context.stroke();context.restore();}
-  context.font='9px monospace';context.fillStyle='#a8bbc8';context.fillText(`${number(lo[0],1)}…${number(hi[0],1)} m X → · Y ↑`,8,11);
+  context.fillStyle=UI.dim;for(const point of selected){const[x,y]=toPixel(point);context.fillRect(x,y,1.7,1.7);}
+  if(robot){const[x,y]=toPixel(robot),q=pose.quaternion_wxyz??[1,0,0,0],yaw=Math.atan2(2*(q[0]*q[3]+q[1]*q[2]),1-2*(q[2]*q[2]+q[3]*q[3]));context.save();context.translate(x,y);context.rotate(-yaw);context.fillStyle=SERIES.robot;context.strokeStyle=UI.canvas;context.lineWidth=1.5;context.beginPath();context.moveTo(7,0);context.lineTo(-5,-4);context.lineTo(-3,0);context.lineTo(-5,4);context.closePath();context.fill();context.stroke();context.restore();}
+  context.font='9px monospace';context.fillStyle=UI.dim;context.fillText(`${number(lo[0],1)}…${number(hi[0],1)} m X → · Y ↑`,8,11);
 }
 
 function renderSensors() {

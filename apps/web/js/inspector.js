@@ -48,7 +48,7 @@ function renderIntent(state) {
       : notice('No planner selection recorded at this cursor.', 'neutral'), { evidence: 'commanded' });
   const ref = card(wire ? 'Observed pose reference' : 'SONIC reference window', r ? `${fact('Shape', `${r.shape?.join(' × ') ?? '—'} floats`)}${fact('Horizon', `${windowRows.length} rows · ${num(windowRows.at(-1)?.offset_s, 1, 's')}`)}
       <div class="window-bars">${windowRows.slice(0, 15).map(w => `<span title="offset ${num(w.offset_s, 3, 's')}">${num(w.offset_s, 1)}</span>`).join('')}</div>
-      ${tiny(wire ? 'Decoded wire reference. World-root pose was not in the packet; no ghost is rendered.' : 'Cyan ghost: reference now. Amber ghosts: +0.4 s and +0.9 s. Root path is a planner diagnostic (columns 64–66), not SONIC input.')}
+      ${tiny(wire ? 'Decoded wire reference. World-root pose was not in the packet; no ghost is rendered.' : 'Pink ghost: reference now. Amber ghosts: +0.4 s and +0.9 s. Root path is a planner diagnostic (columns 64–66), not SONIC input.')}
       <details class="raw-details"><summary>Inspect actual reference values</summary><pre>${escape(JSON.stringify(wire ? r.raw_fields : { offset_s: windowRows[0]?.offset_s, joint_names: state.session.joint_names, values: r.raw?.[0] }, null, 1))}</pre></details>`
       : notice('No reference payload at this cursor. Reference joints and tracking error stay unavailable.', 'warning'), { evidence: wire ? 'measured' : 'commanded' });
   const exec = card('Observed execution', `${state.frozenFrame ? notice(`Diagnostic: state held at ${clock(m.time)} while the cursor advances.`, 'warning') : ''}${fact(m?.frame_id === 'odom' ? 'Root · odom' : 'Root · world', hasRoot(m) ? `[${vector(m.position, 2)}] m` : 'Unavailable')}

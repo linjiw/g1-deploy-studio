@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light">
   <title>G1 Deploy Studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315232b'/%3E%3Ctext x='4' y='23' fill='%2356d9d0' font-size='20' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2310161c'/%3E%3Ctext x='16' y='21.5' fill='%23ffffff' font-size='14' font-weight='800' text-anchor='middle' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/focus.css">
   <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.min.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
@@ -18,7 +18,7 @@
     <span id="run-outcome" class="run-outcome"></span>
     <span id="policy-chip" class="policy-chip" hidden></span>
     <div class="topbar-right">
-      <button id="focus-enter" class="ghost" title="Open the immersive simulation and replay view">Flow stage ↗</button>
+      <button id="focus-enter" class="stage-enter" title="A full-screen view of this run: the robot, its reference and the room, with the same data and controls"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>Stage</button>
       <button id="evidence-button" class="ghost" aria-expanded="false" aria-controls="evidence-legend">Evidence key</button>
       <button id="help-button" class="ghost" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-expanded="false" aria-controls="help-overlay">?</button>
       <span id="hardware-chip" class="hardware-off" title="Studio has no DDS participant and no motor-command path. On a real robot it may only stage a goal and ask for a stand on node.py; Go stays with the operator.">◈ No motor commands</span>
@@ -79,14 +79,14 @@
           </div>
           <div id="layers-popover" class="popover layers-popover" hidden>
             <label><input id="layer-robot" type="checkbox" checked><span class="sw bone"></span>Robot<span class="chip chip-sim-truth">SIM-TRUTH</span></label>
-            <label><input id="layer-reference" type="checkbox" checked><span class="sw cyan"></span>Reference ghost<span class="chip chip-commanded">COMMANDED</span></label>
+            <label><input id="layer-reference" type="checkbox" checked><span class="sw ref"></span>Reference ghost<span class="chip chip-commanded">COMMANDED</span></label>
             <label><input id="layer-future" type="checkbox" checked><span class="sw amber"></span>Planned future<span class="chip chip-commanded">COMMANDED</span></label>
             <label><input id="layer-trajectory" type="checkbox" checked><span class="sw slate"></span>Path (full · travelled)</label>
             <label><input id="layer-environment" type="checkbox" checked><span class="sw purple"></span>Collision scene<span class="chip chip-configured">CONFIGURED</span></label>
             <label><input id="layer-navigation" type="checkbox" checked><span class="sw amber"></span>Start / goal</label>
             <label><input id="layer-perception" type="checkbox"><span class="sw green"></span>Observed map<span class="chip chip-estimated">ESTIMATED</span></label>
             <label><input id="layer-sensors" type="checkbox" checked><span class="sw green"></span>Pinned point clouds</label>
-            <label><input id="layer-frames" type="checkbox" checked><span class="sw axis"></span>Coordinate frames</label>
+            <label><input id="layer-frames" type="checkbox"><span class="sw axis"></span>Coordinate frames</label>
           </div>
           <div id="render-rate" class="render-rate" hidden title="The browser renders fewer frames than the data rate (for example software WebGL). Simulated time still advances in real time; only intermediate frames are skipped.">RENDER-LIMITED</div>
           <div id="robot-view-label" class="robot-view-label" hidden>ROBOT VIEW · MID-360 mount pose, facing pelvis heading · renders the simulated scene, not a camera sensor</div>

@@ -1,6 +1,7 @@
 // Causal sensor browser and pinned sensor cards. Missing channels stay visible.
 import { $, escape, num, vector, fact, finite, request, chip, updateView, yawOf } from './util.js';
 import { setSensorOverlay, removeSensorOverlay } from './scene.js';
+import { UI, SERIES } from './palette.js';
 
 export const sn = { data: null, pinned: new Set(), inflight: false, pending: false, time: null, session: null, lastFetch: 0, visible: false };
 
@@ -38,7 +39,7 @@ function preview(canvas, sensor, state) {
   const W = Math.max(1, canvas.clientWidth), H = Math.max(1, canvas.clientHeight), ratio = Math.min(2, devicePixelRatio || 1);
   canvas.width = Math.round(W * ratio); canvas.height = Math.round(H * ratio);
   const ctx = canvas.getContext('2d'); ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  ctx.fillStyle = '#0d151d'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = UI.canvas; ctx.fillRect(0, 0, W, H);
   const pts = (sensor?.payload?.points ?? []).filter((_, i, a) => i % Math.max(1, Math.ceil(a.length / 2500)) === 0);
   if (!pts.length) return;
   const pose = state?.measuredFrame, robot = sensor.overlay_compatible && Array.isArray(pose?.position) ? pose.position : null;
@@ -48,13 +49,13 @@ function preview(canvas, sensor, state) {
   const scale = Math.min((W - 20) / Math.max(0.1, hi[0] - lo[0]), (H - 20) / Math.max(0.1, hi[1] - lo[1]));
   const px = p => [10 + (p[0] - lo[0]) * scale, H - 10 - (p[1] - lo[1]) * scale];
   // Color by height so overhead returns read differently from ground returns.
-  for (const p of pts) { const [x, y] = px(p); const zc = Math.max(0, Math.min(1, ((p[2] ?? 0) + 0.2) / 1.8)); ctx.fillStyle = `hsl(${165 - zc * 120},60%,${55 + zc * 10}%)`; ctx.fillRect(x, y, 1.6, 1.6); }
+  for (const p of pts) { const [x, y] = px(p); const zc = Math.max(0, Math.min(1, ((p[2] ?? 0) + 0.2) / 1.8)); ctx.fillStyle = `hsl(${165 - zc * 120},65%,${36 + zc * 6}%)`; ctx.fillRect(x, y, 1.6, 1.6); }
   if (robot) {
     const [x, y] = px(robot), yaw = yawOf(pose.quaternion_wxyz) ?? 0;
-    ctx.save(); ctx.translate(x, y); ctx.rotate(-yaw); ctx.fillStyle = '#efbb70'; ctx.beginPath();
+    ctx.save(); ctx.translate(x, y); ctx.rotate(-yaw); ctx.fillStyle = SERIES.robot; ctx.beginPath();
     ctx.moveTo(8, 0); ctx.lineTo(-5, -5); ctx.lineTo(-3, 0); ctx.lineTo(-5, 5); ctx.closePath(); ctx.fill(); ctx.restore();
   }
-  ctx.fillStyle = '#a8bbc8'; ctx.font = '10px Inter, system-ui'; ctx.fillText(`${num(hi[0] - lo[0], 1)} × ${num(hi[1] - lo[1], 1)} m · color = height`, 6, 12);
+  ctx.fillStyle = UI.dim; ctx.font = '10px Inter, system-ui'; ctx.fillText(`${num(hi[0] - lo[0], 1)} × ${num(hi[1] - lo[1], 1)} m · color = height`, 6, 12);
 }
 
 export function renderSensors(state) {

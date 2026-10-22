@@ -242,7 +242,7 @@ function updateHud(sample) {
     : goal ? `Goal [${vector(goal, 2)}] m · ${crit.label ?? ''}` : '';
   const truth = meta.recording_kind !== 'robot-link' && (meta.mode === 'simulation' || ['sonic-mujoco-lockstep', 'navigation-session'].includes(meta.recording_kind));
   $('pose-caption').textContent = `${state.frozenFrame ? 'DIAGNOSTIC HELD STATE' : m.classification === 'estimated' ? 'LIO ESTIMATE · odom frame' : truth ? 'SIM-TRUTH' : 'RECORDED'} · xyz [${vector(m.position, 2)}] m · yaw ${num(yawOf(q), 2, 'rad')}${state.frozenFrame ? ` · ${num(age, 0, 'ms')} old` : ''}`;
-  $('reference-caption').textContent = scene.view.layers.perception && sample ? (finite(sample.time) && state.session.perception?.frames ? `MAP · causal sample ${clock(sample.time)} · unknown cells stay empty` : 'MAP · final accumulated snapshot · capture time unavailable') : f.reference ? 'Cyan: SONIC reference now · amber: +0.4 s / +0.9 s · line: planner prediction' : 'No reference packets in this recording';
+  $('reference-caption').textContent = scene.view.layers.perception && sample ? (finite(sample.time) && state.session.perception?.frames ? `MAP · causal sample ${clock(sample.time)} · unknown cells stay empty` : 'MAP · final accumulated snapshot · capture time unavailable') : f.reference ? 'Pink: SONIC reference now · amber: +0.4 s / +0.9 s · line: planner prediction' : 'No reference packets in this recording';
   const badge = $('source-badge'), estimated = m.classification === 'estimated';
   badge.className = `chip ${state.frozenFrame ? 'chip-unavailable' : estimated ? 'chip-estimated' : truth ? 'chip-sim-truth' : 'chip-recorded'}`;
   badge.textContent = state.frozenFrame ? 'STATE HELD' : estimated ? 'LIO ESTIMATE' : truth ? 'SIM-TRUTH' : 'RECORDED';

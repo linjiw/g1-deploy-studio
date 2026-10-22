@@ -1,9 +1,11 @@
-// Immersive presentation of the existing Studio scene and rehearsal lifecycle.
-// No worker, model or navigation logic lives here; controls use the Studio actions.
+// Stage: a full-screen presentation of the existing Studio scene and rehearsal lifecycle, laid out like the site's
+// demo (title and layers top left, facts top right, one dock). No worker, model or navigation logic lives here;
+// controls use the Studio actions. First built by Codex as the "Flow stage" (docs/STAGE.md).
 import { $, on, emit, updateView, clock, finite } from './util.js';
 
 const ACTIVE = ['queued', 'starting', 'running', 'cancelling', 'detached'];
-const LAYERS = [['robot', 'Robot'], ['reference', 'Reference'], ['future', 'Future'], ['trajectory', 'Path'], ['environment', 'Room']];
+const LAYERS = [['robot', 'Robot'], ['reference', 'Reference'], ['future', 'Planned'], ['trajectory', 'Path'], ['environment', 'Room']];
+const LAYER_DOT = { robot: 'var(--c-bone)', reference: 'var(--c-ref)', future: 'var(--c-future)', trajectory: 'var(--c-travelled)', environment: 'var(--c-box)' };
 const CAMERAS = ['orbit', 'follow', 'top', 'scene'];
 const CAMERA_LABEL = { orbit: 'Orbit', follow: 'Follow', top: 'Top', scene: 'Fit' };
 
@@ -46,7 +48,7 @@ const icons = {
   pause: icon('<path d="M9 5v14M15 5v14"/>'),
   camera: icon('<rect x="3" y="6" width="18" height="14" rx="3"/><path d="m8 6 1-3h6l1 3"/><circle cx="12" cy="13" r="3"/>'),
   details: icon('<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>'),
-  exit: icon('<path d="M9 5H4v15h15v-5M13 4h7v7M20 4l-9 9"/>'),
+  exit: icon('<path d="M15 6l-6 6 6 6"/>'),
 };
 
 export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, cameraView, previewMarkers, sampleHealth }) {
@@ -54,33 +56,35 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
   const root = document.createElement('div');
   root.id = 'focus-root'; root.hidden = true;
   root.innerHTML = `
-    <div class="focus-heading"><div class="focus-wordmark"><span class="focus-mark">f</span><h1>Flow <span>stage</span></h1><span class="focus-local">LOCAL</span></div>
-      <p id="focus-mode" class="focus-mode" role="status"></p>
-      <p id="focus-outcome" class="focus-outcome" hidden></p>
-      <h2 id="focus-scene-name"></h2>
-      <div class="focus-source"><span>Showing</span><strong id="focus-displayed-policy"></strong></div>
-      <p id="focus-provenance"></p>
-      <div class="focus-source focus-next"><span>Next run</span><strong id="focus-selected-policy"></strong></div>
+    <div class="focus-top-left">
+      <div class="focus-title focus-glass"><span class="focus-mark">G1</span><span><strong>Deploy Studio · Stage</strong><small class="focus-boundary">Local view <span>·</span> No motor commands</small></span></div>
+      <div class="focus-layers focus-glass" role="group" aria-label="Scene layers">${LAYERS.map(([key, label]) => `<button id="focus-layer-${key}" data-focus-layer="${key}" aria-pressed="true" style="--dot: ${LAYER_DOT[key]}"><i></i>${label}</button>`).join('')}</div>
+      <div class="focus-heading focus-glass" tabindex="-1" aria-label="What the stage shows">
+        <p id="focus-mode" class="focus-mode" role="status"></p>
+        <h2 id="focus-scene-name"></h2>
+        <p id="focus-outcome" class="focus-outcome" hidden></p>
+        <dl class="focus-source"><dt>Showing</dt><dd id="focus-displayed-policy"></dd><dt>Map</dt><dd id="focus-provenance"></dd><dt>Next run</dt><dd id="focus-selected-policy" class="focus-next"></dd></dl>
+      </div>
+      <div id="focus-notice" class="focus-notice" role="alert" hidden></div>
     </div>
-    <button id="focus-exit" class="focus-exit">Studio ${icons.exit}</button>
-    <div id="focus-notice" class="focus-notice" role="alert" hidden></div>
-    <div class="focus-facts" aria-label="Data at the displayed simulation time">
-      <div><span>Sim time</span><strong id="focus-time">Unavailable</strong></div>
-      <div><span>Goal distance</span><strong id="focus-distance">Unavailable</strong></div>
-      <div><span>Obstacle contact</span><strong id="focus-contact">Unavailable</strong></div>
+    <div class="focus-top-right">
+      <button id="focus-exit" class="focus-exit focus-glass">${icons.exit}<span>Back to Studio</span></button>
+      <div class="focus-facts focus-glass" aria-label="Data at the displayed simulation time">
+        <div><span>Sim time</span><strong id="focus-time">Unavailable</strong></div>
+        <div><span>Goal distance</span><strong id="focus-distance">Unavailable</strong></div>
+        <div><span>Obstacle contact</span><strong id="focus-contact">Unavailable</strong></div>
+      </div>
     </div>
     <div class="focus-bottom"><p id="focus-hint" class="focus-hint">Drag to orbit · scroll to zoom</p>
-      <div class="focus-dock"><div class="focus-controls" role="group" aria-label="Flow stage controls">
-        <button id="focus-setup" aria-expanded="false" aria-controls="tool-panel">${icons.setup}<span>Setup</span></button>
+      <div class="focus-dock focus-glass" role="group" aria-label="Stage controls">
+        <button id="focus-setup" aria-expanded="false" aria-controls="tool-panel" title="Choose a policy, arena and preset, then run it">${icons.setup}<span>Setup</span></button>
         <button id="focus-restart" title="Restart the displayed recording">${icons.restart}<span>Restart</span></button>
         <button id="focus-play" class="focus-play">${icons.play}<span>Play</span></button>
+        <div class="focus-scrub"><input id="focus-seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="Seek displayed recording"><output id="focus-duration">—</output></div>
         <button id="focus-camera" title="Cycle camera: Orbit, Follow, Top, Fit">${icons.camera}<span>Orbit</span></button>
-        <button id="focus-inspect" aria-expanded="false" aria-controls="focus-inspector">${icons.details}<span>Details</span></button>
+        <button id="focus-inspect" aria-expanded="false" aria-controls="focus-inspector" title="The full inspector: intent, joints, health, map, pipeline">${icons.details}<span>Details</span></button>
         <button id="focus-cancel" class="focus-cancel" hidden>Cancel run</button>
       </div>
-      <div class="focus-scrub"><input id="focus-seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="Seek displayed recording"><output id="focus-duration">—</output></div>
-      <div class="focus-layers" role="group" aria-label="Scene layers">${LAYERS.map(([key, label]) => `<button id="focus-layer-${key}" data-focus-layer="${key}" aria-pressed="true"><i></i>${label}</button>`).join('')}</div></div>
-      <p class="focus-boundary">Local view <span>·</span> No motor commands</p>
     </div>
     <button id="focus-backdrop" class="focus-backdrop" aria-label="Close open panel" tabindex="-1" hidden></button>`;
   document.body.append(root);
@@ -179,14 +183,14 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
     try {
       if (!['replay', 'rehearse'].includes(state.workspace)) await setWorkspace('replay');
       active = true; root.hidden = false; document.body.classList.add('flow-focus');
-      scene.setFocusMode?.(true); updateView({ focus: '1' });
-      refresh(); $('focus-setup').focus();
+      updateView({ focus: '1' });
+      refresh(); root.querySelector('.focus-heading').focus({ preventScroll: true });
     } finally { entering = false; }
   }
   function exit() {
     if (!active) return;
     closeSheet({ restore: false }); active = false; root.hidden = true;
-    document.body.classList.remove('flow-focus'); scene.setFocusMode?.(false); updateView({ focus: null });
+    document.body.classList.remove('flow-focus'); updateView({ focus: null });
     (lastFocus?.isConnected && lastFocus !== document.body ? lastFocus : $('focus-enter')).focus();
   }
   function handleKey(e) {

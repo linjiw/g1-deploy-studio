@@ -20,7 +20,7 @@ Owner decision, 2026-10-21, confirmed 2026-10-22 ("Recorded only, live in local 
 
 ## The demo
 
-The 3D view fills a white, quiet stage (a pale floor and grid that fade into the backdrop, the robot's map in light tints, colours chosen to read on white, as in SuperMimic's project page and the local Flow stage); the chrome floats over it as white glass and lets clicks through except on its controls.
+The 3D view fills a white, quiet stage (a pale floor and grid that fade into the backdrop, the robot's map in light tints, colours chosen to read on white, as in SuperMimic's project page and Studio itself, which shares this palette); the chrome floats over it as white glass and lets clicks through except on its controls.
 
 - **Top left:** the layer toggles, which are also the legend: Robot, Plan body, Its map, LiDAR, Plan, Real room (ghost, solid, off) and Outcomes. `?` opens the full legend and the keys.
 - **At the robot:** a hint, *Click the floor. It has to find its own way.*, which goes away after the first goal. Above the dock, until the first walk plays, the operator's three steps light up in turn: pick a goal, send it, Go.

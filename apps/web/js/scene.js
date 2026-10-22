@@ -4,6 +4,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { finite, hasPose, hasRoot, hasReferencePose, request, yawOf } from './util.js';
+import { UI, SERIES, hex } from './palette.js';
+
+// The scene's colours, as numbers. Same meaning as the site's viewer: the reference (what SONIC is asked to track) is
+// a pink ghost, planned futures are amber, the executed path is teal, configured boxes are slate glass.
+const C = Object.fromEntries(Object.entries(SERIES).map(([k, v]) => [k, hex(v)]));
+const BACKDROP = 0xedf0f3;   // fog and the robot-view inset: the edge of the viewport's white-to-grey backdrop
+const FLOOR_M = 60;          // the floor: a square this wide with a half-metre grid, fading out at its edge
 
 const up = new THREE.Vector3(0, 0, 1);
 const stl = new STLLoader();
@@ -18,40 +25,12 @@ export const view = {
   mapLayer: null, sensorLayer: null, sensorOverlays: new Map(), lines: {}, markers: {},
   compareGroup: null, arenaGroup: null, robotView: false, robotCamera: null, onPick: null,
   layers: { robot: true, reference: true, future: true, trajectory: true, environment: true,
-    navigation: true, perception: false, frames: true, sensors: true },
+    navigation: true, perception: false, frames: false, sensors: true },
   lastPoseKey: null, followAnchor: new THREE.Vector3(), mapSample: null, session: null,
 };
 
 const quat = v => new THREE.Quaternion(v[1], v[2], v[3], v[0]);
 export const markDirty = () => { view.dirty = true; };
-
-// Presentation only: the same articulated poses, references and physics data
-// remain underneath the quiet, light stage. Restore exact material settings on exit.
-function focusMaterial(material, color, opacity = material.opacity) {
-  material.userData.studioPalette ??= { color: material.color.clone(), opacity: material.opacity };
-  const saved = material.userData.studioPalette;
-  material.color.copy(view.focusMode ? new THREE.Color(color) : saved.color);
-  material.opacity = view.focusMode ? opacity : saved.opacity;
-}
-function focusSessionPalette() {
-  if (view.ghost?.material) focusMaterial(view.ghost.material, 0x147aaf, 0.34);
-  for (const p of view.futures) if (p.material) focusMaterial(p.material, 0xa66a13, 0.14);
-  for (const [name, color] of Object.entries({ trajectory: 0x607482, reference: 0x147aaf, future: 0xa66a13, travelled: 0x26866e })) {
-    if (view.lines[name]) focusMaterial(view.lines[name].material, color);
-  }
-}
-export function setFocusMode(enabled) {
-  view.focusMode = Boolean(enabled);
-  if (!view.scene) return;
-  view.scene.fog.color.set(enabled ? 0xf1f4f6 : 0x101820);
-  view.scene.fog.density = enabled ? 0.035 : 0.02;
-  focusMaterial(view.floor.material, 0xe8edf1, 0.6);
-  view.studioGrids.forEach(g => { g.visible = !enabled; });
-  view.focusGrid.visible = enabled;
-  focusSessionPalette();
-  view.renderer.shadowMap.needsUpdate = true;
-  markDirty();
-}
 
 // ----- Preallocated renderables -------------------------------------------------
 function polyline(color, opacity = 1, capacity = 4096, width = 1) {
@@ -95,61 +74,90 @@ function setPoints(layer, points) {
   return n;
 }
 
+// Labels read as quiet white pills with a dot of the marker's colour (the site's goal chip), in sentence case.
+// Marker names stay upper case: tools find markers by name ('GOAL', 'START').
+const caption = text => text.toLowerCase().replace(/^./, c => c.toUpperCase()).replace(/\blio\b/gi, 'LIO');
 function label(text, color) {
   const canvas = document.createElement('canvas');
-  const font = '600 28px Inter, system-ui, sans-serif';
+  const font = '600 26px Inter, system-ui, sans-serif', shown = caption(text);
   const probe = canvas.getContext('2d'); probe.font = font;
   // Wide enough for the text: longer labels get a wider sprite at the same height (no clipping).
-  const width = Math.max(256, Math.ceil(probe.measureText(text).width / 32) * 32 + 40);
+  const textWidth = Math.ceil(probe.measureText(shown).width), pill = textWidth + 60;
+  const width = Math.max(128, Math.ceil((pill + 16) / 32) * 32);
   canvas.width = width; canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#0d1620e6'; ctx.beginPath(); ctx.roundRect(4, 6, width - 8, 52, 10); ctx.fill();
-  ctx.font = font; ctx.textAlign = 'center';
-  ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`; ctx.fillText(text, width / 2, 42);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: false, sizeAttenuation: false }));
-  sprite.scale.set(0.11 * width / 256, 0.0275, 1);
+  const ctx = canvas.getContext('2d'), x = (width - pill) / 2;
+  ctx.shadowColor = 'rgba(16, 24, 40, 0.2)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 2;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.95)'; ctx.beginPath(); ctx.roundRect(x, 10, pill, 44, 22); ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.strokeStyle = 'rgba(16, 22, 28, 0.12)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`; ctx.beginPath(); ctx.arc(x + 23, 32, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.font = font; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = UI.ink; ctx.fillText(shown, x + 39, 33);
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, sizeAttenuation: false }));
+  sprite.scale.set(0.088 * width / 256, 0.022, 1);
   sprite.renderOrder = 10;
   return sprite;
 }
 function navMarker(text, color, radius = 0.22, heading = false) {
   const group = new THREE.Group(); group.name = text;
-  const ring = new THREE.Mesh(new THREE.RingGeometry(radius * 0.82, radius, 48), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.95 }));
+  const ring = new THREE.Mesh(new THREE.RingGeometry(radius - 0.03, radius, 48), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.9, depthWrite: false }));
   ring.position.z = 0.03; group.add(ring);
-  const disc = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.82, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }));
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(radius - 0.03, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }));
   disc.position.z = 0.028; group.add(disc);
-  const tag = label(text, color); tag.position.z = heading ? 0.45 : 0.75; tag.center.set(0.5, 0); group.add(tag);
+  const tag = label(text, color); tag.position.z = heading ? 0.42 : 0.7; tag.center.set(0.5, 0); group.add(tag);
   if (heading) {
     const arrow = new THREE.Group(); arrow.name = 'heading';
-    arrow.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0.05), 0.6, color, 0.17, 0.11));
+    arrow.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0.04), 0.5, color, 0.14, 0.09));
     group.add(arrow);
   } else {
-    const pole = polyline(color, 0.9, 2); setPolyline(pole, [[0, 0, 0.03], [0, 0, 0.62]]); group.add(pole);
+    const pole = polyline(color, 0.7, 2); setPolyline(pole, [[0, 0, 0.03], [0, 0, 0.6]]); group.add(pole);
   }
   return group;
 }
 
-function boxMesh(b, { opacity = 0.2, color = 0x7d7592, edge = 0xa79fc0 } = {}) {
+// Configured boxes: slate glass with darker edges (overhead beams violet), as on the site. Translucent so the robot
+// stays visible behind a wall; the boxes are simulator geometry, not something the robot observed.
+function boxMesh(b, { opacity = 0.32 } = {}) {
   const height = b.z_top - b.z_bottom;
   const overhead = b.z_bottom > 0.05;
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(b.half_xy[0] * 2, b.half_xy[1] * 2, height),
-    new THREE.MeshStandardMaterial({ color: overhead ? 0x8a6fa8 : color, roughness: 0.85, transparent: true, opacity, depthWrite: false }));
+    new THREE.MeshStandardMaterial({ color: overhead ? C.overhead : C.box, roughness: 0.85, transparent: true, opacity, depthWrite: false }));
   mesh.position.set(b.center_xy[0], b.center_xy[1], b.z_bottom + height / 2);
   mesh.rotation.z = b.yaw ?? 0;
   mesh.castShadow = true; mesh.receiveShadow = true;
-  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: overhead ? 0xc9a8e6 : edge, transparent: true, opacity: 0.75 })));
+  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: overhead ? C.overheadEdge : C.boxEdge, transparent: true, opacity: 0.7 })));
   if (overhead) {
     // A faint footprint shows where an overhead obstacle is, without implying a floor obstacle.
-    const foot = new THREE.Mesh(new THREE.PlaneGeometry(b.half_xy[0] * 2, b.half_xy[1] * 2), new THREE.MeshBasicMaterial({ color: 0x8a6fa8, transparent: true, opacity: 0.12, depthWrite: false }));
+    const foot = new THREE.Mesh(new THREE.PlaneGeometry(b.half_xy[0] * 2, b.half_xy[1] * 2), new THREE.MeshBasicMaterial({ color: C.overhead, transparent: true, opacity: 0.18, depthWrite: false }));
     foot.position.set(0, 0, -height / 2 - b.z_bottom + 0.012); mesh.add(foot);
   }
   return mesh;
+}
+
+// The floor: a pale slab with a half-metre grid (whole metres darker) that fades to transparent, as on the site.
+function floorTexture(renderer) {
+  const px = 2048, c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d'), per = px / FLOOR_M;
+  const fade = g.createRadialGradient(px / 2, px / 2, px * 0.08, px / 2, px / 2, px / 2);
+  fade.addColorStop(0, 'rgba(252, 253, 254, 1)'); fade.addColorStop(0.55, 'rgba(246, 248, 250, 0.92)'); fade.addColorStop(1, 'rgba(240, 243, 246, 0)');
+  g.fillStyle = fade; g.fillRect(0, 0, px, px);
+  g.globalCompositeOperation = 'source-atop';
+  for (let k = 0; k <= FLOOR_M * 2; k++) {
+    const at = Math.round(k * per / 2) + 0.5;
+    g.strokeStyle = k % 2 === 0 ? 'rgba(52, 70, 88, 0.12)' : 'rgba(52, 70, 88, 0.05)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(at, 0); g.lineTo(at, px); g.moveTo(0, at); g.lineTo(px, at); g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return t;
 }
 
 // ----- Scene setup ------------------------------------------------------------
 export function initScene(host, { onPick } = {}) {
   view.host = host; view.onPick = onPick;
   const scene = view.scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x101820, 0.02);
+  scene.fog = new THREE.FogExp2(BACKDROP, 0.02);
   const camera = view.camera = new THREE.PerspectiveCamera(42, 1, 0.01, 300);
   camera.up.copy(up); camera.position.set(3.5, -4.3, 2.4);
   const renderer = view.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: false });
@@ -157,7 +165,6 @@ export function initScene(host, { onPick } = {}) {
   renderer.setClearColor(0x000000, 0);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.25;
   host.appendChild(renderer.domElement);
   const controls = view.controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.dampingFactor = 0.1;
@@ -167,24 +174,17 @@ export function initScene(host, { onPick } = {}) {
   controls.addEventListener('start', () => { view.userOrbiting = true; });
   controls.addEventListener('end', () => { view.userOrbiting = false; });
 
-  const hemi = new THREE.HemisphereLight(0xdbe7f5, 0x37404f, 2.3); hemi.position.set(0, 0, 10); scene.add(hemi);
-  const key = new THREE.DirectionalLight(0xf6eee2, 3.2); key.position.set(3, -4, 7); key.castShadow = true;
+  // The site's light: a cool sky and one soft key light that follows the robot for its shadow.
+  const sky = new THREE.HemisphereLight(0xf4f8fb, 0x8a96a2, 1.35); sky.position.set(0, 0, 1); scene.add(sky);  // Z is up here
+  const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(3, -4, 7); key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048); Object.assign(key.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8 });
   key.shadow.normalBias = 0.015; scene.add(key); scene.add(key.target); view.key = key;
-  const rim = new THREE.DirectionalLight(0x72bcd2, 1.6); rim.position.set(-2, 3, 3); scene.add(rim);
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x18242f, roughness: 1, metalness: 0, transparent: true, opacity: 0.8 }));
-  floor.position.z = -0.015; floor.receiveShadow = true; scene.add(floor);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(FLOOR_M, FLOOR_M),
+    new THREE.MeshStandardMaterial({ map: floorTexture(renderer), transparent: true, depthWrite: false, roughness: 1, metalness: 0 }));
+  floor.position.z = -0.01; floor.receiveShadow = true; floor.renderOrder = -1; scene.add(floor);
   view.floor = floor;
-  const grid = new THREE.GridHelper(100, 100, 0x4a6472, 0x2a3b47); grid.rotation.x = Math.PI / 2; grid.position.z = -0.01;
-  grid.material.transparent = true; grid.material.opacity = 0.5; scene.add(grid);
-  const fine = new THREE.GridHelper(20, 80, 0x22323d, 0x22323d); fine.rotation.x = Math.PI / 2; fine.position.z = -0.012;
-  fine.material.transparent = true; fine.material.opacity = 0.35; scene.add(fine);
-  view.studioGrids = [grid, fine];
-  view.focusGrid = new THREE.GridHelper(100, 100, 0xa7b5c1, 0xc4cdd5);
-  view.focusGrid.rotation.x = Math.PI / 2; view.focusGrid.position.z = -0.01;
-  view.focusGrid.material.transparent = true; view.focusGrid.material.opacity = 0.38;
-  view.focusGrid.visible = false; scene.add(view.focusGrid);
-  view.worldAxes = new THREE.AxesHelper(0.6); view.worldAxes.position.z = 0.015; scene.add(view.worldAxes);
+  // World axes (the Coordinate frames layer, off by default): thin and short, at the origin.
+  view.worldAxes = new THREE.AxesHelper(0.4); view.worldAxes.position.z = 0.015; view.worldAxes.material.transparent = true; view.worldAxes.material.opacity = 0.7; scene.add(view.worldAxes);
 
   view.content = new THREE.Group(); scene.add(view.content);
   view.sensorLayer = new THREE.Group(); scene.add(view.sensorLayer);
@@ -244,7 +244,10 @@ async function geometry(spec) {
 
 async function buildRobot(spec, jointNames, ghost = null) {
   const joints = [];
-  const ghostMaterial = ghost ? new THREE.MeshStandardMaterial({ color: ghost.color ?? 0x57ded3, transparent: true, opacity: ghost.opacity, roughness: 0.3, metalness: 0.1, depthWrite: false, emissive: ghost.emissive ?? 0x1b625c, emissiveIntensity: 0.35 }) : null;
+  // Ghosts are pushed back in depth: where the reference coincides with the executed body the robot wins, so the
+  // ghost shows only where the two differ (and the robot keeps its own colour).
+  const ghostMaterial = ghost ? new THREE.MeshStandardMaterial({ color: ghost.color ?? C.ghost, transparent: true, opacity: ghost.opacity, roughness: 0.6, metalness: 0, depthWrite: false,
+    emissive: ghost.color ?? C.ghost, emissiveIntensity: 0.3, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8 }) : null;
   async function body(node) {
     const group = new THREE.Group(); group.name = node.name;
     const restPosition = new THREE.Vector3(...node.position), restQuaternion = quat(node.quaternion_wxyz);
@@ -309,7 +312,7 @@ export async function loadSessionScene(session, id, isCurrent) {
   const worldAvailable = session.frames.some(hasPose) || session.frames.some(hasRoot);
   const names = session.joint_names ?? [];
   const [main, ref] = worldAvailable && spec
-    ? await Promise.all([buildRobot(spec, names), buildRobot(spec, names, { opacity: 0.26 })]) : [null, null];
+    ? await Promise.all([buildRobot(spec, names), buildRobot(spec, names, { opacity: 0.34 })]) : [null, null];
   if (!isCurrent()) return null;
   clearSessionScene();
   view.session = session; view.model = spec; view.robot = main; view.ghost = ref;
@@ -320,35 +323,35 @@ export async function loadSessionScene(session, id, isCurrent) {
   }
   view.content.add(env);
   view.mapLayer = new THREE.Group();
-  view.mapLayer.add(pointLayer(0x6bc8ac, 0.04, 8000), pointLayer(0xc4a0d9, 0.04, 8000));
+  view.mapLayer.add(pointLayer(C.support, 0.04, 8000, 0.75), pointLayer(C.ceiling, 0.04, 8000, 0.75));
   view.content.add(view.mapLayer);
   const L = view.lines;
-  L.trajectory = polyline(0x7c92a0, 0.75, 8192); setPolyline(L.trajectory, session.trajectory ?? [], 0.02);
-  L.future = polyline(0xefbb70, 0.95, 512); L.reference = polyline(0x56d9d0, 0.75, 64); L.travelled = polyline(0x9fe6c8, 0.9, 8192);
+  L.trajectory = polyline(C.path, 0.8, 8192); setPolyline(L.trajectory, session.trajectory ?? [], 0.02);
+  L.future = polyline(C.future, 1, 512); L.reference = polyline(C.reference, 0.9, 64); L.travelled = polyline(C.travelled, 1, 8192);
   view.content.add(L.trajectory, L.future, L.reference, L.travelled);
-  view.robotAxes = new THREE.AxesHelper(0.3); view.content.add(view.robotAxes);
-  view.rootMarker = navMarker('LIO POSE · NO JOINTS', 0x7fb4ff, 0.3, true); view.rootMarker.visible = false;
+  view.robotAxes = new THREE.AxesHelper(0.25); view.content.add(view.robotAxes);
+  view.rootMarker = navMarker('LIO POSE · NO JOINTS', C.blue, 0.3, true); view.rootMarker.visible = false;
   view.content.add(view.rootMarker);
-  view.waypoint = new THREE.Mesh(new THREE.RingGeometry(0.09, 0.13, 32), new THREE.MeshBasicMaterial({ color: 0xefbb70, side: THREE.DoubleSide, transparent: true, opacity: 0.85 }));
+  view.waypoint = new THREE.Mesh(new THREE.RingGeometry(0.09, 0.13, 32), new THREE.MeshBasicMaterial({ color: C.future, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
   view.content.add(view.waypoint);
   const m = session.metadata;
   if (m.goal_xy?.length === 2) {
-    view.markers.goal = navMarker('GOAL', 0xefbb70, m.navigation_criteria?.goal_radius_m ?? 0.3);
+    view.markers.goal = navMarker('GOAL', C.goal, m.navigation_criteria?.goal_radius_m ?? 0.3);
     view.markers.goal.position.set(m.goal_xy[0], m.goal_xy[1], 0); view.content.add(view.markers.goal);
   }
   if (m.start_xy?.length === 2) {
-    view.markers.start = navMarker('START', 0x75c9f1, 0.22, finite(m.start_yaw_rad));
+    view.markers.start = navMarker('START', C.start, 0.22, finite(m.start_yaw_rad));
     view.markers.start.position.set(m.start_xy[0], m.start_xy[1], 0);
     const arrow = view.markers.start.getObjectByName('heading'); if (arrow) arrow.rotation.z = m.start_yaw_rad;
     view.content.add(view.markers.start);
   }
   if (session.frames.some(hasReferencePose) && spec) {
-    const previews = await Promise.all([buildRobot(spec, names, { opacity: 0.09, color: 0xefbb70, emissive: 0x4a3510 }), buildRobot(spec, names, { opacity: 0.06, color: 0xefbb70, emissive: 0x4a3510 })]);
+    const previews = await Promise.all([buildRobot(spec, names, { opacity: 0.12, color: C.future }), buildRobot(spec, names, { opacity: 0.07, color: C.future })]);
     if (!isCurrent()) return null;
     view.futures = previews; previews.forEach(p => view.content.add(p.root));
   }
   view.robotViewReady = worldAvailable;
-  focusSessionPalette();
+  centreFloor();
   view.renderer.shadowMap.needsUpdate = true;
   applyLayers(); markDirty();
   return { worldAvailable };
@@ -387,7 +390,7 @@ export function renderFrameScene(state) {
     // Navigation sessions change goals over time: the marker shows the goal at the cursor.
     const goal = f.navigation?.goal_xy;
     if (Array.isArray(goal)) {
-      if (!view.markers.goal) { view.markers.goal = navMarker('GOAL', 0xefbb70, 0.4); view.content.add(view.markers.goal); }
+      if (!view.markers.goal) { view.markers.goal = navMarker('GOAL', C.goal, 0.4); view.content.add(view.markers.goal); }
       view.markers.goal.position.set(goal[0], goal[1], 0);
       view.markers.goal.userData.hidden = false;
     } else if (f.navigation && view.markers.goal) view.markers.goal.userData.hidden = true;
@@ -453,7 +456,7 @@ export function setSensorOverlay(sensor) {
   if (!sensor.overlay_compatible || !Array.isArray(points) || !points.length) { removeSensorOverlay(sensor.id); return; }
   let layer = view.sensorOverlays.get(sensor.id);
   if (!layer) {
-    const color = sensor.id.includes('raw') ? 0xc5abdc : sensor.id.includes('ceiling') ? 0xbba3d5 : 0x77e0c2;
+    const color = sensor.id.includes('raw') ? C.violet : sensor.id.includes('ceiling') ? C.overheadEdge : C.travelled;
     layer = pointLayer(color, 0.035, 6000, 0.9);
     view.sensorOverlays.set(sensor.id, layer); view.sensorLayer.add(layer);
   }
@@ -512,6 +515,12 @@ export function sceneBounds(extraPoints = []) {
   return bounds.expandByScalar(0.6);
 }
 
+// The grid is drawn in whole metres: centre the floor on a whole metre near the scene.
+function centreFloor() {
+  const c = sceneBounds().getCenter(new THREE.Vector3());
+  view.floor.position.set(Math.round(c.x), Math.round(c.y), view.floor.position.z);
+}
+
 export function fitScene(bounds = sceneBounds()) {
   const center = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
   const cam = view.camera;
@@ -553,7 +562,7 @@ function renderRobotView(size) {
   if (view.mapLayer && view.session?.perception?.available) view.mapLayer.visible = true;
   view.sensorLayer.visible = true;
   r.setScissorTest(true); r.setScissor(x, y, w, h); r.setViewport(x, y, w, h);
-  r.setClearColor(0x0a1118, 1); r.clear(); r.render(view.scene, cam);
+  r.setClearColor(BACKDROP, 1); r.clear(); r.render(view.scene, cam);
   r.setClearColor(0x000000, 0); r.setScissorTest(false);
   view.scene.fog = fog; if (view.mapLayer) view.mapLayer.visible = mapVisible; view.sensorLayer.visible = sensorsVisible;
   if (view.robot) view.robot.root.visible = robotVisible;
@@ -587,19 +596,19 @@ export function setArenaPreview(arena, markers = {}) {
   for (const b of arena.boxes ?? []) if (b.z_top > b.z_bottom) view.arenaGroup.add(boxMesh(b, { opacity: 0.45 }));
   if (arena.bounds) {
     const [x0, y0] = arena.bounds.min, [x1, y1] = arena.bounds.max;
-    const edge = polyline(0x6a9caa, 0.7, 5); setPolyline(edge, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], 0.02); view.arenaGroup.add(edge);
+    const edge = polyline(hex(UI.faint), 0.8, 5); setPolyline(edge, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], 0.02); view.arenaGroup.add(edge);
   }
   if (markers.start) {
-    const s = navMarker('START', 0x75c9f1, 0.22, true); s.position.set(markers.start[0], markers.start[1], 0);
+    const s = navMarker('START', C.start, 0.22, true); s.position.set(markers.start[0], markers.start[1], 0);
     s.getObjectByName('heading').rotation.z = markers.yaw ?? 0; view.arenaGroup.add(s);
   }
-  if (markers.goal) { const g = navMarker('GOAL', 0xefbb70, 0.3); g.position.set(markers.goal[0], markers.goal[1], 0); view.arenaGroup.add(g); }
-  markDirty();
+  if (markers.goal) { const g = navMarker('GOAL', C.goal, 0.3); g.position.set(markers.goal[0], markers.goal[1], 0); view.arenaGroup.add(g); }
+  centreFloor(); markDirty();
 }
 
 // ----- Navigate overlay: the goal being checked, its path, the staged/active goal and past walks.
 // It lives outside the session content so it survives loading the live session or its recording.
-const PICK_COLOR = { pending: 0x9fb3c4, pass: 0x5fd39b, warn: 0xefbb70, block: 0xf08c85 };
+const PICK_COLOR = { pending: hex(UI.faint), pass: C.green, warn: C.future, block: C.red };
 export function setNavOverlay(o = null) {
   if (!view.scene) return;
   if (!view.navGroup) { view.navGroup = new THREE.Group(); view.navGroup.name = 'navigate'; view.scene.add(view.navGroup); }
@@ -609,22 +618,22 @@ export function setNavOverlay(o = null) {
   for (const w of o.walks ?? []) {
     if (!Array.isArray(w.xy)) continue;
     const ok = w.outcome === 'arrived';
-    const m = navMarker(`${w.index} ${ok ? '✓' : '·'}`, ok ? 0x5fd39b : 0x9fb3c4, 0.16);
+    const m = navMarker(`${w.index} ${ok ? '✓' : '·'}`, ok ? C.green : hex(UI.faint), 0.16);
     m.position.set(w.xy[0], w.xy[1], 0); view.navGroup.add(m);
   }
   if (Array.isArray(o.bounds)) {
-    const [x0, y0, x1, y1] = o.bounds, edge = polyline(0x56d9d0, 0.45, 5);
+    const [x0, y0, x1, y1] = o.bounds, edge = polyline(C.blue, 0.5, 5);
     setPolyline(edge, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], 0.02); view.navGroup.add(edge);
-    const tag = label((o.boundsLabel ?? 'planner memory').toUpperCase(), 0x56d9d0); tag.position.set(x0 + 0.1, y1 - 0.1, 0.05); tag.center.set(0, 1);
+    const tag = label(o.boundsLabel ?? 'planner memory', C.blue); tag.position.set(x0 + 0.1, y1 - 0.1, 0.05); tag.center.set(0, 1);
     view.navGroup.add(tag);
   }
   if (Array.isArray(o.goal)) {
     const unverified = o.goalUnverified;
-    const g = navMarker(unverified ? (o.goalLabel ?? 'NODE GOAL · UNVERIFIED') : o.staged ? 'GOAL · STAGED' : 'GOAL', unverified ? 0xf08c85 : 0xefbb70, o.radius ?? 0.4);
+    const g = navMarker(unverified ? (o.goalLabel ?? 'NODE GOAL · UNVERIFIED') : o.staged ? 'GOAL · STAGED' : 'GOAL', unverified ? C.red : C.goal, o.radius ?? 0.4);
     g.position.set(o.goal[0], o.goal[1], 0); view.navGroup.add(g);
   }
   if (Array.isArray(o.path) && o.path.length > 1) {
-    const line = polyline(o.pickStatus === 'block' ? 0xf08c85 : 0x56d9d0, 0.95, o.path.length + 1);
+    const line = polyline(o.pickStatus === 'block' ? C.red : C.travelled, 1, o.path.length + 1);
     setPolyline(line, o.path, 0.04); view.navGroup.add(line);
   }
   if (Array.isArray(o.pick)) {
@@ -636,7 +645,7 @@ export function setNavOverlay(o = null) {
 }
 
 // The robot's map as a floor texture: one texel per memory cell, never-observed cells transparent.
-const MAP_RGBA = { 1: [38, 92, 96, 165], 2: [239, 187, 112, 215], 3: [240, 120, 112, 235], 4: [196, 160, 217, 215] };
+const MAP_RGBA = { 1: [126, 200, 194, 72], 2: [232, 170, 72, 215], 3: [226, 120, 110, 230], 4: [160, 128, 205, 210] };  // the site's, tuned for a light floor
 export function setNavMap(map = null) {
   if (!view.scene) return;
   view.navMapActive = !!map;

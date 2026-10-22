@@ -566,6 +566,11 @@ class Handler(BaseHTTPRequestHandler):
                 base = ROOT / "node_modules/three"
                 relative = path[len("/vendor/three/"):]
                 cache = "private, max-age=86400"
+            elif path.startswith("/vendor/fonts/"):
+                # Inter (OFL-1.1, see NOTICE), the same variable font the site ships.
+                base = ROOT / "node_modules/@fontsource-variable/inter/files"
+                relative = path[len("/vendor/fonts/"):]
+                cache = "private, max-age=86400"
             else:
                 base = ROOT / "apps/web"
                 relative = "index.html" if path == "/" else path.lstrip("/")

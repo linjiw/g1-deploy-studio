@@ -1,19 +1,19 @@
-// Flow stage acceptance. Starts exactly ONE bounded, real WXD CPU rehearsal via
-// the existing UI. Run on an isolated workbench; never cancels another worker.
-// STUDIO_URL=http://127.0.0.1:8797 node tools/browser/flow_stage.mjs
-// FLOW_STAGE_JOB=<completed-job-id> rechecks a recording without starting a worker.
+// Stage acceptance (docs/STAGE.md). Starts exactly ONE bounded, real CPU rehearsal of the adopted policy (or
+// STAGE_POLICY) via the existing UI. Run on an isolated gateway and workbench; never cancels another worker.
+//   STUDIO_URL=http://127.0.0.1:8798 node tools/browser/stage.mjs
+//   STAGE_JOB=<completed-job-id> rechecks a recording without starting a worker.
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const base = process.env.STUDIO_URL || 'http://127.0.0.1:8797';
-const evidence = process.env.STUDIO_EVIDENCE || path.join(os.homedir(), 'research-data/g1-deploy-studio/evidence/flow-stage-20261022');
-const WXD = 'flow-wxd-rf-5658a6d-s0', S2 = 'flow-bundle-20261008';
-const duration = Number(process.env.FLOW_STAGE_DURATION || 4);
+const base = process.env.STUDIO_URL || 'http://127.0.0.1:8798';
+const evidence = process.env.STUDIO_EVIDENCE || path.join(os.homedir(), 'research-data/g1-deploy-studio/evidence/stage');
+const duration = Number(process.env.STAGE_DURATION || 4);
 assert.ok(duration >= 1 && duration <= 6, 'Acceptance duration must be 1–6 simulated seconds.');
-const existingJob = process.env.FLOW_STAGE_JOB;
+const existingJob = process.env.STAGE_JOB;
+let POLICY = process.env.STAGE_POLICY ?? null, OTHER = null, PRIVILEGED = false;
 await mkdir(evidence, { recursive: true });
 const report = { base, evidence, started: new Date().toISOString(), existingJob: existingJob ?? null, checks: [], errors: [], requests: [], jobId: existingJob ?? null };
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/opt/google/chrome/chrome', headless: true,
@@ -26,7 +26,7 @@ page.on('pageerror', e => report.errors.push({ check: current, kind: 'pageerror'
 page.on('console', m => { if (m.type() === 'error') report.errors.push({ check: current, kind: 'console', message: m.text() }); });
 page.on('response', r => { if (r.status() >= 400) report.requests.push({ check: current, status: r.status(), url: r.url() }); });
 page.on('requestfailed', r => { if (!/ERR_ABORTED/.test(r.failure()?.errorText ?? '')) report.requests.push({ check: current, url: r.url(), message: r.failure()?.errorText }); });
-const save = () => writeFile(path.join(evidence, existingJob ? 'flow-stage-recheck.json' : 'flow-stage.json'), JSON.stringify(report, null, 2));
+const save = () => writeFile(path.join(evidence, existingJob ? 'stage-recheck.json' : 'stage.json'), JSON.stringify(report, null, 2));
 const shot = async name => { const file = path.join(evidence, `${name}.png`); await page.screenshot({ path: file }); return file; };
 const get = async endpoint => { const r = await context.request.get(`${base}${endpoint}`); assert.ok(r.ok(), `${endpoint}: HTTP ${r.status()}`); return r.json(); };
 const check = async (name, fn) => {
@@ -64,13 +64,6 @@ const assertScene = async ({ preview = false } = {}) => {
   else assert.ok(scene.model && scene.robot && scene.robotVisible, 'The articulated G1 must be present and visible.');
   return scene;
 };
-const palette = () => page.evaluate(async () => {
-  const v = (await import('/js/scene.js')).view;
-  const mat = m => m ? { color: m.color.getHex(), opacity: m.opacity, saved: m.userData.studioPalette ? { color: m.userData.studioPalette.color.getHex(), opacity: m.userData.studioPalette.opacity } : null } : null;
-  return { focus: v.focusMode, fog: v.scene.fog.color.getHex(), floor: mat(v.floor.material), ghost: mat(v.ghost?.material),
-    futures: v.futures.map(p => mat(p.material)), lines: Object.fromEntries(Object.entries(v.lines).map(([k, l]) => [k, mat(l.material)])),
-    grids: v.studioGrids.map(g => g.visible), focusGrid: v.focusGrid.visible };
-});
 const waitReplay = id => page.waitForFunction(id => {
   const s = window.__studio?.state;
   return s?.sessionId === id && s.session?.metadata?.mode === 'replay' && s.session.frames.length > 1 && !s.loading && document.querySelector('#loading-overlay').hidden;
@@ -83,18 +76,21 @@ try {
     'An existing worker is active. This test will neither start a duplicate nor cancel it.');
   if (!existingJob) {
     let prior = null;
-    try { prior = JSON.parse(await readFile(path.join(evidence, 'flow-stage-job.json'), 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    assert.ok(!prior?.jobId, `This evidence directory already owns ${prior?.jobId}. Recheck with FLOW_STAGE_JOB=${prior?.jobId}; do not launch another run.`);
+    try { prior = JSON.parse(await readFile(path.join(evidence, 'stage-job.json'), 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    assert.ok(!prior?.jobId, `This evidence directory already owns ${prior?.jobId}. Recheck with STAGE_JOB=${prior?.jobId}; do not launch another run.`);
   }
   await page.goto(`${base}/?workspace=rehearse&focus=1${existingJob ? `&session=${encodeURIComponent(existingJob)}` : ''}`);
   await page.waitForFunction(() => window.__studio?.focus?.active && window.__studio?.rehearse?.catalog && !window.__studio.state.loading && document.querySelector('#loading-overlay').hidden, null, { timeout: 120000 });
 
-  await check('focused boot uses adopted WXD and a real arena preview', async () => {
+  await check('the stage boots on the adopted policy and a real arena preview', async () => {
     const s = await state();
-    assert.equal(s.selectedPolicy, WXD);
-    const adopted = await page.evaluate(() => window.__studio.rehearse.catalog.policies.find(p => p.id === window.__studio.rehearse.policyId));
-    assert.ok(adopted.available && adopted.matches_adopted, 'Selected WXD must be available and match the adoption record.');
-    assert.equal(s.settings.candidates, 8); assert.equal(s.settings.ode_steps, 6);
+    const policies = await page.evaluate(() => window.__studio.rehearse.catalog.policies);
+    const adopted = policies.find(p => p.matches_adopted && p.available);
+    POLICY ??= adopted?.id ?? s.selectedPolicy;
+    OTHER = policies.find(p => p.available && p.id !== POLICY)?.id ?? null;
+    const selected = policies.find(p => p.id === s.selectedPolicy);
+    assert.ok(selected?.available, `The preselected policy must be available: ${s.selectedPolicy}`);
+    if (adopted) assert.equal(s.selectedPolicy, adopted.id, 'Rehearse preselects the adopted policy when it is built.');
     assert.ok(/preview/i.test(s.labels['focus-mode']), `Preview mode: ${JSON.stringify(s.labels)}`);
     assert.ok(await page.locator('#focus-play').isDisabled(), 'A preview cannot play the underlying recording.');
     assert.ok(/unavailable|—|not recorded/i.test(`${s.labels['focus-distance']} ${s.labels['focus-contact']}`), 'Preview facts must not expose stale recorded telemetry.');
@@ -108,12 +104,12 @@ try {
     assert.ok(await page.locator('#tool-panel #rehearse-panel #rh-run').isVisible());
     await page.selectOption('#rh-map', 'flow-detour');
     await page.waitForFunction(() => window.__studio.rehearse.map?.id === 'flow-detour');
-    await page.check(`input[name=policy][value="${WXD}"]`);
-    await page.click('[data-budget="8,6"]');
+    await page.check(`input[name=policy][value="${POLICY}"]`);
     await setNumber('rh-duration', duration);
     await page.selectOption('#rh-latency', '0');
     const s = await state();
-    assert.equal(s.settings.duration_s, duration); assert.equal(s.settings.candidates, 8); assert.equal(s.settings.ode_steps, 6);
+    assert.equal(s.selectedPolicy, POLICY);
+    assert.equal(s.settings.duration_s, duration);
     assert.equal(await page.locator('#rh-map').inputValue(), 'flow-detour');
     assert.equal(await page.locator('#rh-run').isDisabled(), false);
     const screenshot = await shot('02-setup-desktop');
@@ -124,7 +120,7 @@ try {
 
   if (report.checks.some(c => c.status === 'FAIL')) throw new Error('Setup acceptance failed; no worker was started.');
   if (!existingJob) {
-    await check('one real UI-started WXD CPU run exposes live samples and provenance', async () => {
+    await check('one real UI-started CPU run exposes live samples and provenance', async () => {
       assert.equal(report.checks.some(c => c.status === 'FAIL') || report.errors.length > 0 || report.requests.length > 0, false, 'Fix setup/browser errors before starting the worker.');
       const active = (await get('/api/jobs')).jobs.filter(j => ['queued', 'starting', 'running', 'cancelling', 'detached'].includes(j.status));
       assert.equal(active.length, 0, 'Another worker became active before Run.');
@@ -132,49 +128,51 @@ try {
       await page.click('#rh-run');
       await page.waitForFunction(() => !!window.__studio.rehearse.job?.id, null, { timeout: 60000 });
       report.jobId = (await state()).jobId;
-      await writeFile(path.join(evidence, 'flow-stage-job.json'), JSON.stringify({ jobId: report.jobId, base, started: new Date().toISOString() }, null, 2));
+      await writeFile(path.join(evidence, 'stage-job.json'), JSON.stringify({ jobId: report.jobId, base, started: new Date().toISOString() }, null, 2));
       await save();
       await closeSetup();
       await page.waitForFunction(id => { const s = window.__studio.state; return s.sessionId === id && s.session?.metadata?.mode === 'simulation' && s.session.frames.length > 1; }, report.jobId, { timeout: 300000, polling: 100 });
       const live = await state();
       assert.ok(/live/i.test(live.labels['focus-mode']), `Live stage mode: ${live.labels['focus-mode']}`);
-      assert.ok(/WXD/i.test(live.labels['focus-displayed-policy']));
-      assert.ok(/privileged/i.test(live.labels['focus-provenance']), `Privileged map provenance must be visible: ${live.labels['focus-provenance']}`);
-      assert.equal(live.profile.id, WXD);
+      assert.equal(live.profile.id, POLICY);
+      assert.ok(live.labels['focus-displayed-policy'] && !/unavailable/i.test(live.labels['focus-displayed-policy']), `Displayed policy: ${live.labels['focus-displayed-policy']}`);
+      PRIVILEGED = !!(await page.evaluate(() => window.__studio.state.session.metadata.privileged_map));
+      if (PRIVILEGED) assert.ok(/privileged/i.test(live.labels['focus-provenance']), `Privileged map provenance must be visible: ${live.labels['focus-provenance']}`);
       const geometry = await assertScene();
-      const screenshot = await shot('03-live-wxd');
+      const screenshot = await shot('03-live');
       await page.waitForFunction(({ id, frames, time }) => { const s = window.__studio.state; return s.sessionId === id && s.session.frames.length > frames && s.time > time; }, { id: report.jobId, frames: live.frames, time: live.time }, { timeout: 180000, polling: 200 });
       const progressed = await state();
       report.live = { live, progressed, geometry, screenshot };
       return report.live;
     });
   } else {
-    await check('reuse the named WXD recording without starting another worker', async () => {
+    await check('reuse the named recording without starting another worker', async () => {
       const job = await get(`/api/jobs?id=${encodeURIComponent(existingJob)}&light=1`);
-      assert.equal(job.status, 'completed'); assert.equal(job.scenario.policy_id, WXD);
+      assert.equal(job.status, 'completed'); POLICY = job.scenario.policy_id;
+      OTHER = (await page.evaluate(() => window.__studio.rehearse.catalog.policies)).find(p => p.available && p.id !== POLICY)?.id ?? null;
       await page.click('#focus-exit');
       await page.click('#workspace-replay');
       await page.selectOption('#session-picker', existingJob);
       await waitReplay(existingJob);
       await page.click('#focus-enter');
-      return { jobId: existingJob, status: job.status, note: 'Replay-only recheck; live evidence is retained in flow-stage.json.' };
+      PRIVILEGED = !!(await page.evaluate(() => window.__studio.state.session.metadata.privileged_map));
+      return { jobId: existingJob, status: job.status, note: 'Replay-only recheck; live evidence is retained in stage.json.' };
     });
   }
 
   if (!report.jobId) throw new Error('No simulation job is available for replay checks.');
-  await check('completed replay contains actual execution and immutable WXD identity', async () => {
+  await check('completed replay contains actual execution and the pinned policy identity', async () => {
     assert.ok(report.jobId, 'No run was launched.');
     if (!existingJob) await page.waitForFunction(id => { const j = window.__studio.rehearse.job; return j?.id === id && ['completed', 'failed', 'cancelled'].includes(j.status); }, report.jobId, { timeout: 600000, polling: 1000 });
     const job = await get(`/api/jobs?id=${encodeURIComponent(report.jobId)}&light=1`);
     report.job = job;
     assert.equal(job.status, 'completed', `Worker ended ${job.status}: ${job.error ?? ''}`);
-    assert.equal(job.scenario.policy_id, WXD); assert.ok(job.scenario.duration_s <= 6);
-    assert.deepEqual(job.scenario.planner, { candidates: 8, ode_steps: 6 });
+    assert.equal(job.scenario.policy_id, POLICY); if (!existingJob) assert.ok(job.scenario.duration_s <= 6);
     await waitReplay(report.jobId);
     const s = await state();
-    assert.equal(s.profile.id, WXD); assert.ok(s.profile.identity_sha256, 'Pinned policy identity hash is required.');
+    if (s.profile) { assert.equal(s.profile.id, POLICY); assert.ok(s.profile.identity_sha256 || s.profile.config_sha256, 'A pinned policy identity hash is required.'); }
     assert.ok(/replay/i.test(s.labels['focus-mode']), `Completed stage mode: ${s.labels['focus-mode']}`);
-    assert.ok(/privileged/i.test(s.labels['focus-provenance']));
+    if (PRIVILEGED) assert.ok(/privileged/i.test(s.labels['focus-provenance']));
     const execution = await page.evaluate(() => {
       const s = window.__studio.state.session, frames = s.frames.filter(f => Array.isArray(f.qpos));
       return { frames: frames.length, first: frames[0]?.qpos, last: frames.at(-1)?.qpos, firstTime: frames[0]?.time, lastTime: frames.at(-1)?.time,
@@ -182,7 +180,7 @@ try {
     });
     assert.ok(execution.frames > 5 && execution.lastTime > execution.firstTime, `Actual execution samples: ${JSON.stringify(execution)}`);
     assert.ok(execution.last.some((v, i) => Math.abs(v - execution.first[i]) > 1e-5), 'Actual joint/root states must evolve, not duplicate a frozen pose.');
-    assert.ok(/flow_policy_worker/.test(execution.adapter), `Expected real Flow adapter, got ${execution.adapter}`);
+    assert.ok(execution.adapter, `The recording names its adapter: ${JSON.stringify(execution)}`);
     return { jobId: report.jobId, state: s, execution, scene: await assertScene(), screenshot: await shot('04-completed-replay') };
   });
 
@@ -230,16 +228,18 @@ try {
     return { seekTime: seekState.time, cameras, screenshot: await shot('05-replay-controls') };
   });
 
-  await check('selecting S2 keeps the displayed WXD recording identified', async () => {
+  if (OTHER) await check('choosing another policy for the next run keeps the displayed recording identified', async () => {
+    const before = await state();
     await openSetup();
-    await page.check(`input[name=policy][value="${S2}"]`);
+    await page.check(`input[name=policy][value="${OTHER}"]`);
     await closeSetup();
     const s = await state();
-    assert.equal(s.selectedPolicy, S2); assert.equal(s.profile.id, WXD); assert.equal(s.sessionId, report.jobId);
-    assert.ok(/WXD/.test(s.labels['focus-displayed-policy']), `Displayed identity: ${s.labels['focus-displayed-policy']}`);
-    assert.ok(/S2|bundle|student/i.test(s.labels['focus-selected-policy']), `Selected identity: ${s.labels['focus-selected-policy']}`);
-    assert.ok(/privileged/i.test(s.labels['focus-provenance']), 'Selecting S2 must not relabel WXD provenance as a LiDAR policy.');
-    return { labels: s.labels, screenshot: await shot('06-selected-s2-displayed-wxd') };
+    assert.equal(s.selectedPolicy, OTHER); assert.equal(s.sessionId, report.jobId);
+    if (s.profile) assert.equal(s.profile.id, POLICY);
+    assert.equal(s.labels['focus-displayed-policy'], before.labels['focus-displayed-policy'], "The displayed policy is the recording's, not the next run's.");
+    assert.notEqual(s.labels['focus-selected-policy'], before.labels['focus-selected-policy'], `Next run: ${s.labels['focus-selected-policy']}`);
+    assert.equal(s.labels['focus-provenance'], before.labels['focus-provenance'], "Choosing a policy must not relabel the recording's map source.");
+    return { labels: s.labels, screenshot: await shot('06-next-run-differs') };
   });
 
   await check('recording details remain reachable and Escape restores the trigger', async () => {
@@ -257,7 +257,7 @@ try {
   for (const width of [390, 320]) await check(`mobile ${width}px stage controls fit and setup scrolls`, async () => {
     await page.setViewportSize({ width, height: 844 });
     await page.waitForTimeout(250);
-    const selectors = ['#focus-exit', '#focus-setup', '#focus-restart', '#focus-play', '#focus-camera', '#focus-inspect', '#focus-seek', '.focus-facts', '#focus-hint'];
+    const selectors = ['.focus-title', '.focus-layers', '.focus-heading', '#focus-exit', '#focus-setup', '#focus-restart', '#focus-play', '#focus-camera', '#focus-inspect', '#focus-seek', '.focus-facts', '#focus-hint'];
     const boxes = {};
     for (const sel of selectors) {
       const box = await page.locator(sel).boundingBox(); assert.ok(box && box.width > 0 && box.height > 0, `${sel} visible`);
@@ -285,22 +285,16 @@ try {
     return { boxes, widthState, screenshot, setup, scene: await assertScene() };
   });
 
-  await check('leaving focus restores the original palette and Studio layout', async () => {
+  await check('leaving the stage restores the Studio layout on the same recording', async () => {
     await page.setViewportSize({ width: 1600, height: 1000 });
-    const before = await palette();
-    assert.equal(before.focus, true); assert.equal(before.focusGrid, true);
+    const session = (await state()).sessionId;
     await page.click('#focus-exit');
     await page.waitForFunction(() => !window.__studio.focus.active && !document.body.classList.contains('flow-focus'));
-    const after = await palette();
-    assert.equal(after.focus, false); assert.equal(after.focusGrid, false); assert.ok(after.grids.every(Boolean));
-    assert.equal(after.fog, 0x101820);
-    const materials = [after.floor, after.ghost, ...after.futures, ...Object.values(after.lines)].filter(m => m?.saved);
-    assert.ok(materials.length >= 5, 'Palette restoration must cover floor, ghost and path materials.');
-    for (const m of materials) { assert.equal(m.color, m.saved.color); assert.equal(m.opacity, m.saved.opacity); }
+    assert.equal((await state()).sessionId, session);
     assert.ok(await page.locator('#focus-enter').isVisible()); assert.ok(await page.locator('.inspector').isVisible());
     assert.ok(await page.locator('.dock').isVisible()); assert.ok(await page.locator('#workspace-replay').isVisible());
     assert.equal(new URL(page.url()).searchParams.has('focus'), false);
-    return { before, after, screenshot: await shot('09-restored-studio') };
+    return { session, screenshot: await shot('09-restored-studio') };
   });
 } catch (error) {
   report.checks.push({ name: current, status: 'FAIL', error: error.stack, screenshot: await shot('fatal').catch(() => null) });
