@@ -516,8 +516,9 @@ def closer_scenarios(walks, pick):
                 + (lambda m: f" Its stand was then deferred; it moved {m[0]:.2f} m (simulator truth) in the {m[1]:.1f} s it waited." if m else '')(_moved_while_deferred(d))
                 + f" At the end it is {d['final_dist_estimate_m']:.2f} m from the goal by its estimate and {d['final_dist_m']:.2f} m by simulator truth;"
                   f" the estimate is {error[k]:.2f} m off there (at most {max(error):.2f} m during the walk).")
-        out.append({'id': 'estimate', 'mode': 'estimate', 'world': w, 'goal': d['goal_id'], 'at': 0,
-                    'title': 'Arrived by its estimate', 'chip': 'Truth vs estimate', 'caption': text})
+        # Truth and estimate stay centimetres apart until the arrival the caption is about: start just before it.
+        out.append({'id': 'estimate', 'mode': 'estimate', 'world': w, 'goal': d['goal_id'], 'at': max(0.0, round((arrived['t'] if arrived else 0) - 3, 2)),
+                    'clip_s': None, 'view': 'overlay', 'title': 'Arrived by its estimate', 'chip': 'Truth vs estimate', 'caption': text})
     for key, title, chip, text in (
             ('contact', 'At a wall end', 'Wall end',
              'Where the walk turns into the opening at the end of a wall. Compare where the plan puts the body with where the body goes.'),
@@ -530,8 +531,18 @@ def closer_scenarios(walks, pick):
             continue
         d = by_id.get((p['world'], p['goal']))
         at = p.get('at')
+        extra, clip, view = '', 9, 'split'
+        if key == 'drift' and d is not None:
+            # The whole wait, overlaid with a still camera: the robot leaves the plan body behind.
+            m = _moved_while_deferred(d)
+            clip, view = round((m[1] if m else 9) + 3, 1), 'overlay-fixed'
+            k = int(np.searchsorted(d['time'], (at or 0) + (m[1] if m else 0) / 2))
+            r = (d.get('ref') or [None] * d['n'])[min(k, d['n'] - 1)]
+            if r and r[2] / 1000 > 0.9:
+                extra = (f" The held frame puts the plan body's pelvis at {r[2] / 1000:.2f} m, above standing height: its root is the planner's,"
+                         " which SONIC never receives, so the body stays on the floor.")
         out.append({'id': key, 'mode': 'body', 'world': p['world'], 'goal': p['goal'], 'at': max(0.0, round((at or 0) - 1.5, 2)),
-                    'title': title, 'chip': chip, 'caption': text + ' ' + p['note']})
+                    'clip_s': clip, 'view': view, 'title': title, 'chip': chip, 'caption': text + extra + ' ' + p['note']})
     return [x for x in out if x['mode'] == 'body'] + [x for x in out if x['mode'] != 'body']
 
 

@@ -58,7 +58,7 @@ await check('the page loads light: nothing heavy before Start', async () => {
 });
 await check('Start loads the demo: a room, the robot, the recorded goals', async () => {
   await page.click('#try .poster .start');
-  await page.waitForSelector('#demo-stage.ready', { timeout: 60000 });
+  await page.waitForSelector('#demo-stage.is-ready', { timeout: 60000 });
   const s = await D(() => ({ world: window.studioDemo.S.worldId, cells: window.studioDemo.S.world.cells.length, recorded: window.studioDemo.S.recorded.length, robot: !!window.studioDemo.viewer.robot }));
   if (!s.robot || !s.recorded) throw new Error(JSON.stringify(s));
   const kb = Math.round(requests.reduce((n, r) => n + r.bytes, 0) / 1024);
@@ -84,6 +84,15 @@ await check('clicking the floor shows the checks at the goal, and all six on dem
   await page.click('#demo-stage [data-act="more"]');
   const n = await page.locator('#demo-stage .goal-chip .check').count();
   if (n !== 6) throw new Error(`${n} checks`);
+  // Each check is one row of three columns, not text wrapped a word per line (page styles must not leak in).
+  const tall = await D(() => [...document.querySelectorAll('#demo-stage .goal-chip .check')].filter(r => getComputedStyle(r).gridTemplateColumns.split(' ').length !== 3 || r.querySelector('.label').getBoundingClientRect().width < 120).length);
+  if (tall) throw new Error(`${tall} of the six checks are laid out wrong`);
+  // Over every recorded goal of the room, the checks never sit under the floating chrome.
+  const under = await D(() => { const d = window.studioDemo, keep = d.S.selected, hit = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const chrome = [...d.root.querySelectorAll('.chrome.top-left, .chrome.top-right')].map(n => n.getBoundingClientRect()); let n = 0;
+    for (const c of d.S.recorded) { d.selectCell(c); d.place(); const r = d.el.chip.getBoundingClientRect(); if (chrome.some(x => hit(r, x))) n++; }
+    d.selectCell(keep); d.place(); return n; });
+  if (under) throw new Error(`the checks sit under the chrome for ${under} goals`);
   await page.screenshot({ path: path.join(OUT, 'desktop-checks.png') });
   return verdict;
 });
@@ -181,7 +190,7 @@ await check('every room loads (keys 1–5)', async () => {
 await check('the split view: plan body against executed body, in step; scenarios switch', async () => {
   await page.locator('#closer').scrollIntoViewIfNeeded();
   await page.click('#closer-stage [data-closer-start]');
-  await page.waitForSelector('#closer-stage.ready', { timeout: 60000 });
+  await page.waitForSelector('#closer-stage.is-ready', { timeout: 60000 });
   const f0 = await page.locator('#closer-stage [data-el="frame"]').innerText();
   await page.waitForTimeout(1500);
   const f1 = await page.locator('#closer-stage [data-el="frame"]').innerText();
@@ -238,6 +247,18 @@ await check('findings: numbers from the same walks as the rooms, stills, and the
   await page.screenshot({ path: path.join(OUT, 'desktop-findings.png') });
   return `${n} findings, ${stills.length} stills, table total ${total}`;
 });
+await check('the page idles: no animation runs while its part is off screen', async () => {
+  const fresh = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+  await fresh.goto(URL_);
+  await fresh.waitForSelector('#pipeline .node', { state: 'attached', timeout: 15000 });
+  await fresh.evaluate(() => { document.documentElement.style.scrollBehavior = 'auto'; document.getElementById('findings').scrollIntoView(); });
+  await fresh.waitForTimeout(1500);
+  const running = await fresh.evaluate(() => document.getAnimations().filter(a => a.playState === 'running').length);
+  const frames = await fresh.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); }));
+  await fresh.context().close();
+  if (running) throw new Error(`${running} animations running off screen`);
+  return `0 animations running with the diagram off screen (rAF probe ${frames}/s, the probe's own)`;
+});
 await check('every section is built once the page is idle (Tab reaches them)', async () => {
   const fresh = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
   await fresh.goto(URL_);
@@ -259,7 +280,7 @@ await check('next step: Studio-measured numbers only, the split view starts', as
   if (Object.keys(localFile).length || local || markers.length) throw new Error(`local material on the public page: ${Object.keys(localFile).length ? 'next-local.json is not empty; ' : ''}${local ? 'local section shown; ' : ''}${markers.length} markers found`);
   const cards = await next.locator('#numbers-cards .hl').count(), rows = await next.locator('#tracker-table tbody tr').count();
   await next.click('#closer-stage [data-closer-start]');
-  await next.waitForSelector('#closer-stage.ready', { timeout: 60000 });
+  await next.waitForSelector('#closer-stage.is-ready', { timeout: 60000 });
   const mode = await next.evaluate(() => window.studioCloser.S.scenario.mode);
   await next.screenshot({ path: path.join(OUT, 'next-top.png') });
   await next.context().close();
@@ -288,7 +309,7 @@ await check('the standalone demo opens a walk by link and plays from the given m
 
 await check('phone: the demo fits, a tap picks a goal, its checks sit above the dock', async () => {
   const { page: phone } = await open({ width: 390, height: 844 }, 'phone', 'demo/');
-  await phone.waitForSelector('.stage.ready', { timeout: 60000 });
+  await phone.waitForSelector('.stage.is-ready', { timeout: 60000 });
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   const box = await phone.locator('.stage-canvas canvas').boundingBox();
   await phone.touchscreen.tap(box.x + box.width * 0.6, box.y + box.height * 0.45);
@@ -304,7 +325,7 @@ await check('phone: the main page has no sideways scroll and its embedded demo l
   const { page: phone } = await open({ width: 390, height: 844 }, 'phone-main');
   await phone.waitForLoadState('load');
   await phone.click('#try .poster .start');
-  await phone.waitForSelector('#demo-stage.ready', { timeout: 60000 });
+  await phone.waitForSelector('#demo-stage.is-ready', { timeout: 60000 });
   await phone.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await phone.waitForTimeout(1500);
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

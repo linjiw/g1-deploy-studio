@@ -15,8 +15,8 @@ function cards(featured, catalog) {
   if (deferred['table-edge']) out.push({ id: 'edge-ceiling', kind: 'robot', tag: 'Robot side · open', num: deferred['table-edge'], unit: deferred['table-edge'] === 1 ? 'walk' : 'walks', title: 'Table-height edges look like ceilings',
     text: "The top edge of an obstacle between 0.8 and 1.35 m tall can be filed in the robot's map as a low ceiling. node.py then refuses to stand near it and holds its last plan's pose.",
     method: `In the deploy repository (STATUS #11). Studio blocks goals inside the node's 0.8 m window and warns near the arrival. In these recordings ${deferred['table-edge']} walks deferred their stand next to a table-height box (classified from the recorded map and the room's boxes).` });
-  if (deferred.phantom) out.push({ id: 'phantom', kind: 'robot', tag: 'Robot side · open', num: deferred.phantom, unit: 'walks', title: "The robot's own arms leave phantom ceilings",
-    text: 'Single high returns from the robot\'s arms become overhead cells in a memory that never forgets. Stands get deferred with nothing that low nearby.',
+  if (deferred.phantom) out.push({ id: 'phantom', kind: 'robot', tag: 'Robot side · open', num: deferred.phantom, unit: 'walks', title: 'Ceilings with nothing overhead',
+    text: "Stands get deferred under low overhead cells in the robot's map with no box anywhere near them. The deploy repository's diagnosis (STATUS #15): single high returns from the robot's own arms, in a memory that never forgets.",
     method: `In the deploy repository (STATUS #15). Over a long session the validator saw stalls, deferred stands and falls follow. In these short walks ${deferred.phantom} deferred their stand with no box within 0.5 m of the low overhead cells. Studio's simulated robot offers a fresh-map mode to compare.` });
   const dr = f.deferral_drift;
   if (dr && dr.over_0_5m) out.push({ id: 'drift', kind: 'robot', tag: 'Robot side · measured here', num: fmt(dr.max_m, 1), unit: `m in ${fmt(dr.max_held_s, 0)} s`, title: 'A deferred stand can walk away',
@@ -25,8 +25,8 @@ function cards(featured, catalog) {
   const c = f.contact ?? {}, worst = Object.entries(c).sort((a, b) => b[1].over_100n / b[1].walks - a[1].over_100n / a[1].walks)[0];
   if (worst && worst[1].over_100n) {
     const [w, v] = worst;
-    out.push({ id: 'contact', kind: 'policy', tag: 'Policy · measured here', num: `${v.over_100n}/${v.walks}`, unit: 'walks', title: `Walls get touched in the ${SHORT[w] ?? w}`,
-      text: `${v.over_100n} of ${v.walks} walks there pushed against a wall with more than 100 N${v.at_wall_end ? `, ${v.at_wall_end} of them within 0.6 m of a wall's end, where the walk turns into the opening` : ''}. Most still "arrived": the node's outcome does not see contact.`,
+    out.push({ id: 'contact', kind: 'policy', tag: 'Policy · measured here', num: `${v.over_100n}/${v.walks}`, unit: 'walks', title: `Obstacles get pushed in the ${SHORT[w] ?? w}`,
+      text: `${v.over_100n} of ${v.walks} walks there pushed an obstacle with more than 100 N${v.at_wall_end ? `, ${v.at_wall_end} of them within 0.6 m of a wall's end, where the walk turns into the opening` : ''}. Most still "arrived": the node's outcome does not see contact.`,
       method: `Peak obstacle contact force, simulator truth, at any frame. By room: ${Object.entries(c).map(([k, x]) => `${room(k)?.title ?? k} ${x.over_100n} of ${x.walks}`).join(' · ')}.` });
   }
   const d = f.doorway;

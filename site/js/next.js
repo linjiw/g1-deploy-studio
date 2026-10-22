@@ -20,9 +20,9 @@ if (ex) {
 }
 if (worst && worst[1].over_100n) {
   const [w, v] = worst;
-  cards.push({ num: `${v.over_100n}/${v.walks}`, title: `${room(w).toLowerCase()} walks touched a wall`, text: `With more than 100 N${v.at_wall_end ? `; ${v.at_wall_end} of them within 0.6 m of a wall's end, where the walk turns into the opening` : ''}. The node's outcome does not see contact, so most still "arrived".`, fn: 'fn-contact' });
+  cards.push({ num: `${v.over_100n}/${v.walks}`, title: `${room(w).toLowerCase()} walks pushed an obstacle`, text: `With more than 100 N${v.at_wall_end ? `; ${v.at_wall_end} of them within 0.6 m of a wall's end, where the walk turns into the opening` : ''}. The node's outcome does not see contact, so most still "arrived".`, fn: 'fn-contact' });
 }
-$('numbers-cards').innerHTML = cards.map(x => `<article class="hl"><b>${escape(x.num)}</b><h3>${escape(x.title)}<sup><a href="#${x.fn}">${x.fn === 'fn-body' ? 1 : x.fn === 'fn-contact' ? 2 : 3}</a></sup></h3><p>${escape(x.text)}</p></article>`).join('');
+$('numbers-cards').innerHTML = cards.map(x => `<article class="hl"><b>${escape(x.num)}</b><h3>${escape(x.title)}<sup><a href="#${x.fn}">${{ 'fn-body': 1, 'fn-joints': 2, 'fn-contact': 3 }[x.fn]}</a></sup></h3><p>${escape(x.text)}</p></article>`).join('');
 
 // ----- per room
 if (ex) {
@@ -34,7 +34,7 @@ if (ex) {
 const b = f.beam, d = f.doorway, dr = f.deferral_drift;
 const falls = catalog.reduce((n, w) => n + (w.outcomes.estop ?? 0) + (w.outcomes.fell ?? 0), 0), walks = catalog.reduce((n, w) => n + w.walks, 0);
 const rows = [
-  c.corridor && ['Wall end', "corridor walks with contact over 100 N within 0.6 m of a wall's end", `${c.corridor.at_wall_end ?? '—'} of ${c.corridor.walks}`],
+  c.corridor && ['Wall end', "corridor walks with contact over 100 N (within 0.6 m of a wall's end)", `${c.corridor.over_100n} of ${c.corridor.walks} (${c.corridor.at_wall_end ?? '—'})`],
   b?.walks_under && (() => {
     // One walk's two numbers, the one that went lowest: its executed pelvis and its plan's, under the beam.
     const i = b.pelvis_under_m.indexOf(Math.min(...b.pelvis_under_m)), planned = b.planned_under_m?.[i];

@@ -62,6 +62,14 @@ class Demo {
     v.groups.route.add(this.lines.route); v.groups.plan.add(this.lines.plan); v.groups.trail.add(this.lines.trail);
     this.pose = new Float64Array(36); this.refPose = new Float64Array(36);
     this.cameraMode = 'orbit';
+    // Inside the page the keys belong to the demo only after a visitor has clicked or tabbed into it; a full-bleed
+    // demo always has them.
+    this.engaged = !embedded;
+    if (embedded) {
+      document.addEventListener('pointerdown', e => { this.engaged = root.contains(e.target); }, true);
+      root.addEventListener('focusin', () => { this.engaged = true; });
+      root.addEventListener('focusout', e => { if (e.relatedTarget && !root.contains(e.relatedTarget)) this.engaged = false; });
+    }
     // Narrow stages (phones, small slots) dock the goal checks and the result as sheets above the dock.
     new ResizeObserver(() => { this.root.classList.toggle('narrow', this.root.clientWidth < 640); this.place(); }).observe(root);
     // Sheets and the result sit above the dock, whose height depends on how it wraps.
@@ -78,7 +86,7 @@ class Demo {
     this.progress(0.88, 'Loading the room');
     await this.loadWorld(h?.world && this.catalog.some(w => w.id === h.world) ? h.world : this.catalog[0].id, { keepHash: true });
     this.progress(1, 'Ready');
-    this.root.classList.add('ready');
+    this.root.classList.add('is-ready');
     window.addEventListener('hashchange', () => this.fromHash());
     if (h?.goal) await this.fromHash();
     else this.live('Standing at the start mark. Click the floor to pick a goal, or open the room menu.');
@@ -147,6 +155,12 @@ class Demo {
     E.folders.addEventListener('click', e => { const b = e.target.closest('[data-folder]'); if (b) { this.S.folder = b.dataset.folder; this.S.filter = 'all'; this.renderPicker(); } });
     E.filters.addEventListener('click', e => { const b = e.target.closest('[data-filter]'); if (b) { this.S.filter = b.dataset.filter; this.renderPicker(); } });
     E.walkList.addEventListener('click', e => { const b = e.target.closest('[data-walk]'); if (b) this.watch(b.dataset.room, b.dataset.walk); });
+    const preview = e => {
+      const b = e.target.closest?.('[data-walk]'), cell = b && b.dataset.room === this.S.worldId ? this.S.world.cells.find(c => c.id === b.dataset.walk) : null;
+      this.viewer.setMarker('hoverMarker', cell ? cell.xy : null, { color: COLORS.white, radius: 0.14, pin: true });
+    };
+    E.walkList.addEventListener('pointerover', preview); E.walkList.addEventListener('focusin', preview);
+    E.walkList.addEventListener('pointerleave', () => this.viewer.setMarker('hoverMarker', null));
     document.addEventListener('pointerdown', e => {
       this.swallow = false;
       if (!E.picker.hidden && !E.picker.contains(e.target) && !E.rooms.contains(e.target)) { this.togglePicker(false); this.swallow = true; }
@@ -159,14 +173,14 @@ class Demo {
     return r.bottom > 120 && r.top < window.innerHeight - 120;
   }
   key(e) {
-    if (e.ctrlKey || e.metaKey || e.altKey || !this.inView()) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || !this.engaged || !this.inView()) return;
     if (e.target.closest('input:not([type=range]), textarea, select, [contenteditable]')) return;
     if (e.target.closest('.stage') && !this.root.contains(e.target)) return;  // another stage has the keys
     const k = e.key, S = this.S;
     if (k === 'Escape') {
       if (!this.el.picker.hidden) { this.togglePicker(false); this.el.rooms.focus(); }
       else if (!this.el.help.hidden) this.toggleHelp(false);
-      else if (S.selected || S.walk) this.reset();
+      else if (!S.walk && S.selected) this.reset();
       return;
     }
     // Space keeps its meaning on buttons, links and the slider; the letters work wherever focus is.
@@ -308,6 +322,7 @@ class Demo {
       if (S.staged !== c || S.mode !== 'loading') return;
       this.viewer.setMarker('hoverMarker', null);
       S.walk = walk; S.mapStep = -1; S.phase = null; S.events = 0;
+      this.writeHash(`${S.worldId}/${c.id}/play`);
       this.viewer.focus([S.world.start_xy, c.xy]);
       this.seek(at);
       if (autoplay) this.play();
@@ -377,7 +392,8 @@ class Demo {
   apply() {
     const S = this.S, w = S.walk, v = this.viewer, L = S.layers;
     v.setPose(w.pose(S.t, this.pose));
-    v.setGhost('plan', L.body ? w.refPose(S.t, this.refPose) : null);
+    const ref = L.body ? w.refPose(S.t, this.refPose) : null;
+    v.setGhost('plan', ref && !coincides(ref, this.pose) ? ref : null);
     // The robot's map: changes up to now (rebuilt from the pre-walk map when seeking back).
     let step = S.mapStep;
     if (step >= 0 && w.map[step].t > S.t + 1e-9) { v.setMapBase(S.world.map); step = -1; }
@@ -405,7 +421,7 @@ class Demo {
       S.phase = phase;
       if (S.playing && was !== null) {
         if (phase === 'PRESCAN') this.splash('Pre-scan', 'node.py stands for 0.5 s while the LiDAR fills its map');
-        else if (phase === 'RUN') this.splash('Walking', `plan ${Math.max(1, w.planNumber(S.t))} · it plans only around what it has seen`);
+        else if (phase === 'RUN') this.splash('Walking', 'it replans several times a second, only around what it has seen');
         else if (phase === 'ARRIVED') {
           const a = w.events.find(e => e.type === 'arrived');
           this.splash(a?.dist != null ? `Arrived ${fmt(a.dist, 2)} m from the goal` : 'Arrived', 'by its own estimate · node.py stands it up');
@@ -591,12 +607,12 @@ class Demo {
     if (!show) return;
     const v = verdict(c);
     const ids = S.world.check_ids, labels = [...c.l];
+    const dist = Math.hypot(c.xy[0] - S.world.start_xy[0], c.xy[1] - S.world.start_xy[1]);
     const rows = ids.map((id, k) => {
       const [status, icon] = STATUS[c.s[k]] ?? ['warn', '?'];
-      const label = status === 'pass' ? CHECKS[id].pass : labels.shift();
+      const label = status !== 'pass' ? labels.shift() : id === 'distance' ? `${fmt(dist, 1)} m straight${c.path_m ? ` · route ${fmt(c.path_m, 1)} m` : ''}` : CHECKS[id].pass;
       return `<li class="check ${status}" title="${escape(CHECKS[id].why)}"><span class="icon" aria-hidden="true">${icon}</span><span class="name">${escape(CHECKS[id].name)}</span><span class="label">${escape(label)}${status === 'pass' ? '' : `<small>${escape(CHECKS[id].why)}</small>`}</span></li>`;
     }).join('');
-    const dist = Math.hypot(c.xy[0] - S.world.start_xy[0], c.xy[1] - S.world.start_xy[1]);
     const g = c.walk ? grade(c.walk) : null;
     const snap = S.clicked ? Math.hypot(S.clicked[0] - c.xy[0], S.clicked[1] - c.xy[1]) : 0;
     const meta = [`${fmt(dist, 1)} m away`, c.path_m ? `route ${fmt(c.path_m, 1)} m` : null, snap > 0.05 && c.walk ? `snapped ${fmt(snap, 2)} m to a recorded goal` : null,
@@ -638,20 +654,38 @@ class Demo {
   place() {
     const S = this.S, v = this.viewer, E = this.el;
     if (!S.world) return;
-    const W = this.root.clientWidth, H = this.root.clientHeight;
-    const put = (node, xyz, dy) => {
+    const W = this.root.clientWidth, H = this.root.clientHeight, R = this.root.getBoundingClientRect();
+    const bottomOf = n => (n && n.getClientRects().length ? n.getBoundingClientRect().bottom - R.top : 0);
+    const minY = Math.max(bottomOf(this.root.querySelector('.chrome.top-left')), bottomOf(this.root.querySelector('.chrome.top-right'))) + 10;
+    const maxY = H - (E.dock.offsetHeight || 50) - 24;
+    const put = (node, xyz, dy, flip) => {
       const p = v.project(...xyz);
       if (!p || p[0] < -40 || p[0] > W + 40 || p[1] < -40 || p[1] > H + 40) { node.style.visibility = 'hidden'; return; }
       node.style.visibility = '';
       const w = node.offsetWidth, h = node.offsetHeight;
-      const x = Math.max(8, Math.min(W - w - 8, p[0] - w / 2)), y = Math.max(8, Math.min(H - h - 96, p[1] - h - dy));
+      const x = Math.max(8, Math.min(W - w - 8, p[0] - w / 2));
+      let y = p[1] - h - dy, below = false;
+      if (flip && y < minY) {  // no room above the pin: hang it below the goal's foot
+        const foot = v.project(xyz[0], xyz[1], 0);
+        y = (foot ? foot[1] : p[1]) + 16; below = true;
+      }
+      y = Math.max(minY, Math.min(maxY - h, y));
+      node.classList.toggle('below', below);
+      node.style.setProperty('--ax', `${Math.round(Math.max(16, Math.min(w - 16, p[0] - x)))}px`);
       node.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
     };
-    if (!S.picked) put(E.hint, [S.world.start_xy[0], S.world.start_xy[1], 1.75], 10);
+    if (!S.picked) put(E.hint, [S.world.start_xy[0], S.world.start_xy[1], 1.75], 10, false);
     if (E.chip.hidden) return;
     if (this.root.classList.contains('narrow')) { E.chip.style.transform = ''; E.chip.style.visibility = ''; }
-    else put(E.chip, [S.selected.xy[0], S.selected.xy[1], 0.78], 12);
+    else put(E.chip, [S.selected.xy[0], S.selected.xy[1], 0.78], 12, true);
   }
+}
+
+// The plan body on top of the body (standing, pre-scan): nothing to show.
+function coincides(a, b) {
+  if (Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > 0.03) return false;
+  for (let j = 7; j < 36; j++) if (Math.abs(a[j] - b[j]) > 0.03) return false;
+  return true;
 }
 
 // ----- verdicts and the walk catalogue
@@ -680,7 +714,7 @@ function bar(list) {
 }
 
 function template({ embedded, home }) {
-  const layers = LAYERS.map(l => `<button data-layer="${l.id}" aria-pressed="${l.id !== 'world'}" ${l.id === 'world' ? 'data-state="ghost"' : ''} title="${escape(`${l.why} (${l.key.toUpperCase()})`)}"><i style="--dot:${l.dot}"></i>${escape(l.label)}${l.id === 'world' ? ' <small>ghost</small>' : ''}</button>`).join('');
+  const layers = LAYERS.map(l => `<button data-layer="${l.id}" aria-pressed="true" ${l.id === 'world' ? 'data-state="ghost"' : ''} title="${escape(`${l.why} (${l.key.toUpperCase()})`)}"><i style="--dot:${l.dot}"></i>${escape(l.label)}${l.id === 'world' ? ' <small>ghost</small>' : ''}</button>`).join('');
   return `
   <div class="stage-canvas" data-el="canvas" role="application" aria-label="3D view of the room and the robot. Click the floor to pick a goal; the room menu and Pick one for me work from the keyboard."></div>
   <div class="chrome top-left">
@@ -689,10 +723,10 @@ function template({ embedded, home }) {
   </div>
   <div class="chrome top-right">
     <span class="phase" data-el="phase">WAIT</span>
-    ${embedded ? '<a class="pill" data-el="full" target="_blank" rel="noopener">Open full screen ↗</a>' : ''}
+    ${embedded ? '<a class="pill" data-el="full" target="_blank" rel="noopener" aria-label="Open full screen"><span class="t">Open full screen</span> ↗</a>' : ''}
   </div>
   <div class="hud" data-el="hud" hidden></div>
-  <div class="hint" data-el="hint"><b>Click the floor.</b> It has to find its own way.</div>
+  <div class="hint" data-el="hint"><b>${matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click'} the floor.</b> It has to find its own way.</div>
   <div class="goal-chip" data-el="chip" hidden role="group" aria-label="Goal checks"></div>
   <div class="splash" data-el="splash" aria-hidden="true"><b></b><span></span></div>
   <p class="sr-only" data-el="live" aria-live="polite"></p>

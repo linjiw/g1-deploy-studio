@@ -39,7 +39,8 @@ button { font: inherit; color: inherit; }
 .top nav a { color: var(--ink-3); font-size: .9rem; white-space: nowrap; } .top nav a:hover { color: var(--ink); text-decoration: none; }
 .gh { margin-left: auto; padding: 6px 14px; border-radius: 999px; background: var(--ink); color: #fff; font-size: .88rem; font-weight: 600; }
 .gh:hover { text-decoration: none; background: #262d36; }
-@media (max-width: 900px) { .top nav { display: none; } }
+.top nav { gap: 16px; }
+@media (max-width: 1120px) { .top nav { display: none; } }
 
 /* ----- sections */
 section { padding: clamp(56px, 8vw, 112px) clamp(16px, 4vw, 40px); max-width: 1280px; margin: 0 auto; }
@@ -90,6 +91,7 @@ section.band > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 
 /* ----- closer look */
 .chips { max-width: 1200px; margin: 0 auto 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 700px) { .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 4px; } .chips button { flex: none; } }
 .chips button { height: 38px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink-2); cursor: pointer; font-weight: 600; font-size: .92rem; }
 .chips button small { color: var(--ink-3); font-weight: 500; margin-left: 6px; }
 .chips button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
@@ -111,7 +113,8 @@ section.band > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 .diagram .zone { fill: none; stroke: var(--line-2); stroke-dasharray: 4 5; }
 .diagram .zone-label { fill: var(--ink-3); font: 600 12px var(--mono); letter-spacing: .1em; }
 .diagram .edge { fill: none; stroke: #9aa5b1; stroke-width: 1.6; }
-.diagram .edge.flow { stroke-dasharray: 3 7; animation: flow 1.2s linear infinite; }
+.diagram .edge.flow { stroke-dasharray: 3 7; }
+.diagram.animate .edge.flow { animation: flow 1.2s linear infinite; }
 .diagram .edge.studio-write { stroke: var(--accent); stroke-width: 2.2; }
 .diagram .edge.motor { stroke: #c98a1e; stroke-width: 2.2; }
 .diagram .edge.operator { stroke: var(--ok); stroke-width: 2.2; }
@@ -150,12 +153,12 @@ ul.people li::before { content: "●"; position: absolute; left: 2px; color: #c9
 .term .c { color: #8396a2; } .term .ok { color: #7be0a5; } .term .bad { color: #f07870; } .term .p { color: #56d9d0; }
 .step-text h3 { font-size: 1.15rem; }
 .step-text p { color: var(--ink-2); font-size: .95rem; }
-.ready { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.ready li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; font-size: .88rem; padding: 6px 0; border-bottom: 1px dashed var(--line); }
-.ready li .icon { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: .7rem; font-weight: 800; color: #fff; margin-top: 1px; }
-.ready li.pass .icon { background: var(--ok); } .ready li.warn .icon { background: #c98a1e; } .ready li.block .icon { background: var(--bad); }
-.ready li.idle .icon { background: var(--line-2); color: var(--ink-3); }
-.ready li small { display: block; color: var(--ink-3); font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
+.day .ready { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.day .ready li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; font-size: .88rem; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.day .ready li .icon { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: .7rem; font-weight: 800; color: #fff; margin-top: 1px; }
+.day .ready li.pass .icon { background: var(--ok); } .day .ready li.warn .icon { background: #c98a1e; } .day .ready li.block .icon { background: var(--bad); }
+.day .ready li.idle .icon { background: var(--line-2); color: var(--ink-3); }
+.day .ready li small { display: block; color: var(--ink-3); font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
 .ready-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .ready-head h3 { margin: 0; }
 .verdict { display: block; font-size: .88rem; font-weight: 650; margin-bottom: 4px; }

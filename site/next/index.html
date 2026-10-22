@@ -61,7 +61,7 @@
   <div class="card table-card">
     <h3>Where the gap shows</h3>
     <div class="table-wrap"><table class="outcomes" id="gap-table"><caption class="sr-only">Plan-to-body distance and contact per room</caption></table></div>
-    <p class="fineprint">Plan to body<sup><a href="#fn-body">1</a></sup>: median over walking frames. Contact<sup><a href="#fn-contact">2</a></sup>: walks with more than 100 N at any frame.</p>
+    <p class="fineprint">Plan to body<sup><a href="#fn-body">1</a></sup>: median over walking frames. Contact<sup><a href="#fn-contact">3</a></sup>: walks with more than 100 N at any frame.</p>
   </div>
 </section>
 
@@ -86,8 +86,8 @@
   </div>
   <ol class="footnotes wide-notes">
     <li id="fn-body"><b>Plan body and plan to body.</b> The plan body is the reference SONIC is tracking at each 20 ms tick (row 0 of its reference window): 29 joint angles and an orientation, recorded by Studio's simulated robot and kept at 25 Hz. Its pelvis position is the planner's diagnostic; SONIC never receives it. Plan to body is the distance between that pelvis and the robot's own estimate of its pelvis, both in the planner's frame, over walking frames.</li>
-    <li id="fn-contact"><b>Contact.</b> Peak obstacle contact force over 100 N at any frame of the walk, simulator truth.</li>
     <li id="fn-joints"><b>Joint gap.</b> Root-mean-square difference over the 29 joint angles between the plan body and the executed body, per walking frame.</li>
+    <li id="fn-contact"><b>Contact.</b> Peak obstacle contact force over 100 N at any frame of the walk, simulator truth.</li>
     <li id="fn-sim"><b>Simulation.</b> CPU MuJoCo, planner budget 16 candidates and 10 ODE steps, 160 ms planner latency with predictive anchoring, LIO-level odometry drift, one memory per session, the current G1 actuator limits, seed 0. Not a hardware result.</li>
   </ol>
 </section>

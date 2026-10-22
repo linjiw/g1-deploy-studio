@@ -61,7 +61,7 @@ for (const [id, ex] of Object.entries(featured.examples ?? {})) {
   await page.goto(`${URL_}#closer`);
   await page.waitForSelector('[data-closer-start]');
   await page.click('[data-closer-start]');
-  await page.waitForSelector('#closer-stage.ready', { timeout: 60000 });
+  await page.waitForSelector('#closer-stage.is-ready', { timeout: 60000 });
   await page.addStyleTag({ content: '#closer-stage .dock, #closer-stage .split-facts { display: none !important; }' });
   await page.evaluate(() => { const c = window.studioCloser; c.pause(); c.seek(c.S.clip[0] + 1.4); });
   await page.waitForTimeout(1500);

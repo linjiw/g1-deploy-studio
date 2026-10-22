@@ -72,4 +72,6 @@ export function initPipeline(container, detail) {
   container.addEventListener('click', e => { const g = e.target.closest('.node'); if (g) chosen(g.dataset.id); });
   container.addEventListener('keydown', e => { const g = e.target.closest('.node'); if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); chosen(g.dataset.id); } });
   select('studio');
+  // The flowing edges are a CSS animation: run it only while the diagram is on screen, so the page can idle.
+  new IntersectionObserver(entries => container.classList.toggle('animate', entries[0].isIntersecting)).observe(container);
 }

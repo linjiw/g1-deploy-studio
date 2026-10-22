@@ -70,7 +70,7 @@ class Closer {
     this.progress(0.9, 'Loading the walk');
     await this.load(this.scenarios[0]);
     this.progress(1, 'Ready');
-    this.root.classList.add('ready');
+    this.root.classList.add('is-ready');
   }
   bind() {
     const E = this.el;
@@ -96,12 +96,13 @@ class Closer {
     // Walls as glass: the bodies are the subject, and a wall must not hide them.
     v.setWorld(world); v.setBoxesStyle('ghost');
     const a = Math.max(0, Math.min(sc.at ?? 0, walk.duration - 1));
-    S.clip = [a, Math.min(walk.duration, a + CLIP_S)];
-    if (sc.mode === 'estimate') S.clip = [0, walk.duration];
+    S.clip = [a, sc.clip_s === null ? walk.duration : Math.min(walk.duration, a + (sc.clip_s ?? CLIP_S))];
+    // A still camera where the scenario is about something moving away (a deferred stand); else it follows.
+    this.still = sc.view === 'overlay-fixed';
     this.root.dataset.mode = sc.mode;
     // Truth and estimate are centimetres apart: overlaid they compare; side by side the gap would be lost.
     // Side by side needs room for the plan body too: narrow stages start overlaid.
-    S.overlay = sc.mode === 'estimate' || this.root.clientWidth < 560;
+    S.overlay = (sc.view ?? '').startsWith('overlay') || sc.mode === 'estimate' || this.root.clientWidth < 560;
     const [l, r] = SIDES[sc.mode];
     this.el.left.innerHTML = `<b>${escape(l[0])}</b> ${escape(l[1])}`;
     this.el.right.innerHTML = `<b>${escape(r[0])}</b> ${escape(r[1])}`;
@@ -118,7 +119,12 @@ class Closer {
   aim() {
     const S = this.S, w = S.walk, v = this.viewer;
     const p = w.pose(S.t, this.q), heading = Math.atan2(2 * (p[3] * p[6] + p[4] * p[5]), 1 - 2 * (p[5] * p[5] + p[6] * p[6]));
-    if (S.scenario.mode === 'estimate') v.look([p[0], p[1], 0.3], { yaw: heading - 2.4, pitch: 0.9, distance: 3.6 });
+    if (this.still) {
+      // Frame where the robot starts and where it ends up: the plan body stays at the start.
+      const end = w.pose(S.clip[1], new Float64Array(36)), cx = (p[0] + end[0]) / 2, cy = (p[1] + end[1]) / 2;
+      const span = Math.hypot(end[0] - p[0], end[1] - p[1]);
+      v.look([cx, cy, 0.5], { yaw: Math.atan2(end[1] - p[1], end[0] - p[0]) - Math.PI / 2, pitch: 0.75, distance: Math.max(4, span * 1.6 + 2) });
+    } else if (S.scenario.mode === 'estimate') v.look([p[0], p[1], 0.3], { yaw: heading - 2.4, pitch: 0.9, distance: 3.6 });
     else v.look([p[0], p[1], 0.55], { yaw: heading + 0.95, pitch: 0.26, distance: S.overlay ? 3.6 : 4.4 });
   }
   setOverlay(on, { quiet = false } = {}) {
@@ -227,6 +233,7 @@ class Closer {
   // The camera keeps its direction and distance and moves with the executed pelvis (the left half's camera is
   // moved onto the plan body as it renders).
   follow(p) {
+    if (this.still) return;
     const v = this.viewer, dx = p[0] - v.controls.target.x, dy = p[1] - v.controls.target.y;
     v.controls.target.x += dx; v.controls.target.y += dy; v.camera.position.x += dx; v.camera.position.y += dy;
   }
