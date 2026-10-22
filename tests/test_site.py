@@ -169,8 +169,8 @@ class WalkExportTests(unittest.TestCase):
     def test_the_walk_list_has_one_row_per_walk(self):
         index = {'start_xy': [0.0, 0.0], 'cells': [{'id': 'g00-00', 'xy': [3.0, 4.0]}],
                  'walks': {'g00-00': {'outcome': 'arrived', 'max_contact_n': 140.4, 'final_dist_m': 0.234, 'final_dist_estimate_m': 0.1, 'duration_s': 12.34}}}
-        self.assertEqual(export.walk_list(index), [['g00-00', 'contact', 5.0, 140, 0.23, 12.3]])
-        self.assertEqual(export.LIST_FIELDS, ['id', 'grade', 'dist_m', 'contact_n', 'final_m', 'duration_s'])
+        self.assertEqual(export.walk_list(index), [['g00-00', 'contact', 5.0, 140, 0.23, 12.3, 3.0, 4.0]])
+        self.assertEqual(export.LIST_FIELDS, ['id', 'grade', 'dist_m', 'contact_n', 'final_m', 'duration_s', 'x', 'y'])
 
     def test_split_views_put_plan_body_scenarios_first_and_start_before_the_moment(self):
         d = export.walk_data('w', 'g00-00', self.run_dir, *self.base)

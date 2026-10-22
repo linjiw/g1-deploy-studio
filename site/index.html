@@ -38,8 +38,8 @@
 <section id="top" class="hero">
   <p class="eyebrow">Unitree G1 · learned navigation · simulation first</p>
   <h1>Rehearse the walk before the robot takes it.</h1>
-  <p class="lede">G1 Deploy Studio is a browser cockpit for deploying a learned navigation policy on a humanoid. It shows what the robot sees, where it plans to go and whether a goal passes Studio's checks before it is sent. It never commands a motor.</p>
-  <div class="cta"><button class="button primary" data-start>Try the demo</button><a class="button" href="demo/">Open it full screen</a><a class="button ghost" href="#tour">Watch the tour · 9:44</a></div>
+  <p class="lede"><b>A browser cockpit for deploying a learned navigation policy on a humanoid.</b> It shows what the robot sees and where it plans to go, checks every goal before anyone presses Go, and never commands a motor.</p>
+  <div class="cta"><button class="button primary" data-start>Start the demo</button><a class="button ghost" href="#tour">Watch the tour · 9:44</a></div>
 </section>
 
 <section id="try" class="slot" aria-label="Navigate demo">
@@ -50,12 +50,12 @@
       <div class="poster-body">
         <h3>Send the robot somewhere.</h3>
         <p>Click the floor of a room, read the six checks Studio runs before a goal is sent, press Go as the operator does, and watch the walk the deploy stack made.</p>
-        <div class="row"><button class="start" data-start><span class="tri" aria-hidden="true"></span>Start the demo</button></div>
-        <div class="row"><a href="demo/" target="_blank" rel="noopener">Open in a new tab ↗</a><small>about 1 MB · recorded walks · your browser runs no policy</small></div>
+        <div class="row"><button class="start" data-start><span class="tri" aria-hidden="true"></span>Start the demo</button><a href="demo/" target="_blank" rel="noopener">or open it full screen ↗</a></div>
+        <small>About 1 MB. Every walk is a recording; your browser runs no policy.</small>
       </div>
     </div>
   </div>
-  <p class="slot-note"><b>Recorded, simulated walks of the deploy stack</b>: the frozen Flow student planner, the SONIC tracking policy and Studio's reproduction of node.py, in MuJoCo with a simulated LiDAR and the robot's deploy settings. Goals snap to recorded ones on a 0.4 m grid. <a href="#faq">What this is, and is not</a>.</p>
+  <p class="slot-note"><b>Recorded, simulated walks of the real deployment software.</b> A learned planner picks a path through what the robot has seen, a learned tracking controller turns it into joint targets, and the navigation node decides when a walk starts and ends. Goals snap to recorded ones on a 0.4 m grid. <a href="#faq">What this is, and is not</a>.</p>
 </section>
 
 <section id="highlights" class="band">
@@ -83,7 +83,7 @@
 <section id="atlas">
   <div class="section-head">
     <p class="eyebrow">Every walk</p>
-    <h2>One dot per walk. Click one to watch it.</h2>
+    <h2>One dot per walk.</h2>
     <p>Each dot is one recorded walk: how far its goal was from the start mark, against how it ended. Switch the measure and the room; move across the chart, or focus it and use the arrow keys, to read a walk.</p>
   </div>
   <div class="card atlas" id="atlas-chart"></div>
@@ -92,7 +92,7 @@
 <section id="closer">
   <div class="section-head">
     <p class="eyebrow">Take a closer look</p>
-    <h2>What it planned, what it did, and where it thought it was.</h2>
+    <h2>The plan, the body, the estimate.</h2>
     <p>One recorded walk on both halves, in step. Pick a scenario; drag to turn both cameras; step frame by frame.</p>
   </div>
   <div class="chips" id="closer-chips" role="group" aria-label="Scenarios"></div>
@@ -108,7 +108,7 @@
 <section id="how" class="band">
   <div class="section-head">
     <p class="eyebrow">How it works</p>
-    <h2>Studio watches the deploy stack. It never drives the motors.</h2>
+    <h2>Studio watches. It never drives.</h2>
     <p>On the robot day everything runs on the deploy PC next to the G1. Studio attaches on loopback: it listens to the streams, and it may send <code>node.py</code> a checked goal or a request to stand. Click a part to see what it does.</p>
   </div>
   <div class="how-grid">
@@ -136,7 +136,7 @@
 <section id="findings" class="band">
   <div class="section-head">
     <p class="eyebrow">What rehearsing found</p>
-    <h2>Found in simulation, before a robot found it.</h2>
+    <h2>Found in simulation first.</h2>
     <p>Running hundreds of simulated walks before a real one is the point. These came out of it. Where there is an example, it is one of the recordings in the demo.</p>
   </div>
   <div class="cards" id="findings-cards"></div>
@@ -150,7 +150,7 @@
 <section id="faq">
   <div class="section-head">
     <p class="eyebrow">Questions</p>
-    <h2>What you are looking at.</h2>
+    <h2>Fair questions.</h2>
     <p><button class="link" id="faq-all" aria-controls="faq-list">Expand all</button></p>
   </div>
   <div class="faq-grid">
@@ -184,7 +184,7 @@
 <section id="use">
   <div class="section-head">
     <p class="eyebrow">Use it</p>
-    <h2>A gateway and a browser app, next to the deployment it watches.</h2>
+    <h2>Run it next to the robot.</h2>
     <p>The page above is a demo of one workspace. This is the tool: it runs on loopback on the deploy PC.</p>
   </div>
   <div class="gallery">
@@ -220,7 +220,7 @@ npm ci
 </main>
 
 <footer>
-  <p><b>G1 Deploy Studio</b> · Apache-2.0 · research software, not affiliated with Unitree Robotics or NVIDIA. The G1 meshes are Unitree's (<a href="licenses/unitree_mujoco-LICENSE.txt">BSD-3-Clause</a>), simplified for the web; three.js is <a href="licenses/three.js-LICENSE.txt">MIT</a>; see <a href="https://github.com/linjiw/g1-deploy-studio/blob/main/NOTICE">NOTICE</a>. This page runs no policy and sends nothing anywhere: it is static files.</p>
+  <p><b>G1 Deploy Studio</b> · Apache-2.0 · research software, not affiliated with Unitree Robotics or NVIDIA. The G1 meshes are Unitree's (<a href="licenses/unitree_mujoco-LICENSE.txt">BSD-3-Clause</a>), simplified for the web; three.js is <a href="licenses/three.js-LICENSE.txt">MIT</a>; the Inter typeface is <a href="vendor/fonts/Inter-LICENSE.txt">OFL-1.1</a>; see <a href="https://github.com/linjiw/g1-deploy-studio/blob/main/NOTICE">NOTICE</a>. This page runs no policy and sends nothing anywhere: it is static files.</p>
 </footer>
 <noscript><p class="noscript">The interactive parts of this page need JavaScript and WebGL. The tour video works without them.</p></noscript>
 </body>

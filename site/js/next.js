@@ -46,7 +46,7 @@ const rows = [
   ['Falls and E-stops', 'all rooms', `${falls} of ${walks}`],
 ].filter(Boolean);
 $('tracker-table').insertAdjacentHTML('beforeend', `<thead><tr><th>Scenario</th><th>Measure</th><th>SONIC · measured here</th><th>Another tracker</th></tr></thead><tbody>${
-  rows.map(([s, m, v]) => `<tr><td>${escape(s)}</td><td class="measure">${escape(m)}</td><td>${escape(v)}</td><td class="zero">not run</td></tr>`).join('')}</tbody>`);
+  rows.map(([s, m, v], i) => `<tr><td>${escape(s)}</td><td class="measure">${escape(m)}</td><td>${escape(v)}</td>${i ? '' : `<td class="pending" rowspan="${rows.length}">Not run yet. When a second tracker runs on the same plan stream, its numbers go in this column; nothing is estimated in their place.</td>`}</tr>`).join('')}</tbody>`);
 
 // ----- material that only a local build carries
 const local = await json('next-local.json').catch(() => null);

@@ -26,7 +26,7 @@ export function initCloserSection({ chips, stage, caption, keep = () => true }) 
     if (!starting) {
       const poster = stage.querySelector('.poster');
       poster.hidden = true;
-      starting = boot(stage, { scenarios: [current, ...list.filter(x => x !== current)] }, () => import('./closer.js').then(m => m.mountCloser), {
+      starting = boot(stage, { scenarios: [current, ...list.filter(x => x !== current)], trace: document.getElementById('closer-trace') }, () => import('./closer.js').then(m => m.mountCloser), {
         onStopped: () => { starting = null; view = null; window.studioCloser = null; poster.hidden = false; poster.querySelector('.start')?.focus({ preventScroll: true }); },
       }).then(v => { view = v; window.studioCloser = v; return v; });
     }

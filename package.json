@@ -10,6 +10,7 @@
     "site:check": "node tools/site/check.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
     "three": "0.180.0"
   },
   "devDependencies": {

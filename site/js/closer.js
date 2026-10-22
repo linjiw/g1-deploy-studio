@@ -25,8 +25,9 @@ const SIDES = {
   estimate: [['Simulator truth', 'where the robot is'], ['Its estimate', 'where it thinks it is']],
 };
 
-export async function mountCloser(root, { scenarios, progress = () => {}, onChange = () => {}, onStop = null } = {}) {
+export async function mountCloser(root, { scenarios, progress = () => {}, onChange = () => {}, onStop = null, trace = null } = {}) {
   const c = new Closer(root, scenarios, progress, onChange, onStop);
+  c.trace = trace;
   await c.init();
   return c;
 }
@@ -109,11 +110,12 @@ class Closer {
     // Side by side needs room for the plan body too: narrow stages start overlaid.
     S.overlay = (sc.view ?? '').startsWith('overlay') || sc.mode === 'estimate' || this.root.clientWidth < 560;
     const [l, r] = SIDES[sc.mode];
-    this.el.left.innerHTML = `<b>${escape(l[0])}</b> ${escape(l[1])}`;
-    this.el.right.innerHTML = `<b>${escape(r[0])}</b> ${escape(r[1])}`;
+    this.el.left.innerHTML = `<b>${escape(l[0])}</b> <small>${escape(l[1])}</small>`;
+    this.el.right.innerHTML = `<b>${escape(r[0])}</b> <small>${escape(r[1])}</small>`;
     v.setMarker('goal', sc.mode === 'estimate' ? walk.goal : null, { color: COLORS.amber, radius: 0.4 });
     this.setOverlay(S.overlay, { quiet: true });
     this.bands();
+    this.drawTrace();
     this.seek(S.clip[0]);
     this.aim();
     this.onChange(sc);
@@ -163,7 +165,42 @@ class Closer {
     }
     if (!quiet && S.walk) { this.aim(); this.apply(); }
   }
-  destroy() { this.abort.abort(); for (const o of this.observers) o.disconnect(); this.viewer.dispose(); }
+  destroy() { this.abort.abort(); for (const o of this.observers) o.disconnect(); this.viewer.dispose(); if (this.trace) { this.trace.hidden = true; this.trace.innerHTML = ''; } }
+  // Under the stage (the next-step page): plan to body and contact over the clip, its cursor in step; a click seeks.
+  drawTrace() {
+    const S = this.S, w = S.walk, el = this.trace;
+    if (!el || S.scenario.mode !== 'body') { if (el) el.hidden = true; return; }
+    el.hidden = false;
+    const [a, b] = S.clip, W = Math.max(320, el.clientWidth - 32), H = 120, L = 44, R = 10, T = 10, B = 24;
+    const k0 = w.index(a), k1 = w.index(b), x = t => L + (t - a) / (b - a || 1) * (W - L - R);
+    const lag = [], hits = [];
+    let top = 0.3;
+    for (let k = k0; k <= k1; k++) {
+      const r = w.hasRef ? w.refFrames.subarray(k * 36, k * 36 + 2) : null;
+      const ok = r && !Number.isNaN(r[0]) && w.phaseAt(k) === 'RUN' && !w.est_missing?.includes(k);
+      const d = ok ? Math.hypot(r[0] - w.est[k * 2] / 1000, r[1] - w.est[k * 2 + 1] / 1000) : null;
+      lag.push([w.times[k], d]); if (d !== null) top = Math.max(top, d);
+      if ((w.contact_n[k] ?? 0) > 100) hits.push(w.times[k]);
+    }
+    top = Math.ceil(top * 10) / 10;
+    const y = d => H - B - d / top * (H - B - T);
+    let path = '', pen = false;
+    for (const [t, d] of lag) { if (d === null) { pen = false; continue; } path += `${pen ? 'L' : 'M'}${x(t).toFixed(1)},${y(d).toFixed(1)}`; pen = true; }
+    el.innerHTML = `<p class="trace-title"><b>Plan to body</b>, while walking (m) · <span class="hot">contact over 100 N</span> · click to move through the clip</p>
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Plan to body distance over the clip, up to ${fmt(top, 1)} m">
+        <line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/><line class="grid" x1="${L}" x2="${W - R}" y1="${y(top)}" y2="${y(top)}"/>
+        <text x="${L - 6}" y="${y(top) + 4}" text-anchor="end">${fmt(top, 1)}</text><text x="${L - 6}" y="${H - B + 4}" text-anchor="end">0</text>
+        ${hits.map(t => `<rect class="hit" x="${x(t) - 1.5}" y="${T}" width="3" height="${H - B - T}"/>`).join('')}
+        <path class="lag" d="${path}"/>
+        <text x="${L}" y="${H - 6}">${fmt(a, 1)} s</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${fmt(b, 1)} s</text>
+        <line class="cursor" x1="0" x2="0" y1="${T}" y2="${H - B}"/>
+      </svg>`;
+    this.traceX = x;
+    el.querySelector('svg').addEventListener('click', e => {
+      const r = e.currentTarget.getBoundingClientRect(), t = a + ((e.clientX - r.left) / r.width * W - L) / (W - L - R) * (b - a);
+      this.pause(); this.seek(t);
+    });
+  }
   // How far the left half's body is from the robot, so the left camera sits the same way on it.
   delta(out) {
     const S = this.S, ref = S.walk.refPose(S.t, this.r), p = S.walk.pose(S.t, this.q);
@@ -268,6 +305,8 @@ class Closer {
     if (document.activeElement !== E.scrub) E.scrub.value = String(Math.round((S.t - a) / (b - a || 1) * 1000));
     const k = w.index(S.t + 1e-6);
     E.frame.textContent = `frame ${k + 1} / ${w.n} · ${fmt(S.t, 2)} s`;
+    const cur = this.trace?.querySelector('.cursor');
+    if (cur && this.traceX) { const px = this.traceX(S.t).toFixed(1); cur.setAttribute('x1', px); cur.setAttribute('x2', px); }
     E.scrub.setAttribute('aria-valuetext', `${fmt(S.t, 2)} seconds, frame ${k + 1} of ${w.n} (${FPS} per second)`);
   }
 }

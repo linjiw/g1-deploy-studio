@@ -13,14 +13,14 @@ function cards(featured, catalog) {
   const room = id => catalog.find(w => w.id === id);
   const out = [];
   if (deferred['table-edge']) out.push({ id: 'edge-ceiling', kind: 'robot', tag: 'Robot side · open', num: deferred['table-edge'], unit: deferred['table-edge'] === 1 ? 'walk' : 'walks', title: 'Table-height edges look like ceilings',
-    text: "The top edge of an obstacle between 0.8 and 1.35 m tall can be filed in the robot's map as a low ceiling. node.py then refuses to stand near it and holds its last plan's pose.",
+    text: "The top edge of an obstacle between 0.8 and 1.35 m tall can be filed in the robot's map as a low ceiling. The navigation node then refuses to stand near it and holds its last plan's pose.",
     method: `In the deploy repository (STATUS #11). Studio blocks goals inside the node's 0.8 m window and warns near the arrival. In these recordings ${deferred['table-edge']} walks deferred their stand next to a table-height box (classified from the recorded map and the room's boxes).` });
   if (deferred.phantom) out.push({ id: 'phantom', kind: 'robot', tag: 'Robot side · open', num: deferred.phantom, unit: 'walks', title: 'Ceilings with nothing overhead',
     text: "Stands get deferred under low overhead cells in the robot's map with no box anywhere near them. The deploy repository's diagnosis (STATUS #15): single high returns from the robot's own arms, in a memory that never forgets.",
     method: `In the deploy repository (STATUS #15). Over a long session the validator saw stalls, deferred stands and falls follow. In these short walks ${deferred.phantom} deferred their stand with no box within 0.5 m of the low overhead cells. Studio's simulated robot offers a fresh-map mode to compare.` });
   const dr = f.deferral_drift;
   if (dr && dr.over_0_5m) out.push({ id: 'drift', kind: 'robot', tag: 'Robot side · measured here', num: fmt(dr.max_m, 1), unit: `m in ${fmt(dr.max_held_s, 0)} s`, title: 'A deferred stand can walk away',
-    text: `While node.py defers a stand it lets the last plan play out and holds that plan's final frame. In ${dr.over_0_5m} of ${dr.walks} walks with a deferred stand the robot still moved more than 0.5 m. The node's outcome stays "arrived".`,
+    text: `While the navigation node defers a stand it lets the last plan play out and holds that plan's final frame. In ${dr.over_0_5m} of ${dr.walks} walks with a deferred stand the robot still moved more than 0.5 m. The node's outcome stays "arrived".`,
     method: "On the robot node.py keeps deferring; Studio forces the stand after 20 s only in simulation. The operator stands the robot with the remote's D-up, only if nothing is directly above it (STATUS #18). Simulation, one seed per goal." });
   const c = f.contact ?? {}, worst = Object.entries(c).sort((a, b) => b[1].over_100n / b[1].walks - a[1].over_100n / a[1].walks)[0];
   if (worst && worst[1].over_100n) {
@@ -65,7 +65,8 @@ export async function initFindings(container, table) {
     const shot = ex
       ? `<a class="shot" href="${href}" aria-label="${escape(ex.label ?? 'Watch it')}"><img src="${MEDIA}stills/${f.id}.jpg" width="640" height="360" loading="lazy" alt="" onerror="this.parentNode.classList.add('blank');this.remove()"><span class="play">▶ ${escape(ex.label ?? 'Watch it')}</span></a>`
       : `<div class="shot blank" aria-hidden="true"><span>${escape(f.tag)}</span></div>`;
-    const watch = ex ? `<a class="watch" href="${href}">${escape(ex.label ?? 'Watch it')} →</a>`
+    // One way in per card: the still is the link when there is an example.
+    const watch = ex ? ''
       : f.anchor ? `<a class="watch" href="${f.anchor}">Try it →</a>` : f.link ? `<a class="watch" href="${f.link}">Read the record →</a>` : '';
     return `<article class="finding">${shot}<div class="body"><span class="kind ${f.kind}">${escape(f.tag)}</span>
       <p class="num">${escape(String(f.num))}${f.unit ? `<small>${escape(f.unit)}</small>` : ''}</p><h3>${escape(f.title)}</h3><p>${escape(f.text)}</p>

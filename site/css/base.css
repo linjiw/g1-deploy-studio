@@ -1,6 +1,8 @@
 /* Shared by every page: fonts, resets. Page colours are in site.css, the dark stage's in stage.css. */
+/* Inter (OFL-1.1), self-hosted: the variable Latin subset, 48 kB; the system font shows until it arrives. */
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("../vendor/fonts/inter-latin-wght-normal.woff2") format("woff2"); }
 :root {
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 *, *::before, *::after { box-sizing: border-box; }

@@ -10,8 +10,8 @@ const CHECKS = {
   inside: { name: 'Inside', pass: 'Inside the map', why: "The goal must lie in the planner's 12 × 12 m memory, at least 0.5 m from its edge." },
   seen: { name: 'Seen', pass: 'Seen', why: 'Has the LiDAR seen this spot? Unseen goals pass with a warning: the planner explores as it sees more.' },
   free: { name: 'Free', pass: 'Free of obstacles', why: 'Blocks if anything taller than the 0.25 m step-over is within 0.30 m of the goal; route margins and low obstacles nearby warn.' },
-  overhead: { name: 'Overhead', pass: 'No low overhead obstacle', why: "node.py defers its stand if its memory holds a ceiling below 1.35 m within its 0.8 m window. Studio blocks such goals and warns near them." },
-  reachable: { name: 'Reachable', pass: 'Reachable', why: "A route through what the robot knows, mirroring Flow's SensorRoute: obstacles over 0.25 m kept 0.35 m away, unseen space treated as free." },
+  overhead: { name: 'Overhead', pass: 'No low overhead obstacle', why: "The navigation node will not stand up where its map holds anything lower than 1.35 m within 0.8 m. Studio blocks such goals and warns near them." },
+  reachable: { name: 'Reachable', pass: 'Reachable', why: "A route through what the robot has seen, 0.35 m clear of anything taller than 0.25 m; unseen space counts as free, as in the planner's own route finder." },
   distance: { name: 'Distance', pass: 'Distance', why: 'Straight-line and route length from the start mark.' },
 };
 const STATUS = { p: ['pass', '✓'], w: ['warn', '!'], b: ['block', '✕'] };
@@ -21,7 +21,7 @@ const LAYERS = [
   { id: 'body', label: 'Plan body', dot: '#ffb3dc', key: 'b', why: "The pose SONIC is chasing at this instant: the reference it tracks. Its root is the planner's (SONIC is never given it)." },
   { id: 'map', label: 'Its map', dot: '#efbb70', key: 'm', why: "The planner's memory: floor it has seen, low obstacles it steps over, obstacles at their seen height, overhead cells." },
   { id: 'lidar', label: 'LiDAR', dot: '#7fe0d2', key: 'l', why: 'The latest LiDAR returns, after the robot\'s own body is filtered out.' },
-  { id: 'plan', label: 'Plan', dot: '#ff6fb5', key: 'p', why: 'The plan SONIC is tracking right now: its pelvis path, at pelvis height.' },
+  { id: 'plan', label: 'Plan path', dot: '#ff6fb5', key: 'p', why: 'The plan the tracker is following right now: its pelvis path, at pelvis height.' },
   { id: 'world', label: 'Real room', dot: '#8fa4b3', key: 'w', why: 'The simulation\'s real boxes. The robot never receives them; it only knows its map. Click to cycle ghost, solid, off.' },
   { id: 'outcomes', label: 'Outcomes', dot: '#7be0a5', key: 'o', why: 'Every recorded goal, coloured by how its walk ended.' },
 ];
@@ -31,9 +31,9 @@ const HUD = [
   ['goal', 'To goal', 'estimate', "By the robot's own estimate (LIO-level drift), as node.py measures it", ''],
   ['tilt', 'Tilt', 'truth', 'Simulator truth; the E-stop is at 0.75 rad (43°)', ''],
   ['contact', 'Contact', 'truth', 'Obstacle contact force, simulator truth', ''],
-  ['body', 'Plan body', 'off by', "While walking: how far the plan body's pelvis is from where the robot thinks its pelvis is", ''],
+  ['body', 'Plan body', 'off by', "How far the plan body's pelvis is from where the robot thinks its pelvis is (when they differ: walking, or a deferred stand holding the plan's last frame)", ''],
   ['planner', 'Planner', 'its rule', "The planner's choice among its sampled candidates", 'wide'],
-  ['event', 'Last event', 'node.py', 'The most recent event of the walk, as the node or Studio logged it', 'wide'],
+  ['event', 'Last event', 'log', 'The most recent event of the walk, as the navigation node or Studio logged it', 'wide'],
 ];
 const QUIET = new Set(['waiting', 'goal', 'prescan', 'run', 'walk_end', 'ended']);
 
@@ -181,6 +181,7 @@ class Demo {
   // Stop: the page's poster comes back; the WebGL context, observers and listeners go.
   destroy() {
     this.abort.abort();
+    clearTimeout(this._ghostTip);
     for (const o of this.observers) o.disconnect();
     clearTimeout(this._splash); clearTimeout(this._flash);
     this.viewer.dispose();
@@ -211,6 +212,8 @@ class Demo {
     if (lower === 'f') { this.camera('follow'); return; }
     if (lower === 'n') { this.togglePicker(); return; }
     if (/^[1-9]$/.test(k) && this.catalog[Number(k) - 1]) { this.loadWorld(this.catalog[Number(k) - 1].id); return; }
+    if (!S.walk && e.target === this.el.canvas && /^Arrow/.test(k)) { e.preventDefault(); this.moveCursor(k); return; }
+    if (!S.walk && e.target === this.el.canvas && k === 'Enter' && S.cursor) { e.preventDefault(); this.pick(S.cursor); this.focusIn(this.el.chip.querySelector('[data-act="send"]')); return; }
     if (S.walk && (k === 'ArrowLeft' || k === 'ArrowRight') && !e.target.closest('input')) {
       e.preventDefault(); this.pause(); this.seek(S.t + (k === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 0.04 : 1)); return;
     }
@@ -287,6 +290,19 @@ class Demo {
     S.hover = cell;
     this.viewer.setMarker('hoverMarker', cell && cell !== S.selected ? cell.xy : null, { color: cell?.ok ? COLORS.white : COLORS.red, radius: 0.12, pin: false });
   }
+  // The keyboard's goal cursor: 0.4 m steps, up is away from the camera.
+  moveCursor(key) {
+    const S = this.S, v = this.viewer, c = v.camera.position, t = v.controls.target;
+    let fx = t.x - c.x, fy = t.y - c.y; const n = Math.hypot(fx, fy) || 1; fx /= n; fy /= n;
+    const step = { ArrowUp: [fx, fy], ArrowDown: [-fx, -fy], ArrowRight: [fy, -fx], ArrowLeft: [-fy, fx] }[key];
+    S.cursor ??= [S.world.start_xy[0] + Math.cos(S.world.start_yaw_rad) * 1.2, S.world.start_xy[1] + Math.sin(S.world.start_yaw_rad) * 1.2];
+    S.cursor = [S.cursor[0] + step[0] * 0.4, S.cursor[1] + step[1] * 0.4];
+    const cell = this.target(S.cursor);
+    this.viewer.setMarker('hoverMarker', S.cursor, { color: cell?.ok ? COLORS.white : COLORS.red, radius: 0.16, pin: true });
+    if (!cell) { this.live('Outside the recorded room.'); return; }
+    const d = Math.hypot(cell.xy[0] - S.world.start_xy[0], cell.xy[1] - S.world.start_xy[1]);
+    this.live(`${fmt(d, 1)} m from the start: ${verdict(cell).text}. Enter picks it.`);
+  }
   // Clicking the floor always picks a new goal (a walk in progress is put away).
   pick(xy) {
     const S = this.S;
@@ -329,7 +345,7 @@ class Demo {
     this.writeHash(`${S.worldId}/${c.id}`);
     this.render();
     if (!quiet) this.splash('Goal sent and read back', 'Nothing moves until the operator presses Go');
-    this.el.go.focus({ preventScroll: true });
+    this.focusIn(this.el.chip.querySelector('[data-act="go"]') ?? this.el.go);
   }
   async go({ at = 0, autoplay = true } = {}) {
     const S = this.S, c = S.staged;
@@ -342,6 +358,11 @@ class Demo {
       S.walk = walk; S.mapStep = -1; S.phase = null; S.events = 0;
       this.writeHash(`${S.worldId}/${c.id}/play`);
       this.viewer.focus([S.world.start_xy, c.xy]);
+      if (this.root.classList.contains('narrow') && this.cameraMode === 'orbit') {
+        // On a phone the room is small: walk with the robot instead (Orbit brings the room back).
+        this.viewer.look([S.world.start_xy[0], S.world.start_xy[1], 0.6], { yaw: S.world.start_yaw_rad + Math.PI + 0.6, pitch: 0.55, distance: 4.2 });
+        this.camera('follow');
+      }
       this.seek(at);
       if (autoplay) this.play();
       if (this.root.contains(document.activeElement) && document.activeElement.disabled !== false) this.el.play.focus({ preventScroll: true });
@@ -351,16 +372,24 @@ class Demo {
     }
   }
   // From the picker or a link: open the room, stage the walk's goal and play it.
-  async watch(room, id) {
+  async watch(room, id, { play = false } = {}) {
     this.togglePicker(false);
     if (room !== this.S.worldId && !(await this.loadWorld(room))) return;
     if (this.S.worldId !== room) return;  // another room won meanwhile; goal ids repeat across rooms
     const cell = this.S.world.cells.find(c => c.id === id);
     if (!cell) return;
     this.S.clicked = null;
-    this.selectCell(cell, { stage: true });
-    await this.go();
-    this.el.play.focus({ preventScroll: true });
+    if (play) { this.selectCell(cell, { stage: true }); await this.go(); this.focusIn(this.el.play); return; }
+    // The operator's steps still apply: the goal and its checks, then Send, then Go.
+    this.selectCell(cell);
+    this.S.detail = true; this.renderChip(); this.place();
+    this.focusIn(this.el.chip.querySelector('[data-act="send"]'));
+  }
+  // Focus a control and keep it on screen (inside the page the stage may be partly scrolled away).
+  focusIn(node) {
+    if (!node || node.disabled) return;
+    node.focus({ preventScroll: true });
+    if (this.embedded) node.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
   }
   reset() {
     const S = this.S;
@@ -411,7 +440,13 @@ class Demo {
     const S = this.S, w = S.walk, v = this.viewer, L = S.layers;
     v.setPose(w.pose(S.t, this.pose));
     const ref = L.body ? w.refPose(S.t, this.refPose) : null;
-    v.setGhost('plan', ref && !coincides(ref, this.pose) ? ref : null);
+    const apart = ref && !coincides(ref, this.pose);
+    v.setGhost('plan', apart ? ref : null);
+    // After the walking headline has gone (about 2 s into the walk), so the two never sit on top of each other.
+    if (apart && S.playing && S.t > 2.2 && !this.ghostHinted && Math.hypot(ref[0] - this.pose[0], ref[1] - this.pose[1]) > 0.18) {
+      this.ghostHinted = true; this.el.ghostTip.hidden = false;
+      clearTimeout(this._ghostTip); this._ghostTip = setTimeout(() => { this.el.ghostTip.hidden = true; }, 6000);
+    }
     // The robot's map: changes up to now (rebuilt from the pre-walk map when seeking back).
     let step = S.mapStep;
     if (step >= 0 && w.map[step].t > S.t + 1e-9) { v.setMapBase(S.world.map); step = -1; }
@@ -543,12 +578,13 @@ class Demo {
     for (const [k] of grade) counts[k] = all.filter(x => x.grade === k).length;
     E.filters.innerHTML = [['all', 'All'], ['clean', 'Clean'], ['flagged', 'Flagged'], ['failed', 'Failed'], ...grade].filter(([k]) => counts[k])
       .map(([k, label]) => `<button data-filter="${k}" aria-pressed="${S.filter === k}">${label} <small>${counts[k]}</small></button>`).join('');
-    const rows = this.pool().sort((a, b) => S.folder === 'wrong' ? WRONG_ORDER.indexOf(a.grade) - WRONG_ORDER.indexOf(b.grade) || b.contact - a.contact : a.dist - b.dist);
+    const rows = this.pool().sort((a, b) => S.folder === 'wrong' ? WRONG_ORDER.indexOf(a.grade) - WRONG_ORDER.indexOf(b.grade) || b.contact - a.contact : a.dist - b.dist || (a.turn ?? 0) - (b.turn ?? 0));
     const titles = Object.fromEntries(this.catalog.map(w => [w.id, w.title]));
     E.walkList.innerHTML = rows.length ? rows.map(x => {
       const g = GRADES[x.grade] ?? { label: x.grade, css: 'var(--ink-3)' };
       const detail = x.grade === 'contact' ? `${Math.round(x.contact)} N` : x.grade === 'off' || x.grade === 'away' ? `${fmt(x.final, 2)} m off` : `${fmt(x.duration, 0)} s`;
-      return `<li><button data-room="${x.room}" data-walk="${x.id}"><i style="background:${g.css}"></i><span class="w-main">${S.folder === 'wrong' ? `${escape(titles[x.room])} · ` : ''}${fmt(x.dist, 1)} m away</span><span class="w-grade">${escape(g.label)}</span><span class="w-detail mono">${detail}</span></button></li>`;
+      const where = x.turn === null ? '' : `<span class="w-dir" style="--turn:${Math.round(-x.turn)}deg" aria-hidden="true">↑</span>`;
+      return `<li><button data-room="${x.room}" data-walk="${x.id}" aria-label="${escape(`${S.folder === 'wrong' ? `${titles[x.room]}, ` : ''}${fmt(x.dist, 1)} m ${direction(x.turn)}, ${g.label}, ${detail}`)}"><i style="background:${g.css}"></i><span class="w-main">${where}${S.folder === 'wrong' ? `${escape(titles[x.room])} · ` : ''}${fmt(x.dist, 1)} m ${escape(direction(x.turn))}</span><span class="w-grade">${escape(g.label)}</span><span class="w-detail mono">${detail}</span></button></li>`;
     }).join('') : '<li class="empty">No walks here.</li>';
   }
   toggleHelp(open = this.el.help.hidden) {
@@ -621,7 +657,13 @@ class Demo {
     const S = this.S, w = S.walk, E = this.el;
     const phase = w ? w.phase(S.t) : 'WAIT';
     const p = PHASE[phase] ?? { label: phase, color: '#8aa0ad' };
-    E.phase.textContent = p.label; E.phase.style.setProperty('--c', p.color); E.phase.title = p.why ?? '';
+    // A deferred stand is not settling: the node keeps the last plan's final frame until its memory clears or Studio forces it.
+    const deferredNow = w && phase === 'ARRIVED' && w.events.find(e => e.type === 'stand_deferred' && e.t <= S.t);
+    const stoodNow = deferredNow && w.events.some(e => (e.type === 'stand' || e.type === 'stand_forced') && e.t > deferredNow.t && e.t <= S.t);
+    const badge = !w && (S.mode === 'staged' || S.mode === 'loading') ? { label: 'Waiting for Go', color: '#9fd8ff' }
+      : deferredNow && !stoodNow ? { label: 'Arrived · stand deferred', color: '#efbb70' } : p;
+    if (E.phase.textContent !== badge.label) E.phase.textContent = badge.label;
+    E.phase.style.setProperty('--c', badge.color); E.phase.title = p.why ?? '';
     E.hud.hidden = !w;
     if (!w) return;
     const k = w.index(S.t), plan = w.plan(S.t);
@@ -637,7 +679,7 @@ class Demo {
       tilt: tilt === null ? '—' : `${fmt(tilt / 1000 * 57.2958, 1)}°`,
       contact: contact === null ? '—' : contact > 0 ? `${contact} N` : 'none',
       // The plan body's root is the planner's only while it walks; standing, the node sets it to the robot's pose.
-      body: !ref ? (S.layers.body ? '—' : 'hidden') : run && !w.est_missing?.includes(k) ? `${fmt(Math.hypot(ref[0] - w.est[k * 2] / 1000, ref[1] - w.est[k * 2 + 1] / 1000), 2)} m` : 'not walking',
+      body: !ref ? (S.layers.body ? '—' : 'hidden') : coincides(ref, this.pose) ? 'on the body' : w.est_missing?.includes(k) ? '—' : `${fmt(Math.hypot(ref[0] - w.est[k * 2] / 1000, ref[1] - w.est[k * 2 + 1] / 1000), 2)} m`,
       planner: plan && run ? `#${w.planNumber(S.t)} · ${RULES[plan.rule]?.label ?? plan.rule.replaceAll('_', ' ')}` : deferred && !stood ? 'stand deferred' : '—',
       event: (() => { let last = null; for (const e of w.events) { if (e.t > S.t + 1e-9) break; if (!QUIET.has(e.type)) last = e; } return last ? `${fmt(last.t, 1)} s · ${last.msg}` : '—'; })(),
     };
@@ -688,9 +730,9 @@ class Demo {
     const contact = w.max_contact_n ?? null;
     const arrival = w.events.find(e => e.type === 'arrived')?.dist ?? null;
     const lines = [
-      w.outcome === 'arrived' ? `It arrived ${arrival === null ? '' : `${fmt(arrival, 2)} m from the goal `}by its own estimate (node.py's rule: within 0.4 m) and stood. When the walk ended it was ${fmt(w.final_dist_estimate_m, 2)} m away by its estimate and ${fmt(w.final_dist_m, 2)} m by simulator truth.` : o.text,
+      w.outcome === 'arrived' ? `It arrived ${arrival === null ? '' : `${fmt(arrival, 2)} m from the goal `}by its own position estimate (the node stops within 0.4 m); by simulator truth it ended ${fmt(w.final_dist_m, 2)} m away.` : o.text,
       w.reason ? `Reason: ${reasonText(w.reason)}.` : '',
-      contact === null ? '' : contact > 100 ? `It touched an obstacle: up to ${Math.round(contact)} N (Studio flags contact over 100 N).` : 'No obstacle contact over 100 N.',
+      contact === null ? '' : contact > 100 ? `It pushed an obstacle with up to ${Math.round(contact)} N (flagged over 100 N).` : 'No contact over 100 N.',
       w.events.some(e => e.type === 'stand_deferred') ? 'Its stand was deferred under a low "ceiling" in its map' + (w.events.some(e => e.type === 'stand_forced') ? ', then forced after 20 s (a Studio limit in simulation).' : '.') : '',
     ].filter(Boolean);
     const facts = [['Walk', `${fmt(w.duration_s, 1)} s`], ['Path', `${fmt(w.path_m, 2)} m`], ['Final, truth', `${fmt(w.final_dist_m, 2)} m`],
@@ -729,6 +771,7 @@ class Demo {
       node.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
     };
     if (!S.picked) put(E.hint, [S.world.start_xy[0], S.world.start_xy[1], 1.75], 10, false);
+    if (!E.ghostTip.hidden && this.viewer.ghosts.plan?.root.visible) { const r = this.refPose; put(E.ghostTip, [r[0], r[1], 1.55], 12, false); }
     if (E.chip.hidden) return;
     if (this.root.classList.contains('narrow')) { E.chip.style.transform = ''; E.chip.style.visibility = ''; }
     else put(E.chip, [S.selected.xy[0], S.selected.xy[1], 0.78], 12, true);
@@ -756,11 +799,22 @@ const lists = new WeakMap();
 function listOf(w) {
   if (!lists.has(w)) {
     const f = w.list_fields ?? [];
-    lists.set(w, (w.list ?? []).map(r => { const o = Object.fromEntries(f.map((k, i) => [k, r[i]])); return { room: w.id, id: o.id, grade: o.grade, dist: o.dist_m, contact: o.contact_n ?? 0, final: o.final_m, duration: o.duration_s }; }));
+    lists.set(w, (w.list ?? []).map(r => {
+      const o = Object.fromEntries(f.map((k, i) => [k, r[i]]));
+      // Where the goal is, seen from the start mark: degrees left of straight ahead.
+      const turn = o.x == null || !w.start_xy ? null : ((Math.atan2(o.y - w.start_xy[1], o.x - w.start_xy[0]) - (w.start_yaw_rad ?? 0)) * 180 / Math.PI + 540) % 360 - 180;
+      return { room: w.id, id: o.id, grade: o.grade, dist: o.dist_m, contact: o.contact_n ?? 0, final: o.final_m, duration: o.duration_s, turn };
+    }));
   }
   return lists.get(w);
 }
 const bucket = g => g === 'clean' ? 'clean' : ['fell', 'estop'].includes(g) ? 'failed' : 'flagged';
+// Eight ways round from the start mark's heading, in words.
+function direction(turn) {
+  if (turn === null || turn === undefined) return 'away';
+  const names = ['ahead', 'ahead-left', 'left', 'behind-left', 'behind', 'behind-right', 'right', 'ahead-right'];
+  return names[((Math.round(turn / 45) % 8) + 8) % 8];
+}
 function bar(list) {
   const n = list.length || 1, c = { clean: 0, flagged: 0, failed: 0 };
   for (const x of list) c[bucket(x.grade)]++;
@@ -770,7 +824,7 @@ function bar(list) {
 function template({ embedded, home, stop }) {
   const layers = LAYERS.map(l => `<button data-layer="${l.id}" aria-pressed="true" ${l.id === 'world' ? 'data-state="ghost"' : ''} title="${escape(`${l.why} (${l.key.toUpperCase()})`)}"><i style="--dot:${l.dot}"></i>${escape(l.label)}${l.id === 'world' ? ' <small>ghost</small>' : ''}</button>`).join('');
   return `
-  <div class="stage-canvas" data-el="canvas" role="application" aria-label="3D view of the room and the robot. Click the floor to pick a goal; the room menu and Pick one for me work from the keyboard."></div>
+  <div class="stage-canvas" data-el="canvas" tabindex="0" role="application" aria-label="3D view of the room and the robot. Click the floor to pick a goal, or use the arrow keys to move a goal cursor and Enter to pick it."></div>
   <div class="chrome top-left">
     ${embedded ? '' : `<a class="title-chip" href="${home ?? '../'}"><span class="mark">G1</span><span>Deploy Studio <small>Navigate demo · recorded walks</small></span></a>`}
     <div class="layers" role="group" aria-label="Layers (also the legend)">${layers}<button class="legend-btn" data-el="helpBtn" aria-label="Legend and keys (?)" title="Legend and keys (?)">?</button></div>
@@ -784,6 +838,7 @@ function template({ embedded, home, stop }) {
   <ol class="guide" data-el="guide" aria-label="The operator's three steps"><li data-step="pick"><b>1</b> Pick a goal</li><li data-step="send"><b>2</b> Send it</li><li data-step="go"><b>3</b> Go</li></ol>
   <div class="hint" data-el="hint"><b>${matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click'} the floor.</b> It has to find its own way.</div>
   <div class="goal-chip" data-el="chip" hidden role="group" aria-label="Goal checks"></div>
+  <p class="ghost-tip" data-el="ghostTip" hidden><b>The pink ghost</b> is the pose the tracker is chasing. Where it pulls ahead or aside, the body is behind its plan. ${embedded ? '<a href="#closer">Side by side ›</a>' : `<a href="${home ?? '../'}#closer">Side by side ›</a>`}</p>
   <div class="splash" data-el="splash" aria-hidden="true"><b></b><span></span></div>
   <p class="sr-only" data-el="live" aria-live="polite"></p>
   <div class="result" data-el="result" hidden role="region" aria-labelledby="demo-result-title"></div>

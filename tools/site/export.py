@@ -161,14 +161,15 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
             'rtf': report.get('worker_real_time_factor')}
 
 
-LIST_FIELDS = ['id', 'grade', 'dist_m', 'contact_n', 'final_m', 'duration_s']
+LIST_FIELDS = ['id', 'grade', 'dist_m', 'contact_n', 'final_m', 'duration_s', 'x', 'y']
 
 
 def walk_list(index):
     """Every walk of a room in one row each, for the site's walk picker (no need to load the room to list it)."""
     cells = {c['id']: c for c in index['cells']}
     r = lambda v, d: None if v is None else round(float(v), d)
-    return [[gid, grade_key(x), r(math.dist(cells[gid]['xy'], index['start_xy']), 2), r(x['max_contact_n'], 0), r(x['final_dist_m'], 2), r(x['duration_s'], 1)]
+    return [[gid, grade_key(x), r(math.dist(cells[gid]['xy'], index['start_xy']), 2), r(x['max_contact_n'], 0), r(x['final_dist_m'], 2), r(x['duration_s'], 1),
+             r(cells[gid]['xy'][0], 2), r(cells[gid]['xy'][1], 2)]
             for gid, x in sorted(index['walks'].items())]
 
 
@@ -560,6 +561,7 @@ def main(argv=None):
         for walk in index['walks'].values():
             outcomes[walk['outcome']] = outcomes.get(walk['outcome'], 0) + 1
         catalog.append({'id': w, 'title': index['title'], 'blurb': index['blurb'], 'walks': len(index['walks']), 'outcomes': outcomes,
+                        'start_xy': index['start_xy'], 'start_yaw_rad': index['start_yaw_rad'],
                         'contact': sum((x['max_contact_n'] or 0) > 100 for x in index['walks'].values()),
                         'off_by_truth': sum(x['outcome'] == 'arrived' and (x['final_dist_m'] or 0) > 0.6 for x in index['walks'].values()),
                         'grades': {k: sum(grade_key(x) == k for x in index['walks'].values()) for k in sorted({grade_key(x) for x in index['walks'].values()})},

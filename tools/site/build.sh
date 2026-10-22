@@ -15,13 +15,18 @@ THREE="$ROOT/node_modules/three"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)   # absolute: the copies below run from other directories
-mkdir -p "$OUT/vendor/three/addons/controls" "$OUT/vendor/three/addons/lines" "$OUT/vendor/three/addons/utils" "$OUT/data" "$OUT/media"
+mkdir -p "$OUT/vendor/three/addons/controls" "$OUT/vendor/three/addons/lines" "$OUT/vendor/three/addons/utils" "$OUT/vendor/fonts" "$OUT/data" "$OUT/media"
 cp -r "$ROOT/site/." "$OUT/"
 cp "$THREE/build/three.module.min.js" "$THREE/build/three.core.min.js" "$OUT/vendor/three/"
 cp "$THREE/LICENSE" "$OUT/vendor/three/LICENSE"
 cp "$THREE/examples/jsm/controls/OrbitControls.js" "$OUT/vendor/three/addons/controls/"
 cp "$THREE/examples/jsm/lines/"{Line2,LineGeometry,LineMaterial,LineSegments2,LineSegmentsGeometry}.js "$OUT/vendor/three/addons/lines/"
 cp "$THREE/examples/jsm/utils/BufferGeometryUtils.js" "$OUT/vendor/three/addons/utils/"
+# Inter (OFL-1.1, fontsource): the variable Latin subset, upright, and its licence.
+INTER="$ROOT/node_modules/@fontsource-variable/inter"
+[ -f "$INTER/files/inter-latin-wght-normal.woff2" ] || { echo "Inter missing: run npm ci" >&2; exit 1; }
+cp "$INTER/files/inter-latin-wght-normal.woff2" "$OUT/vendor/fonts/"
+cp "$INTER/LICENSE" "$OUT/vendor/fonts/Inter-LICENSE.txt"
 # Data: everything the exporter wrote except the local mesh list (absolute source paths).
 (cd "$DATA" && tar --exclude='robot-meshes.txt' --exclude='*.tmp' --exclude='next-local.json' -cf - .) | tar -xf - -C "$OUT/data"
 if [ -n "$MEDIA" ] && [ -d "$MEDIA" ]; then cp -r "$MEDIA/." "$OUT/media/"; fi

@@ -8,9 +8,10 @@ const smooth = () => (reducedMotion() ? 'auto' : 'smooth');
 
 // ----- the demo slot
 let demoStart = null;
-function startDemo({ scroll = true } = {}) {
+function startDemo({ scroll = true, focus = false } = {}) {
   if (scroll) $('demo-stage').scrollIntoView({ behavior: smooth(), block: 'start' });
-  if (demoStart) return demoStart;
+  // Started from a button, the keyboard goes with the visitor into the stage (its arrow keys move a goal cursor).
+  if (demoStart) { if (focus) demoStart.then(d => d?.el.canvas.focus({ preventScroll: true })); return demoStart; }
   const stage = $('demo-stage'), poster = stage.querySelector('.poster');
   poster.hidden = true;
   demoStart = boot(stage, { embedded: true, hashPrefix: 'try/', fullHref: 'demo/' }, undefined, {
@@ -20,10 +21,10 @@ function startDemo({ scroll = true } = {}) {
       if (location.hash.startsWith('#try/')) history.replaceState(null, '', '#try');
       poster.querySelector('.start')?.focus({ preventScroll: true });
     },
-  }).then(d => { window.studioDemo = d; return d; });
+  }).then(d => { window.studioDemo = d; if (focus) d?.el.canvas.focus({ preventScroll: true }); return d; });
   return demoStart;
 }
-for (const b of document.querySelectorAll('[data-start]')) b.addEventListener('click', () => startDemo());
+for (const b of document.querySelectorAll('[data-start]')) b.addEventListener('click', () => startDemo({ focus: true }));
 if (location.hash.startsWith('#try/')) startDemo({ scroll: false });
 window.addEventListener('hashchange', () => { if (location.hash.startsWith('#try/') && !demoStart) startDemo(); });
 // #closer/<room>/<goal>: that walk in the split view (the demo's "Plan vs body").
@@ -56,8 +57,9 @@ async function stats() {
   const set = (key, text) => { for (const n of document.querySelectorAll(`[data-stat="${key}"]`)) n.textContent = text; };
   set('walks', walks.toLocaleString('en-US'));
   set('arrived', `${Math.round(arrived / walks * 100)} %`);
-  set('arrived-text', `But ${contact} of the ${arrived} that arrived (${Math.round(contact / arrived * 100)} %) pushed an obstacle with more than 100 N on the way, and ${off} more ended over 0.6 m from the goal by simulator truth.${failed.length ? ` The other ${walks - arrived}: ${failed.join(', ')}.` : ''}`);
-  $('claim-highlights').textContent = `${walks.toLocaleString('en-US')} walks, ${W.length} rooms, zero motor commands.`;
+  set('arrived-text', `But ${contact} of them pushed an obstacle hard (over 100 N), and ${off} more ended over 0.6 m off target by simulator truth.${failed.length ? ` The other ${walks - arrived}: ${failed.join(', ')}.` : ''}`);
+  const words = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+  $('claim-highlights').textContent = `${walks.toLocaleString('en-US')} walks. ${words[W.length] ?? W.length} rooms. Zero motor commands.`;
   const ex = featured.facts?.execution;
   if (ex) set('lag-line', `In ${ex.walks} recorded walks, the plan body's pelvis is a median ${fmt(ex.lag_m.median, 2)} m from where the robot thinks its pelvis is while it walks (95th percentile ${fmt(ex.lag_m.p95, 2)} m).`);
 }

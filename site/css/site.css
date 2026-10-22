@@ -18,16 +18,17 @@ code, kbd { font-family: var(--mono); font-size: .86em; }
 code { background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: .05em .35em; }
 kbd { background: var(--surface); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 5px; padding: 0 .4em; color: var(--ink); }
 h1, h2, h3 { margin: 0 0 .5em; letter-spacing: -.02em; }
-h1 { font-size: clamp(2.4rem, 6.2vw, 4.6rem); line-height: 1.02; font-weight: 760; max-width: 14ch; }
-h2 { font-size: clamp(1.8rem, 3.8vw, 2.9rem); line-height: 1.08; font-weight: 740; max-width: 22ch; }
-h3 { font-size: 1.05rem; line-height: 1.3; font-weight: 650; letter-spacing: -.01em; }
+h1 { font-size: clamp(2.3rem, 5.4vw, 4.2rem); line-height: 1.04; font-weight: 680; letter-spacing: -.035em; max-width: 20ch; }
+h2 { font-size: clamp(1.75rem, 3.4vw, 2.7rem); line-height: 1.1; font-weight: 650; letter-spacing: -.03em; max-width: 24ch; }
+h3 { font-size: 1.05rem; line-height: 1.3; font-weight: 620; letter-spacing: -.01em; }
+body { font-feature-settings: "cv11", "ss03"; }
 p { margin: 0 0 .8em; }
 sup a { font-size: .75em; padding: 0 1px; }
 .muted { color: var(--ink-3); }
 .fineprint { color: var(--ink-3); font-size: .82rem; margin: 0; }
 .fineprint.wide { max-width: 980px; margin-top: 16px; }
 button { font: inherit; color: inherit; }
-.eyebrow { margin: 0 0 12px; color: var(--accent); font: 600 .78rem var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.eyebrow { margin: 0 0 10px; color: var(--accent); font: 600 .98rem var(--sans); letter-spacing: -.01em; }
 
 /* ----- header */
 .top { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 26px; padding: 10px clamp(16px, 4vw, 40px);
@@ -63,9 +64,10 @@ section.band > * { max-width: 1200px; margin-left: auto; margin-right: auto; }
 .button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ----- hero and the demo slot */
-.hero { padding-top: clamp(56px, 9vw, 120px); padding-bottom: 28px; text-align: center; display: grid; justify-items: center; }
-.hero h1 { max-width: 15ch; }
-.lede { font-size: clamp(1.06rem, 1.7vw, 1.26rem); color: var(--ink-2); max-width: 720px; }
+.hero { padding-top: clamp(36px, 6vw, 84px); padding-bottom: 20px; text-align: center; display: grid; justify-items: center; }
+.hero h1 { max-width: 22ch; }
+.lede { font-size: clamp(1.04rem, 1.6vw, 1.22rem); color: var(--ink-3); max-width: 700px; }
+.lede b, .section-head > p:not(.eyebrow) b { color: var(--ink); font-weight: 600; }
 .cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 14px; }
 .slot { padding-top: 12px; max-width: 1360px; }
 .slot-note { max-width: 860px; margin: 16px auto 0; text-align: center; color: var(--ink-3); font-size: .88rem; }
@@ -257,7 +259,7 @@ footer { border-top: 1px solid var(--line); padding: 28px clamp(16px, 4vw, 40px)
 @media (max-width: 1180px) { #day { min-height: 900px; } }
 
 /* ----- the next-step page */
-h1.wide { max-width: 22ch; font-size: clamp(2.2rem, 5.4vw, 4rem); }
+h1.wide { max-width: 26ch; font-size: clamp(2rem, 4.2vw, 3.3rem); }
 .wide-notes { max-width: 1200px; margin: 0 auto; }
 .trackers td.measure { color: var(--ink-3); text-align: left; white-space: normal; }
 .local-h { max-width: 1200px; margin: 28px auto 12px; }
@@ -311,3 +313,22 @@ h1.wide { max-width: 22ch; font-size: clamp(2.2rem, 5.4vw, 4rem); }
 .code .copy:hover { background: rgba(255, 255, 255, .16); }
 .faq details p b:first-child { color: var(--ink); }
 @media (max-width: 480px) { .top { gap: 10px; padding-left: 14px; padding-right: 14px; } .gh { padding: 6px 11px; } .menu summary { padding: 6px 10px; } .brand { font-size: .95rem; } }
+
+/* ----- the next-step page: the trace under the split view, the pending column */
+.trace { max-width: 1200px; margin: 12px auto 0; padding: 12px 16px; }
+.trace-title { margin: 0 0 6px; font-size: .86rem; color: var(--ink-3); }
+.trace-title b { color: var(--ink); } .trace-title .hot { color: var(--bad); }
+.trace svg { display: block; width: 100%; height: 120px; cursor: pointer; }
+.trace .lag { fill: none; stroke: #d0408a; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.trace .axis { stroke: var(--line-2); vector-effect: non-scaling-stroke; } .trace .grid { stroke: var(--line); stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+.trace .hit { fill: rgba(196, 58, 58, .22); }
+.trace .cursor { stroke: var(--ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.trace text { fill: var(--ink-3); font: 11px var(--mono); }
+.outcomes td.pending { text-align: left; white-space: normal; color: var(--ink-3); background: var(--surface-2); max-width: 260px; font-size: .86rem; vertical-align: middle; }
+
+/* ----- phones: long lists of cards become swipeable rows */
+@media (max-width: 700px) {
+  .cards, .gallery { display: grid; grid-auto-flow: column; grid-auto-columns: 86%; grid-template-columns: none; overflow-x: auto; scroll-snap-type: x mandatory; gap: 12px; padding-bottom: 8px; margin-right: -16px; padding-right: 16px; }
+  .cards > *, .gallery > * { scroll-snap-align: start; }
+  #findings-cards { min-height: 0; }
+}

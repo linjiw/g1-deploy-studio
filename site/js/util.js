@@ -44,11 +44,11 @@ export const hex = c => `#${(c ?? 0x888888).toString(16).padStart(6, '0')}`;
 
 // node.py phases (studio/nav_worker.py reproduces the state machine).
 export const PHASE = {
-  WAIT: { label: 'WAIT', color: '#8aa0ad', why: 'Standing; the node waits for a goal and the operator.' },
-  PRESCAN: { label: 'PRESCAN', color: '#c4a0d9', text: 'Pre-scan: before every walk node.py stands for 0.5 s while its LiDAR fills the map.', why: 'node.py pre-scans before every walk.' },
-  RUN: { label: 'RUN', color: '#56d9d0', text: 'Walking: the planner replans from its memory several times a second and SONIC tracks the plan.', why: 'Flow student plans; SONIC tracks.' },
-  ARRIVED: { label: 'ARRIVED', color: '#7be0a5', text: "Arrived: settling to a stand. The recording ends when it stands still, or if it falls.", why: "node.py's arrival rule: its own pose estimate within the 0.4 m goal radius." },
-  STOPPED: { label: 'STOPPED', color: '#efbb70', text: 'Stopped: standing up where it is.', why: "A walk timeout (Studio's 60 s limit in simulation), the operator, or a supervisor stop." },
+  WAIT: { label: 'Waiting', color: '#8aa0ad', why: 'Standing. The navigation node (node.py, phase WAIT) waits for a goal and the operator.' },
+  PRESCAN: { label: 'Pre-scan', color: '#c4a0d9', text: 'Pre-scan: before every walk the node stands for 0.5 s while its LiDAR fills the map.', why: 'node.py phase PRESCAN: it pre-scans before every walk.' },
+  RUN: { label: 'Walking', color: '#56d9d0', text: 'Walking: the planner replans from its memory several times a second and the tracker follows the plan.', why: 'node.py phase RUN: the Flow student plans; SONIC tracks.' },
+  ARRIVED: { label: 'Arrived', color: '#7be0a5', text: "Arrived: settling to a stand. The recording ends when it stands still, or if it falls.", why: "node.py phase ARRIVED: its own position estimate within the 0.4 m goal radius." },
+  STOPPED: { label: 'Stopped', color: '#efbb70', text: 'Stopped: standing up where it is.', why: "node.py phase STOPPED: a walk timeout (Studio's 60 s limit in simulation), the operator, or a supervisor stop." },
 };
 
 // The planner's candidate selection (Flow closed_loop/planner.py), in words.

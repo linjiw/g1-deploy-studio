@@ -169,10 +169,16 @@ await check('the picker: rooms with counts, and a Went wrong folder that lists e
   await page.screenshot({ path: path.join(OUT, 'desktop-picker.png') });
   if (folders !== catalog.length + 1) throw new Error(`${folders} folders for ${catalog.length} rooms`);
   if (rows !== expected) throw new Error(`Went wrong lists ${rows}, the grades say ${expected}`);
-  // A walk from another room: the one clicked plays, in its own room (goal ids repeat across rooms).
+  // A walk from another room: the one clicked is staged in its own room (goal ids repeat across rooms), its
+  // checks open with Send focused; the operator's steps still apply: Send, then Go.
   const row = page.locator('#demo-stage .walks [data-walk]').nth(1);
   const want = { room: await row.getAttribute('data-room'), walk: await row.getAttribute('data-walk') };
   await row.click();
+  await page.waitForFunction(w => window.studioDemo.S.selected?.id === w.walk && window.studioDemo.S.worldId === w.room, want, { timeout: 20000 });
+  const focused = await D(() => document.activeElement?.dataset?.act);
+  if (focused !== 'send') throw new Error(`after a pick the focus is on ${focused}, not Send`);
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('g');
   await page.waitForFunction(() => window.studioDemo.S.mode === 'playing', null, { timeout: 20000 });
   const got = await D(() => ({ room: window.studioDemo.S.worldId, walk: window.studioDemo.S.walk.goal_id, outcome: window.studioDemo.S.walk.outcome }));
   if (got.room !== want.room || got.walk !== want.walk) throw new Error(`clicked ${want.room}/${want.walk}, playing ${got.room}/${got.walk}`);

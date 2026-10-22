@@ -36,7 +36,7 @@ export async function initRobotDay(root) {
       <div class="card step-text" id="day-text" aria-live="polite"></div>
     </div>
     <aside class="card" id="day-side" aria-label="Pre-Go checklist">
-      <div class="ready-head"><h3>Before <kbd>g</kbd> on the console</h3><span id="day-verdict" class="verdict" aria-live="polite"></span></div>
+      <div class="ready-head"><h3>Before the operator presses <kbd>g</kbd></h3><span id="day-verdict" class="verdict" aria-live="polite"></span></div>
       <ul class="ready" id="day-ready"></ul>
       <p class="alert" id="day-alert" role="alert" hidden></p>
       <div class="faults"><h3 style="margin-top:14px">Break something</h3>
