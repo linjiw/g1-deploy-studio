@@ -115,6 +115,108 @@ def summarize_contacts(episodes, threshold_n=0.0):
     return out
 
 
+# ---------------------------------------------------------------- latency mode 'node' (opt-in)
+# node.py's planning loop (g1deploy/node.py StudentNode.request / collect): one planner in flight; a plan's latency is
+# whatever the planner took; lead = ceil(q90 of the last 8 latencies / 20 ms) + 1 from a 0.3 s first guess; a plan that
+# lands after its anchor tick is streamed mid-window; plans failing sane() or not newer than the last streamed anchor
+# are dropped; reference joint velocities are clipped. The three rules below are copied from node.py (the tests check
+# them against its source text); sane() and the argparse defaults are imported from node.py at run time.
+NODE_LATENCY_GUESS_S = 0.3      # node.py --latency-guess-s
+NODE_LATENCY_WINDOW = 8         # node.py collect(): np.quantile(self.latencies[-8:], 0.9)
+NODE_LATENCY_QUANTILE = 0.9
+Z95 = 1.6448536269514722        # standard normal 95 % quantile (lognormal fit from p50 / p95)
+LATENCY_PRESETS = {
+    'bundle-fused': {'kind': 'lognormal', 'p50_s': 0.119, 'p95_s': 0.167,
+                     'label': 'Bundle planner on the deploy PC (fused, fp32): p50 0.119 s, p95 0.167 s',
+                     'source': 'g1-student-deploy docs/PLANNER_SPEED.md: 37 recorded states, interleaved, loaded RTX 5080'},
+    'flow-sk1': {'kind': 'pools', 'first_s': 0.19, 'retry_s': 0.09, 'fallback_s': 1.10,
+                 'label': "Flow student-sk1 timing: 0.19 s first pool, +0.09 s check retry, 1.10 s with fallback pools",
+                 'source': 'Flow research/ROUND_ST_PLAN.md round ST-L (FastWXPlanner bench medians); applied to the work '
+                           "the bundle planner does on each replan (Flow closed_loop/callback.py emulated_latency_s)"},
+    'flow-wx': {'kind': 'pools', 'first_s': 0.11, 'retry_s': 0.05, 'fallback_s': 0.47,
+                'label': 'Flow WX teacher timing: 0.11 s first pool, +0.05 s check retry, 0.47 s with fallback pools',
+                'source': 'Flow research/ROUND_ST_PLAN.md round ST-L (FastWXPlanner bench medians)'},
+}
+
+
+def node_lead_ticks(latency_est_s):
+    """node.py request(): ``lead = 0 if first else int(math.ceil(self.latency_est / DT)) + 1``."""
+    return int(math.ceil(latency_est_s / DT)) + 1
+
+
+def node_latency_estimate(np, latencies):
+    """node.py collect(): ``self.latency_est = float(np.quantile(self.latencies[-8:], 0.9))``."""
+    return float(np.quantile(latencies[-NODE_LATENCY_WINDOW:], NODE_LATENCY_QUANTILE))
+
+
+def landing_tick(request_tick, latency_s):
+    """node.py polls its planner once per 20 ms tick, after the tick that made the request: a plan computed in
+    ``latency_s`` is collected at the first tick at or after request + latency, never in the request's own tick."""
+    return request_tick + max(1, int(math.ceil(latency_s / DT - 1e-9)))
+
+
+def nominal_latency_s(dist):
+    """One representative number (for displays that read a single latency): p50, the first-pool time or the fixed value."""
+    return float(dist[{'fixed': 's', 'lognormal': 'p50_s', 'pools': 'first_s'}[dist['kind']]])
+
+
+def _distribution(value):
+    if not isinstance(value, dict):
+        raise ValueError('latency.distribution must be an object')
+    kind = value.get('kind')
+    if kind == 'fixed':
+        return {'kind': 'fixed', 's': _number(value.get('s'), 'latency.distribution.s', 0.0, 2.0)}
+    if kind == 'lognormal':
+        p50 = _number(value.get('p50_s'), 'latency.distribution.p50_s', 0.005, 2.0)
+        return {'kind': 'lognormal', 'p50_s': p50, 'p95_s': _number(value.get('p95_s'), 'latency.distribution.p95_s', p50, 3.0)}
+    if kind == 'pools':
+        return {'kind': 'pools', 'first_s': _number(value.get('first_s'), 'latency.distribution.first_s', 0.005, 2.0),
+                'retry_s': _number(value.get('retry_s', 0.0), 'latency.distribution.retry_s', 0.0, 2.0),
+                'fallback_s': _number(value.get('fallback_s'), 'latency.distribution.fallback_s', 0.005, 5.0)}
+    raise ValueError("latency.distribution.kind must be 'fixed', 'lognormal' or 'pools'")
+
+
+def validate_nav_latency(value):
+    """Navigate's planner latency. ``{ms, anchor}`` (or nothing): the fixed lockstep model, validated as before.
+    ``{mode: 'node', preset | distribution, guess_s}``: node.py's rule with a latency drawn for every plan."""
+    if not (isinstance(value, dict) and value.get('mode') == 'node'):
+        return validate_latency(value)
+    unknown = sorted(set(value) - {'mode', 'preset', 'distribution', 'guess_s'})
+    if unknown:
+        raise ValueError(f'latency: unknown keys {unknown}')
+    preset = value.get('preset', 'custom' if 'distribution' in value else 'bundle-fused')
+    if preset == 'custom':
+        dist = _distribution(value.get('distribution'))
+    elif preset in LATENCY_PRESETS:
+        if value.get('distribution') is not None:
+            raise ValueError('latency: give a preset or a distribution, not both')
+        dist = {k: v for k, v in LATENCY_PRESETS[preset].items() if k not in ('label', 'source')}
+    else:
+        raise ValueError(f"latency.preset must be one of {sorted(LATENCY_PRESETS) + ['custom']}")
+    return {'mode': 'node', 'preset': preset, 'distribution': dist,
+            'guess_s': _number(value.get('guess_s', NODE_LATENCY_GUESS_S), 'latency.guess_s', 0.02, 2.0)}
+
+
+class LatencyDraw:
+    """The simulated planner latency of each plan in node mode, from its own random stream (the planner's is untouched)."""
+
+    def __init__(self, np, dist, seed):
+        self.dist, self.rng = dist, np.random.default_rng([seed, 17])
+
+    def __call__(self, planner, plan):
+        d = self.dist
+        if d['kind'] == 'fixed':
+            return float(d['s']), 'fixed'
+        if d['kind'] == 'lognormal':
+            sigma = (math.log(d['p95_s']) - math.log(d['p50_s'])) / Z95
+            return float(d['p50_s'] * math.exp(sigma * self.rng.standard_normal())), 'lognormal draw'
+        # 'pools': Flow closed_loop/callback.py emulated_latency_s on the work this replan did.
+        fallback = sum(kind != 'commit' for _, _, kind in (getattr(planner, 'last_pools', None) or [])) > 1
+        retry = int((plan.get('exec_check') or {}).get('tries', 1)) > 1
+        latency = float(d['fallback_s'] if fallback else d['first_s']) + (float(d['retry_s']) if retry else 0.0)
+        return latency, ('fallback pools' if fallback else 'first pool') + (' + check retry' if retry else '')
+
+
 def validate_request(request):
     if not isinstance(request, dict) or request.get('schema_version') != 1:
         raise ValueError('request schema_version must be 1')
@@ -133,7 +235,7 @@ def validate_request(request):
             'start_xy': _xy(request.get('start_xy', [0, 0]), 'start_xy'),
             'start_yaw_rad': _number(request.get('start_yaw_rad', 0), 'start_yaw_rad', -math.pi, math.pi),
             'seed': seed, 'planner': validate_planner(request.get('planner', {})),
-            'latency': validate_latency(request.get('latency')),
+            'latency': validate_nav_latency(request.get('latency')),
             'actuators': _actuators.validate(request.get('actuators', 'g1-current')),
             'odometry': odometry,
             'goal_radius_m': _number(request.get('goal_radius_m', 0.4), 'goal_radius_m', 0.2, 1.0),
@@ -261,8 +363,15 @@ def _run(req, output, inbox, started):
     source_prescan = float(variant.get('sensor_prescan_s', 0.0))
     limits = np.asarray([j['range_rad'] for j in json.loads((bundle.ROOT / 'config/sonic_model_contract.json').read_text())['joints']
                          if j['type'] != 'free'])
-    lat_ticks = int(round(req['latency']['ms'] / 1000 / DT))
-    anchor_mode = req['latency']['anchor']
+    node_mode = req['latency'].get('mode') == 'node'
+    lat_ticks = 0 if node_mode else int(round(req['latency']['ms'] / 1000 / DT))
+    anchor_mode = 'predict' if node_mode else req['latency']['anchor']
+    if node_mode:  # node.py's own sane() and defaults (max speed, pelvis band, joint-velocity clip)
+        from types import SimpleNamespace
+        from g1deploy import node as deploy_node
+        node_args = deploy_node.parse(['--goal', '0', '0'])
+        node_sane = lambda plan, _self=SimpleNamespace(args=node_args): deploy_node.StudentNode.sane(_self, plan)
+        draw_latency = LatencyDraw(np, req['latency']['distribution'], seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     planner = cached_planner(flow, pcfg, 'eager', 'fp32')
@@ -362,6 +471,27 @@ def _run(req, output, inbox, started):
         q = np.asarray(q, dtype=np.float64)
         return (stand_chunk(np, q, contract.DEFAULT_MJ, mode), tick, q, np.zeros(29))
 
+    def node_latency_model():
+        dist = req['latency']['distribution']
+        preset = LATENCY_PRESETS.get(req['latency']['preset'], {})
+        return {'mode': 'node', 'anchor': 'predict', 'preset': req['latency']['preset'], 'distribution': dist,
+                'label': preset.get('label'), 'distribution_source': preset.get('source'),
+                'ms': int(round(nominal_latency_s(dist) * 1000)),
+                'ms_basis': 'nominal latency of the distribution (p50, first-pool time or fixed value), for displays that '
+                            'read one number; every plan draws its own',
+                'guess_s': req['latency']['guess_s'],
+                'lead_rule': 'node.py: lead = ceil(q90 of the last 8 plan latencies / 20 ms) + 1 ticks, first guess '
+                             f"{req['latency']['guess_s']:g} s; the session's first plan has lead 0 and starts when it lands",
+                'landing_rule': 'a plan requested at tick t lands at t + ceil(latency / 20 ms) (at least t + 1)',
+                'late_plans': 'a plan landing after its anchor tick is tracked from the landing tick, part-played (node.py streams '
+                              'it mid-window); an early plan takes over at its anchor tick',
+                'drops': {'sane': f"node.py sane(): non-finite, pelvis z outside [{node_args.min_pelvis_z:g}, 1.0] m, mean speed "
+                                  f"> {node_args.max_speed:g} m/s", 'stale': 'anchor tick not newer than the last streamed plan'},
+                'max_joint_vel_rad_s': node_args.max_joint_vel, 'inflight': 1,
+                'not_modelled': ['planner queueing beyond one in flight', 'ZMQ/DDS transport and runner window effects',
+                                 'node.py building a fresh goal function per plan (Studio keeps one per walk)'],
+                'source': 'g1deploy/node.py StudentNode.request / collect / sane'}
+
     # ---------------------------------------------------------------- session state
     checkout = _git_provenance(REFERENCE_ROOT)
     source_files = [_hash(REFERENCE_ROOT / f) for f in (
@@ -379,10 +509,13 @@ def _run(req, output, inbox, started):
                                    'identity_sha256': req['policy'].get('identity_sha256'), 'loader': 'deploy-bundle',
                                    'revision': 'bundle 2026-10-08'},
                 'planner_configuration': dict(req['planner'], device='cpu', implementation='eager', route_source='sensor',
-                                              lidar='mjray', start='stand', latency_s=req['latency']['ms'] / 1000,
-                                              anchor_mode=anchor_mode, inflight=1, task_boxes_to_planner=False),
-                'fidelity': 'L2' if lat_ticks else 'L1',
-                'latency_model': {'ms': req['latency']['ms'], 'anchor': anchor_mode,
+                                              lidar='mjray', start='stand',
+                                              latency_s=None if node_mode else req['latency']['ms'] / 1000,
+                                              anchor_mode=anchor_mode, inflight=1, task_boxes_to_planner=False,
+                                              **({'latency_mode': 'node', 'prev_plan_to_planner': False} if node_mode else {})),
+                'fidelity': 'L2' if lat_ticks or node_mode else 'L1',
+                'latency_model': node_latency_model() if node_mode else {
+                                  'ms': req['latency']['ms'], 'anchor': anchor_mode,
                                   'basis': 'source lockstep: a replan requested at tick t drives SONIC from t + latency. The '
                                            "session's first plan is computed before the robot moves (run_episode); later walks "
                                            'start from the stand and pay the latency on their first plan too, as node.py does'},
@@ -418,7 +551,10 @@ def _run(req, output, inbox, started):
          'map_seq': 0, 'map_written': -math.inf, 'map_dirty': True, 'last_write': -math.inf, 'check': None,
          'executing': None, 'motion_ticks': 0, 'snapshot_time': -math.inf, 'perception': None,
          'q': start_q.copy(),  # the planner's latest pose estimate (float64, as node.py's state)
-         'deferred_since': None}
+         'deferred_since': None,
+         # node mode: node.py's own planning state (active = its self.active, the latest accepted plan or stand chunk)
+         'node': {'active': None, 'latencies': [], 'est': req['latency'].get('guess_s'), 'inflight': None,
+                  'last_streamed_anchor': -10**9, 'queued': [], 'dropped': 0, 'stale': 0, 'clipped': 0} if node_mode else None}
     frames, perceptions, plans = [], [], []
     grids = []  # record_grids: the full memory as display codes at every recorded snapshot (tools/site)
     executing_starts = []  # (start tick, plan row index) per plan that drove SONIC
@@ -550,10 +686,14 @@ def _run(req, output, inbox, started):
                 S['deferred_since'] = S['tick']
             S['pending_stand'] = reason
             S['pending'] = []
+            if node_mode:  # node.py: in-flight results discarded, no new plans; streamed ones play out
+                S['node'].update(inflight=None, last_streamed_anchor=S['tick'] + 10**6)
             return False
         S['pending_stand'] = S['deferred_since'] = None
         S['pending'] = []
         S['active'] = stand_plan(q, S['tick'], mode)
+        if node_mode:  # the stand chunk is streamed from now: it replaces whatever was queued in the runner
+            S['node'].update(inflight=None, queued=[], active=S['active'], last_streamed_anchor=S['tick'] + 10**6)
         S['stand_tick'] = S['tick']
         S['stand_reason'], S['stand_mode'] = reason, mode
         event('stand', f'stand ({reason})', reason=reason, stand_mode=mode)
@@ -641,6 +781,8 @@ def _run(req, output, inbox, started):
             if not can()['go']:
                 return reply(cmd, 'rejected', 'Stage a goal first; Go works only while the robot stands')
             start_leg()
+            if node_mode:  # node.py 'go' from a stand: drop jobs, accept plans anchored from now
+                S['node'].update(inflight=None, last_streamed_anchor=S['tick'])
             if req['map_mode'] == 'fresh':
                 clear_memory()
             S['phase'], S['paused'] = 'PRESCAN', False
@@ -687,23 +829,39 @@ def _run(req, output, inbox, started):
         guide = sm.memory_boxes(memory, grow_overhead_m=pcfg.guide_grow_overhead_m) \
             if pcfg.guide_w > 0 and pcfg.guide_source == 'sensor' else None
         active = S['active']
-        predictive = anchor_mode == 'predict' and lat_ticks > 0 and not immediate
-        plan_hist = predicted_history(history, active, tick, lat_ticks, planner.history + 2) if predictive else history
-        anchor_at = tick + lat_ticks if predictive else tick
-        prev = None if first or active[0].get('stand') else (active[0], anchor_at - active[1])
+        if node_mode:  # node.py request(): lead 0 only while it has no plan at all, else from its latency estimate
+            nd = S['node']
+            node_first = nd['active'] is None
+            lead = 0 if node_first else node_lead_ticks(nd['est'])
+            plan_hist = history if lead == 0 else predicted_history(history, nd['active'], tick, lead, len(history))
+            anchor_at, prev = tick + lead, None  # node.py's planner workers are never given the previous plan
+        else:
+            predictive = anchor_mode == 'predict' and lat_ticks > 0 and not immediate
+            plan_hist = predicted_history(history, active, tick, lat_ticks, planner.history + 2) if predictive else history
+            anchor_at = tick + lat_ticks if predictive else tick
+            prev = None if first or active[0].get('stand') else (active[0], anchor_at - active[1])
         tp = time.perf_counter()
         goal_fn.arrival_anchor = q.copy()
         plan = planner.plan(np.asarray(plan_hist), [], goal_fn, map_fn, clearance_fn, prev=prev, guide_boxes=guide)
         latency = time.perf_counter() - tp
         anchor = (plan, anchor_at, np.asarray(plan_hist[-1], dtype=np.float64).copy(), flow.feed.finite_difference_dq(plan_hist))
         S['last_request'] = tick
+        if node_mode:  # the simulated deploy latency replaces this host's CPU compute time
+            compute, (latency, basis) = latency, draw_latency(planner, plan)
         row = {'tick': tick, 'walk': leg['index'], 'waypoint_xy': np.asarray(wp).tolist(), 'route_remaining_m': float(remaining),
                'rule': plan['rule'], 'chosen_clearance_m': float(plan['chosen_clearance_m']), 'latency_s': latency,
                'plan_xy': _r(np, plan['qpos'][:, :2], 3), 'plan_root_z': _r(np, plan['qpos'][:, 2], 3)}
+        if node_mode:
+            row.update(compute_s=compute, latency_basis=basis, lead_ticks=lead, anchor_tick=anchor_at,
+                       land_tick=landing_tick(tick, latency))
+            nd['inflight'] = {'land': row['land_tick'], 'latency_s': latency, 'first': node_first, 'row': len(plans),
+                              'entry': anchor}
         plans.append(row)
         leg['plans'] += 1
         event('replan', plan['rule'], latency_ms=latency * 1000)
-        if lat_ticks == 0 or immediate:
+        if node_mode:
+            pass  # nothing drives SONIC until node_collect() takes the plan at its landing tick
+        elif lat_ticks == 0 or immediate:
             S['active'] = anchor
             S['executing'] = (len(plans) - 1, tick)
             executing_starts.append((tick, len(plans) - 1))
@@ -735,6 +893,42 @@ def _run(req, output, inbox, started):
         ep['end_s'], ep['peak_n'] = t + DT, max(ep['peak_n'], force_n)
         for g, f in groups.items():
             ep['groups'][g] = max(ep['groups'].get(g, 0.0), f)
+
+    def node_collect(tick):
+        """node.py collect() at the tick the in-flight plan lands, then the runner taking up streamed plans."""
+        nd = S['node']
+        job = nd['inflight']
+        if job is not None and tick >= job['land']:
+            nd['inflight'] = None
+            plan, anchor_tick, anchor_q, anchor_dq = job['entry']
+            if job['first']:
+                anchor_tick = tick  # computed while standing still: start it when it lands (node.py)
+            nd['latencies'].append(job['latency_s'])
+            nd['est'] = node_latency_estimate(np, nd['latencies'])
+            reason = node_sane(plan)
+            row = plans[job['row']]
+            row.update(landed_tick=tick, anchor_tick=anchor_tick, late_ticks=tick - anchor_tick)
+            if reason or anchor_tick <= nd['last_streamed_anchor']:
+                row['dropped'] = reason or 'stale'
+                nd['dropped' if reason else 'stale'] += 1
+                event('plan_dropped', f"plan dropped: {reason or 'stale'}", reason=reason or 'stale', anchor_tick=anchor_tick)
+            else:
+                peak = float(np.abs(plan['joint_velocity']).max())
+                if peak > node_args.max_joint_vel:
+                    plan = dict(plan, joint_velocity=np.clip(plan['joint_velocity'], -node_args.max_joint_vel,
+                                                             node_args.max_joint_vel))
+                    row['dq_clipped_from_rad_s'] = peak
+                    nd['clipped'] += 1
+                    event('dq_clipped', f'reference joint velocity {peak:.1f} rad/s clipped to {node_args.max_joint_vel:g}',
+                          max_rad_s=peak)
+                entry = (plan, anchor_tick, anchor_q, anchor_dq)
+                nd['active'], nd['last_streamed_anchor'] = entry, anchor_tick
+                nd['queued'].append((max(anchor_tick, tick), job['row'], entry))
+        while nd['queued'] and nd['queued'][0][0] <= tick:
+            _, index, entry = nd['queued'].pop(0)
+            S['active'] = entry
+            S['executing'] = (index, tick)
+            executing_starts.append((tick, index))
 
     def finish_settle():
         """After a stand: once settled, pause and close the walk."""
@@ -820,6 +1014,8 @@ def _run(req, output, inbox, started):
         if estimate.cfg:
             memory.pose_error = tuple(estimate.err)
         memory.step(tick * DT, true_q[:3], true_q[3:7])
+        if node_mode:
+            node_collect(tick)
         while S['pending'] and tick >= S['pending'][0][0]:
             ready = S['pending'].pop(0)
             S['active'] = ready[2:]
@@ -875,7 +1071,8 @@ def _run(req, output, inbox, started):
                 S['phase'] = 'STOPPED'
                 leg['stop_reason'] = f"walk timeout {req['leg_timeout_s']:.0f} s"
                 stand('timeout')
-            elif S['pending_stand'] is None and not S['pending'] and (leg.get('first_plan_pending') or tick - S['last_request'] >= replan):
+            elif S['pending_stand'] is None and not S['pending'] and not (node_mode and S['node']['inflight'] is not None) \
+                    and (leg.get('first_plan_pending') or tick - S['last_request'] >= replan):
                 request_plan(q, tick)
         if S['pending_stand'] is not None:
             stand(S['pending_stand'])
@@ -989,7 +1186,19 @@ def _run(req, output, inbox, started):
     metadata.update(duration_s=max(DT, frames[-1]['time']), executed_sim_duration_s=S['tick'] * DT,
                     source_samples=len(frames), mode='replay', recording_complete=True, test_result=report,
                     navigation={'legs': legs, 'end_reason': S['end_reason'], 'goal_radius_m': req['goal_radius_m']})
-    metadata['latency_model']['executing_plan_starts'] = executing_starts if lat_ticks else None
+    metadata['latency_model']['executing_plan_starts'] = executing_starts if lat_ticks or node_mode else None
+    if node_mode:
+        nd, landed = S['node'], [p for p in plans if 'landed_tick' in p]
+        report['plan_compute_s'] = ({'p50': float(np.median([p['compute_s'] for p in plans])),
+                                     'p95': float(np.quantile([p['compute_s'] for p in plans], 0.95))} if plans else None)
+        report['node_latency'] = metadata['latency_model']['realized'] = {
+            'plans': len(plans), 'landed': len(landed), 'dropped_sane': nd['dropped'], 'dropped_stale': nd['stale'],
+            'dq_clipped': nd['clipped'], 'late_plans': sum(p['late_ticks'] > 0 for p in landed),
+            'lead_ticks': ({'min': min(p['lead_ticks'] for p in plans), 'p50': float(np.median([p['lead_ticks'] for p in plans])),
+                            'max': max(p['lead_ticks'] for p in plans)} if plans else None),
+            'fallback_share': (float(np.mean([p['latency_basis'].startswith('fallback') for p in plans]))
+                               if plans and req['latency']['distribution']['kind'] == 'pools' else None),
+            'latency_estimate_final_s': nd['est']}
     metadata['provenance']['artifacts'].append(_hash(final_map)) if final_map.is_file() else None
     session = {'schema_version': 1, 'metadata': metadata, 'joint_names': list(contract.MJ_JOINTS), 'frames': frames,
                'events': S['events'], 'plans': plans,

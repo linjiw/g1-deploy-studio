@@ -761,6 +761,15 @@ class Workbench:
             anchor = 'measured'
         return {'ms': ms, 'anchor': anchor}
 
+    @classmethod
+    def _nav_latency(cls, value, profile):
+        """Navigate: the fixed latency model ({ms, anchor}, validated as for rehearsals) or node.py's own rule
+        ({mode: 'node', preset | distribution, guess_s}; studio/nav_worker.py, docs/DEPLOY_FIDELITY.md)."""
+        if isinstance(value, dict) and value.get('mode') == 'node':
+            from studio import nav_worker
+            return nav_worker.validate_nav_latency(value)
+        return cls._latency(value, profile)
+
     @staticmethod
     def _criteria():
         from studio.policy_worker import CRITERIA
@@ -910,7 +919,7 @@ class Workbench:
                 raise ValueError(f"Start: {status['reason']}")
             profile = policies.get_profile(DEFAULT_POLICY_ID)
             policy_identity = policies.identity(profile)
-            latency = self._latency(document.get('latency'), profile)
+            latency = self._nav_latency(document.get('latency'), profile)
             if not self.capabilities()['available']:
                 raise ValueError('CPU reference interpreter or SONIC model unavailable')
             if not policy_identity['available']:

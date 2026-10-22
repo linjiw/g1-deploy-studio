@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -147,6 +148,111 @@ class ContactAttributionTests(unittest.TestCase):
         self.assertEqual((hard['stand']['episodes'], hard['walking']['episodes']), (2, 0))
 
 
+NODE_PY = DEPLOY_PYTHON.parents[2] / 'g1deploy/node.py'
+
+
+class NodeLatencyTests(unittest.TestCase):
+    """Opt-in latency mode 'node' (node.py's rule); the fixed model stays the default and is validated as before."""
+
+    def test_fixed_model_is_the_default_and_unchanged(self):
+        from studio.policy_worker import validate_latency
+        for value in (None, {}, {'ms': 160, 'anchor': 'predict'}, {'ms': 170, 'anchor': 'measured'}, {'ms': 0, 'anchor': 'predict'}):
+            with self.subTest(value=value):
+                self.assertEqual(nav_worker.validate_nav_latency(value), validate_latency(value))
+        self.assertEqual(nav_worker.validate_request(request())['latency'], {'ms': 0, 'anchor': 'measured'})
+
+    def test_node_presets_and_custom(self):
+        clean = nav_worker.validate_nav_latency({'mode': 'node'})
+        self.assertEqual(clean, {'mode': 'node', 'preset': 'bundle-fused', 'guess_s': 0.3,
+                                 'distribution': {'kind': 'lognormal', 'p50_s': 0.119, 'p95_s': 0.167}})
+        sk1 = nav_worker.validate_nav_latency({'mode': 'node', 'preset': 'flow-sk1'})['distribution']
+        self.assertEqual(sk1, {'kind': 'pools', 'first_s': 0.19, 'retry_s': 0.09, 'fallback_s': 1.10})
+        custom = nav_worker.validate_nav_latency({'mode': 'node', 'distribution': {'kind': 'fixed', 's': 0.25}, 'guess_s': 0.2})
+        self.assertEqual((custom['preset'], custom['distribution'], custom['guess_s']), ('custom', {'kind': 'fixed', 's': 0.25}, 0.2))
+        for bad in ({'mode': 'node', 'preset': 'fastest'}, {'mode': 'node', 'distribution': {'kind': 'gamma'}},
+                    {'mode': 'node', 'distribution': {'kind': 'lognormal', 'p50_s': 0.2, 'p95_s': 0.1}},
+                    {'mode': 'node', 'preset': 'flow-sk1', 'distribution': {'kind': 'fixed', 's': 0.1}},
+                    {'mode': 'node', 'guess_s': -1}, {'mode': 'node', 'ms': 160}, {'mode': 'node', 'guess_s': True}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                nav_worker.validate_nav_latency(bad)
+        self.assertEqual(nav_worker.validate_request(request(latency={'mode': 'node', 'preset': 'flow-wx'}))['latency']['preset'],
+                         'flow-wx')
+
+    def test_node_rules(self):
+        import numpy as np
+        self.assertEqual(nav_worker.node_lead_ticks(0.3), 16)      # node.py from its 0.3 s first guess: ceil(15.0) + 1
+        self.assertEqual(nav_worker.node_lead_ticks(0.119), 7)
+        self.assertEqual(nav_worker.node_lead_ticks(1.10), 56)     # after a 1.1 s fallback: longer than a 50-frame plan
+        lat = [0.1] * 9 + [1.1]
+        self.assertAlmostEqual(nav_worker.node_latency_estimate(np, lat), float(np.quantile(lat[-8:], 0.9)))
+        self.assertEqual(nav_worker.node_latency_estimate(np, [0.2]), 0.2)
+        self.assertEqual(nav_worker.landing_tick(100, 0.0), 101)   # never in the request's own tick
+        self.assertEqual(nav_worker.landing_tick(100, 0.12), 106)
+        self.assertEqual(nav_worker.landing_tick(100, 0.121), 107)
+        self.assertEqual(nav_worker.landing_tick(100, 1.10), 155)
+
+    def test_latency_draws(self):
+        import numpy as np
+
+        class Planner:
+            last_pools = [(None, None, 'go')]
+        dist = nav_worker.validate_nav_latency({'mode': 'node', 'preset': 'flow-sk1'})['distribution']
+        draw = nav_worker.LatencyDraw(np, dist, 0)
+        self.assertEqual(draw(Planner, {}), (0.19, 'first pool'))
+        Planner.last_pools = [(None, None, 'go'), (None, None, 'go'), (None, None, 'stop')]
+        self.assertEqual(draw(Planner, {'exec_check': {'tries': 3}}), (1.10 + 0.09, 'fallback pools + check retry'))
+        logn = nav_worker.validate_nav_latency({'mode': 'node'})['distribution']
+        a, b = nav_worker.LatencyDraw(np, logn, 5), nav_worker.LatencyDraw(np, logn, 5)
+        xs = [a(Planner, {})[0] for _ in range(4000)]
+        self.assertEqual(xs[:20], [b(Planner, {})[0] for _ in range(20)])   # seeded, its own stream
+        self.assertAlmostEqual(float(np.median(xs)), 0.119, delta=0.004)
+        self.assertAlmostEqual(float(np.quantile(xs, 0.95)), 0.167, delta=0.008)
+
+    @unittest.skipUnless(NODE_PY.is_file(), 'needs the g1-student-deploy checkout')
+    def test_copied_rules_match_node_source(self):
+        """The rules nav_worker copies from node.py, checked against its source text."""
+        source = NODE_PY.read_text()
+        for line in ('lead = 0 if first else int(math.ceil(self.latency_est / DT)) + 1',
+                     'hist = self.history if lead == 0 else predicted_history(self.history, self.active, now_tick, lead, len(self.history))',
+                     'self.latency_est = float(np.quantile(self.latencies[-8:], 0.9))',
+                     'first = self.active is None',
+                     'anchor_tick = now_tick  # computed while standing still: start it when it lands',
+                     'if reason or anchor_tick <= self.last_streamed_anchor:',
+                     'start = max(anchor_tick, now_tick - 2)',
+                     'self.last_streamed_anchor = now_tick + 10**6',
+                     'plan = planner.plan(np.asarray(hist), [], goal_fn, map_fn, sel, prev=None, guide_boxes=guide)',
+                     'ap.add_argument("--latency-guess-s", type=float, default=0.3)',
+                     'ap.add_argument("--inflight", type=int, default=1,'):
+            self.assertIn(line, source)
+        self.assertEqual((nav_worker.NODE_LATENCY_GUESS_S, nav_worker.NODE_LATENCY_WINDOW, nav_worker.NODE_LATENCY_QUANTILE),
+                         (0.3, 8, 0.9))
+
+    @unittest.skipUnless(NODE_PY.is_file(), 'needs the g1-student-deploy checkout')
+    def test_node_sane_and_defaults_are_imported_from_node(self):
+        """nav_worker calls node.py's own sane() and parse() defaults; run them here in a separate interpreter."""
+        code = (
+            'import sys, json; sys.path.insert(0, sys.argv[1]); import numpy as np\n'
+            'from types import SimpleNamespace\n'
+            'from g1deploy import node\n'
+            'a = node.parse(["--goal", "0", "0"]); s = SimpleNamespace(args=a)\n'
+            'q = np.zeros((50, 36)); q[:, 2] = 0.75; q[:, 0] = np.linspace(0, 1.0, 50)\n'
+            'ok = {"qpos": q, "joint_velocity": np.zeros((50, 29))}\n'
+            'low = dict(ok, qpos=np.where(np.arange(36) == 2, 0.3, q))\n'
+            'fast = dict(ok, qpos=np.where(np.arange(36) == 0, np.linspace(0, 3.0, 50)[:, None], q))\n'
+            'nan = dict(ok, joint_velocity=np.full((50, 29), np.nan))\n'
+            'print(json.dumps({"defaults": [a.latency_guess_s, a.min_pelvis_z, a.max_speed, a.max_joint_vel, a.inflight],'
+            ' "sane": [node.StudentNode.sane(s, p) for p in (ok, low, fast, nan)]}))\n')
+        done = subprocess.run([sys.executable, '-I', '-c', code, str(NODE_PY.parents[1])], capture_output=True, text=True,
+                              timeout=60, cwd=tempfile.gettempdir())
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        got = json.loads(done.stdout)
+        self.assertEqual(got['defaults'], [nav_worker.NODE_LATENCY_GUESS_S, nav_worker.MIN_PELVIS_Z_M, 2.5, 30.0, 1])
+        self.assertIsNone(got['sane'][0])
+        self.assertTrue(got['sane'][1].startswith('pelvis_z'))
+        self.assertTrue(got['sane'][2].startswith('mean speed'))
+        self.assertEqual(got['sane'][3], 'nonfinite')
+
+
 class InboxTests(unittest.TestCase):
     def test_order_skip_and_malformed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,14 +271,14 @@ class InboxTests(unittest.TestCase):
 class Session:
     """Drive a real worker process through its inbox, as the gateway does."""
 
-    def __init__(self, output, req):
+    def __init__(self, output, req, root=ROOT):
         self.output, self.seq = Path(output), 0
         path = self.output.parent / f'{self.output.name}-request.json'
         path.write_text(json.dumps(req))
-        env = dict(os.environ, PYTHONPATH=str(ROOT), CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2', PYTHONDONTWRITEBYTECODE='1')
+        env = dict(os.environ, PYTHONPATH=str(root), CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2', PYTHONDONTWRITEBYTECODE='1')
         self.log = (self.output.parent / f'{self.output.name}.log').open('wb')
-        self.process = subprocess.Popen([str(DEPLOY_PYTHON), '-B', str(ROOT / 'studio/nav_worker.py'), '--request', str(path),
-                                         '--output', str(self.output)], stdout=self.log, stderr=subprocess.STDOUT, env=env, cwd=ROOT)
+        self.process = subprocess.Popen([str(DEPLOY_PYTHON), '-B', str(Path(root) / 'studio/nav_worker.py'), '--request', str(path),
+                                         '--output', str(self.output)], stdout=self.log, stderr=subprocess.STDOUT, env=env, cwd=root)
 
     def latest(self):
         try:
@@ -311,6 +417,61 @@ class NavWorkerIntegrationTests(unittest.TestCase):
         session = json.loads((s.output / 'session.json').read_text())
         self.assertIn('terminated', [e['type'] for e in session['events']])
         self.assertGreater(len(session['frames']), 1)
+
+    def walk_and_end(self, session):
+        session.wait(self.standing, what='arrival')
+        session.send('end')
+        session.wait(lambda l: l.get('status') == 'completed', 90, 'completion')
+        session.process.wait(30)
+        return json.loads((session.output / 'session.json').read_text())
+
+    def test_fixed_latency_is_bitwise_the_pre_change_worker(self):
+        """The default (fixed 160 ms predictive) latency and the default stand run exactly as the worker before
+        stand_mode and the node latency mode existed (commit cbc7fcb, archived from Git)."""
+        base = Path(self.tmp.name) / 'base'
+        base.mkdir()
+        archive = subprocess.run(['git', '-C', str(ROOT), 'archive', 'cbc7fcb', 'studio'], capture_output=True, check=True).stdout
+        subprocess.run(['tar', '-x', '-C', str(base)], input=archive, check=True)
+        req = request(map=PILLAR, seed=2, initial_goal=[1.5, 0.3], latency={'ms': 160, 'anchor': 'predict'})
+        old = self.walk_and_end(Session(Path(self.tmp.name) / 'old', req, root=base))
+        new = self.walk_and_end(Session(Path(self.tmp.name) / 'new', req))
+        self.assertEqual(len(new['frames']), len(old['frames']))
+        self.assertEqual([f['qpos'] for f in new['frames']], [f['qpos'] for f in old['frames']])
+        self.assertEqual([f['command']['joints'] for f in new['frames']], [f['command']['joints'] for f in old['frames']])
+        self.assertEqual([(p['tick'], p['rule'], p['plan_xy']) for p in new['plans']], [(p['tick'], p['rule'], p['plan_xy']) for p in old['plans']])
+        self.assertEqual(new['metadata']['latency_model']['executing_plan_starts'], old['metadata']['latency_model']['executing_plan_starts'])
+        self.assertEqual(new['metadata']['node_rules']['stand_mode'], 'default')
+        print(f"\nfixed-latency parity: {len(new['frames'])} frames, {len(new['plans'])} plans bitwise equal to cbc7fcb", flush=True)
+
+    def test_node_latency_mode(self):
+        """node.py's rule: lead from the q90 of the last 8 latencies, landing after the drawn latency, late plans part-played."""
+        req = request(map=PILLAR, seed=1, latency={'mode': 'node', 'preset': 'flow-sk1'})
+        s = Session(Path(self.tmp.name) / 'nav', req)
+        self.addCleanup(s.close)
+        s.wait(self.standing, what='the first stand')
+        self.assertEqual(s.reply(s.send('goal', xy=[2.6, 0.4]), 1)['status'], 'applied')
+        s.send('go')
+        session = self.walk_and_end(s)
+        meta, plans = session['metadata'], session['plans']
+        self.assertEqual((meta['latency_model']['mode'], meta['fidelity']), ('node', 'L2'))
+        self.assertGreater(len(plans), 3)
+        self.assertEqual(plans[0]['lead_ticks'], 0)                     # no plan yet: lead 0, started when it lands
+        self.assertEqual(plans[0]['anchor_tick'], plans[0]['landed_tick'])
+        import numpy as np
+        lat, est = [], 0.3
+        for p in plans:
+            if p is not plans[0]:
+                self.assertEqual(p['lead_ticks'], nav_worker.node_lead_ticks(est))
+            self.assertIn(p['latency_s'], (0.19, 1.10))
+            self.assertEqual(p['land_tick'], nav_worker.landing_tick(p['tick'], p['latency_s']))
+            if 'landed_tick' in p:
+                lat.append(p['latency_s'])
+                est = nav_worker.node_latency_estimate(np, lat)
+        starts = {index: tick for tick, index in meta['latency_model']['executing_plan_starts']}
+        for i, p in enumerate(plans):
+            if i in starts:
+                self.assertEqual(starts[i], max(p['anchor_tick'], p['landed_tick']))
+        print(f"\nnode mode: {meta['test_result']['node_latency']}", flush=True)
 
     def test_parity_with_the_source_rehearsal_until_arrival(self):
         """With a goal at t = 0, walking is the bundle worker's source run_episode, frame for frame."""
