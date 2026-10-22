@@ -18,7 +18,12 @@ const LATENCY = {
   none: { label: 'None (lockstep)', value: { ms: 0, anchor: 'measured' } },
   robot: { label: '160 ms · deploy PC budget, predictive', value: { ms: 160, anchor: 'predict' } },
   slow: { label: '200 ms · past the budget, predictive', value: { ms: 200, anchor: 'predict' } },
+  node: { label: "node.py rule · bundle planner timing (0.12 s p50, 0.17 s p95)", value: { mode: 'node', preset: 'bundle-fused' } },
+  'node-sk1': { label: "node.py rule · Flow student-sk1 timing (0.19 s, 1.1 s fallback)", value: { mode: 'node', preset: 'flow-sk1' } },
 };
+// The robot's deploy configuration (docs/DEPLOY_FIDELITY.md): deployed budget, node.py's latency rule with the bundle
+// planner's measured timing, LIO-level odometry, one map for the session, the current G1.
+const DEPLOY_SETTINGS = { planner: 'deployed', latency: 'node', actuators: 'g1-current', odometry: 'lio', map_mode: 'keep' };
 const ODOMETRY = { truth: 'Simulator truth', lio: 'LIO-level drift', drift: 'Poor odometry (drift)' };
 const ACTUATORS = { 'g1-current': 'Current G1 (139/139/88 N·m hips)', 'g1-rev1': 'G1 rev 1 (88/139/88)', source: 'Training model (88/88/88)' };
 const PHASE = {
@@ -210,7 +215,8 @@ function setupForm() {
       <p class="tiny">The robot stands in this world and knows it only through its own LiDAR, as on a real site.</p>
       <label class="field"><span>World</span><select id="nav-world">${worlds.map(m => option(m.id, m.label, m.id === nav.mapId)).join('')}</select></label>
       <label class="field"><span>Start</span><select id="nav-start">${list.map((q, i) => option(i, `${q.label} · (${num(q.start_xy[0], 1)}, ${num(q.start_xy[1], 1)})`, i === nav.presetIndex)).join('')}</select></label>
-      <details class="nav-advanced"><summary>Advanced</summary>
+      <button id="nav-deploy-preset" class="link-button" ${nav.busy ? 'disabled' : ''}>Use deploy settings</button>
+      <details class="nav-advanced" ${nav.advancedOpen ? 'open' : ''}><summary>Advanced</summary>
         <label class="field"><span>Planner budget</span><select id="nav-planner">${Object.entries(nav.catalog.nav_options?.planner ?? { quick: 'Quick · K 2, ODE 4 (CPU)', balanced: 'Balanced · K 8, ODE 6', deployed: 'Deployed budget · K 16, ODE 10 (slow on CPU)' }).map(([k, v]) => option(k, v, k === nav.settings.planner)).join('')}</select></label>
         <label class="field"><span>Planner latency</span><select id="nav-latency">${Object.entries(LATENCY).map(([k, v]) => option(k, v.label, k === nav.settings.latency)).join('')}</select></label>
         <label class="field"><span>Hardware limits</span><select id="nav-actuators">${Object.entries(ACTUATORS).map(([k, v]) => option(k, v, k === nav.settings.actuators)).join('')}</select></label>
@@ -255,6 +261,11 @@ function bindSetup(root) {
   for (const [id, key] of [['nav-planner', 'planner'], ['nav-latency', 'latency'], ['nav-actuators', 'actuators'], ['nav-odometry', 'odometry'], ['nav-map-mode', 'map_mode']])
     root.querySelector(`#${id}`)?.addEventListener('change', e => { nav.settings[key] = e.target.value; });
   root.querySelector('#nav-seed')?.addEventListener('change', e => { nav.settings.seed = Math.max(0, Math.floor(Number(e.target.value) || 0)); });
+  root.querySelector('#nav-deploy-preset')?.addEventListener('click', () => {
+    Object.assign(nav.settings, DEPLOY_SETTINGS); nav.advancedOpen = true;
+    nav.notice = { kind: 'ok', text: "Deploy settings: K 16 / ODE 10, node.py's latency rule with the bundle planner's timing, LIO-level odometry, one map. About 0.15x real time on this CPU." };
+    render();
+  });
   root.querySelector('#nav-start-session')?.addEventListener('click', startSession);
   root.querySelectorAll('[data-open-session]').forEach(b => b.addEventListener('click', () => emit('open-session', b.dataset.openSession)));
 }
