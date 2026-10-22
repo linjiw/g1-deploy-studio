@@ -161,5 +161,6 @@ A change to `site/` alone redeploys with the same data.
 |---|---|---|---|---|
 | `site-v1` | 2026-10-21 | 415: wall detour 107, alternating walls 106, corridor 66, doorway 72, cluttered room 64 | Levels 0 and 1 in the first two rooms, level 0 in the others | data 17 MB (61 MB unpacked, with the mesh licence and NOTICE), media 25 MB |
 | `site-v2` | 2026-10-22 | 473: wall detour 107, alternating walls 106, corridor 124, doorway 72, cluttered room 64 | Levels 0 and 1 in the first three rooms, level 0 in the others. Schema 2: every walk carries the plan body; rooms list their walks; split-view scenarios; findings stills | data 24 MB (76 MB unpacked), media 25 MB (with the stills) |
+| `site-v3` | 2026-10-22 | the same 473 | as `site-v2` | Contact per frame is the peak over the ticks it stands for. Walk rows carry the goal's x, y and rooms their start pose, for the room menu's directions and the chart | data 24 MB, media 25 MB (unchanged) |
 
 The batch can keep recording the remaining levels at the lowest priority for a later release. Nothing on the published site changes until `tools/site/release.json` names a new tag.
