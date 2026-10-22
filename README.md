@@ -30,7 +30,7 @@ cd g1-deploy-studio
 tools/studio_service.sh status        # served commit + unit state
 ```
 
-Open **http://127.0.0.1:8790/**. From another computer, use an SSH tunnel: `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open `http://localhost:8790/`. See [service and access](docs/SERVICE.md).
+Open **http://127.0.0.1:8790/**. The layout adapts from a big screen down to a tablet or a phone (reached through a tunnel: the gateway listens on loopback only). On narrow screens the 3D view comes first, the workspaces move to a tab bar at the bottom, and Navigate's steps (start, pick a goal, send it, Go) sit on the map itself. From another computer, use an SSH tunnel: `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open `http://localhost:8790/`. See [service and access](docs/SERVICE.md).
 
 **Stage:** choose **Stage** in the top bar, or open [the rehearsal stage](http://127.0.0.1:8790/?workspace=rehearse&focus=1), for one run full screen: the robot, its reference and plan, and the room. It has floating layer pills, one dock and a **Setup** sheet for the existing policy and arena controls. It labels the displayed recording's policy apart from the next run's. See [Stage](docs/STAGE.md).
 

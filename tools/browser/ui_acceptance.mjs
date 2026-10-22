@@ -102,8 +102,8 @@ try {
   check('named joint table matches the sampled source value');
   // Stale-state diagnostic never shows a healthy zero.
   await page.click('#tab-health'); await seek(0.3); await page.check('#freeze-state'); await seek(0.9);
-  assert.match(await page.locator('#health-content').textContent(), /STALE/);
-  assert.match(await page.locator('#source-badge').textContent(), /HELD/);
+  assert.match(await page.locator('#health-content').textContent(), /stale/i);
+  assert.match(await page.locator('#source-badge').textContent(), /held/i);
   await shot('lockstep-held-state'); await page.uncheck('#freeze-state');
   check('held-state injection is labelled stale');
 

@@ -1,6 +1,6 @@
 // Rehearse: choose a policy profile + arena preset, run the owned CPU worker,
 // follow it live and run bounded suites. Simulation only; no hardware path.
-import { $, escape, num, vector, fact, chip, request, outcomeChip, finite, emit, on, ago } from './util.js';
+import { $, escape, num, vector, fact, chip, request, outcomeChip, finite, emit, on, ago, distinctLabels } from './util.js';
 import { ACTUATOR_SHORT } from './runs.js';
 
 export const rh = {
@@ -62,7 +62,7 @@ function policyCard(p, research) {
     : escape(p.research_lineage ?? 'Not a Flow research block');
   return `<label class="policy-card ${selected ? 'selected' : ''} ${p.available ? '' : 'unavailable'}">
     <input type="radio" name="policy" value="${escape(p.id)}" ${selected ? 'checked' : ''} ${p.available ? '' : 'disabled'}>
-    <div><div class="policy-title"><strong>${escape(p.label)}</strong>${p.available ? '' : chip('unavailable', (p.missing ?? []).join('; '))}${p.matches_adopted ? '<span class="adopted">ADOPTED BLOCK</span>' : ''}</div>
+    <div><div class="policy-title"><strong>${escape(p.label)}</strong>${p.available ? '' : chip('unavailable', (p.missing ?? []).join('; '))}${p.matches_adopted ? '<span class="adopted">Adopted block</span>' : ''}</div>
     <div class="policy-meta">${lineage}</div>
     <div class="policy-meta">Tracker ${escape(p.tracker?.name ?? '—')} · runtime ${escape(p.runtime?.kind ?? 'cpu-lockstep')} · identity <code>${escape((p.identity?.identity_sha256 ?? '').slice(0, 10))}</code></div>
     ${(p.limitations ?? []).length ? `<details><summary>Limitations (${p.limitations.length})</summary><ul>${p.limitations.map(t => `<li>${escape(t)}</li>`).join('')}</ul></details>` : ''}</div></label>`;
@@ -84,7 +84,7 @@ export function render() {
       ${rh.catalog.policies.some(p => p.matches_adopted) ? '' : '<p class="tiny warn-text">No deployable Studio profile matches the adopted block yet.</p>'}</div>
     <div class="panel-section"><h4>Policy profile</h4><div class="policy-list">${rh.catalog.policies.map(p => policyCard(p, research)).join('')}</div></div>
     <div class="panel-section"><h4>Arena & preset</h4>
-      <label class="field">Arena<select id="rh-map">${runnable.map(m => `<option value="${escape(m.id)}" ${m.id === rh.mapId ? 'selected' : ''}>${escape(m.label)}${m.origin === 'arena-editor' ? ' · custom' : ''}</option>`).join('')}</select></label>
+      <label class="field">Arena<select id="rh-map">${(labels => runnable.map(m => `<option value="${escape(m.id)}" ${m.id === rh.mapId ? 'selected' : ''}>${escape(labels.get(m.id))}${m.origin === 'arena-editor' ? ' · custom' : ''}</option>`).join(''))(distinctLabels(runnable))}</select></label>
       <label class="field">Preset<select id="rh-preset">${list.map((x, i) => `<option value="${i}" ${i === rh.presetIndex ? 'selected' : ''}>${escape(x.label)}</option>`).join('')}</select></label>
       ${q ? `<div class="preset-readout">${fact('Start · heading', `[${vector(q.start_xy, 2)}] m · ${num((q.start_yaw_rad ?? 0) * 180 / Math.PI, 0)}°`)}${fact('Goal', `[${vector(q.goal_xy, 2)}] m · ${num(Math.hypot(q.goal_xy[0] - q.start_xy[0], q.goal_xy[1] - q.start_xy[1]), 2, 'm')} away`)}</div>` : ''}
       <button id="rh-edit-arena" class="link-button">Edit this arena →</button></div>
@@ -98,7 +98,7 @@ export function render() {
       <label class="field" title="${escape((rh.catalog.actuators ?? []).find(a => a.id === rh.settings.actuators)?.hardware ?? '')}">Actuator limits (hip pitch / roll / yaw)<select id="rh-actuators">${(rh.catalog.actuators ?? []).map(a => `<option value="${escape(a.id)}" ${a.id === rh.settings.actuators ? 'selected' : ''} title="${escape(a.description)}">${escape(a.label)}</option>`).join('')}</select></label>
       <label class="field">Success criterion<select id="rh-criterion">${(rh.catalog.criteria ?? [{ id: 'arrive_hold', label: 'Arrive and hold' }]).map(c => `<option value="${escape(c.id)}" ${c.id === rh.settings.criterion ? 'selected' : ''} title="${escape(`radius ${c.goal_radius_m} m · speed ≤ ${c.goal_speed_m_s} m/s for ${c.goal_hold_s} s · collision > ${c.obstacle_contact_threshold_n} N`)}">${escape(c.label)}</option>`).join('')}</select></label>
       <p class="tiny">CPU lockstep pauses physics while planning, so larger budgets cost wall time, not simulated time. Wall limit for this profile: ${pol?.limits?.wall_s ?? 180} s.</p></div>
-    <div class="panel-section sticky-actions"><button id="rh-run" class="primary-action" ${active || !pol?.available ? 'disabled' : ''}>▶ Run preset</button><button id="rh-suite" ${active || !pol?.available || suiteRuns > suiteLimit ? 'disabled' : ''} title="${suiteRuns > suiteLimit ? `A suite holds at most ${suiteLimit} runs` : 'Run every preset of this arena (× seeds) one after another'}">Run suite · ${suiteRuns} run${suiteRuns === 1 ? '' : 's'}${suiteRuns > suiteLimit ? ` (max ${suiteLimit})` : ''}</button>${active ? '<button id="rh-cancel" class="danger">Cancel</button>' : ''}</div>
+    <div class="panel-section sticky-actions"><button id="rh-run" class="primary-action" ${active || !pol?.available ? 'disabled' : ''}>Run preset</button><button id="rh-suite" ${active || !pol?.available || suiteRuns > suiteLimit ? 'disabled' : ''} title="${suiteRuns > suiteLimit ? `A suite holds at most ${suiteLimit} runs` : 'Run every preset of this arena (× seeds) one after another'}">Run suite · ${suiteRuns} run${suiteRuns === 1 ? '' : 's'}${suiteRuns > suiteLimit ? ` (max ${suiteLimit})` : ''}</button>${active ? '<button id="rh-cancel" class="danger">Cancel</button>' : ''}</div>
     <div id="rh-job" class="panel-section"></div><div id="rh-suite-status" class="panel-section"></div>`;
   bind();
   renderJob(); renderSuite();

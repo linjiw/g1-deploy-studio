@@ -37,17 +37,17 @@ export const tiny = text => `<p class="tiny">${escape(text)}</p>`;
 
 // One evidence vocabulary for facts, layers, edges and lanes (review §4.1).
 export const EVIDENCE = {
-  measured: { label: 'MEASURED', tip: 'From a physical sensor or recorded wire bytes.' },
-  'sim-truth': { label: 'SIM-TRUTH', tip: 'Simulator internal state (e.g. MuJoCo qpos, contact forces). Not a physical measurement.' },
-  estimated: { label: 'ESTIMATED', tip: 'Derived by an estimator or map (e.g. CloudMemory support/ceiling).' },
-  commanded: { label: 'COMMANDED', tip: 'Intent or command (plan, reference window, PD targets). Not proof of delivery.' },
-  configured: { label: 'CONFIGURED', tip: 'Read from source or configuration, not observed at runtime.' },
-  observed: { label: 'OBSERVED', tip: 'Observed at runtime by a Studio wrapper or subscriber.' },
-  recorded: { label: 'RECORDED', tip: 'Replayed from a saved recording.' },
-  unavailable: { label: 'UNAVAILABLE', tip: 'Not captured in this source. Missing values are never shown as healthy zeros.' },
+  measured: { label: 'Measured', tip: 'From a physical sensor or recorded wire bytes.' },
+  'sim-truth': { label: 'Sim truth', tip: 'Simulator internal state (e.g. MuJoCo qpos, contact forces). Not a physical measurement.' },
+  estimated: { label: 'Estimated', tip: 'Derived by an estimator or map (e.g. CloudMemory support/ceiling).' },
+  commanded: { label: 'Commanded', tip: 'Intent or command (plan, reference window, PD targets). Not proof of delivery.' },
+  configured: { label: 'Configured', tip: 'Read from source or configuration, not observed at runtime.' },
+  observed: { label: 'Observed', tip: 'Observed at runtime by a Studio wrapper or subscriber.' },
+  recorded: { label: 'Recorded', tip: 'Replayed from a saved recording.' },
+  unavailable: { label: 'Unavailable', tip: 'Not captured in this source. Missing values are never shown as healthy zeros.' },
 };
 export function chip(kind, reason = '') {
-  const e = EVIDENCE[kind] ?? { label: String(kind).toUpperCase(), tip: '' };
+  const e = EVIDENCE[kind] ?? { label: String(kind).charAt(0).toUpperCase() + String(kind).slice(1), tip: '' };
   const tip = reason ? `${e.tip} ${reason}` : e.tip;
   return `<span class="chip chip-${escape(kind)}" title="${escape(tip)}">${escape(e.label)}</span>`;
 }
@@ -151,4 +151,10 @@ export function pointStatus(map, point, clearance = 0.25) {
       return { status: 'blocked', reason: 'An obstacle intersects the conservative standing footprint' };
   }
   return { status: 'configured_free', reason: 'No configured box intersects the standing footprint (path not checked)' };
+}
+
+// Arenas and worlds that share a label are told apart by a short id (labels repeat when one is saved twice).
+export function distinctLabels(items) {
+  const count = new Map(); for (const m of items) count.set(m.label, (count.get(m.label) ?? 0) + 1);
+  return new Map(items.map(m => [m.id, count.get(m.label) > 1 ? `${m.label} · #${String(m.id).replace(/^arena-/, '').slice(0, 6)}` : m.label]));
 }

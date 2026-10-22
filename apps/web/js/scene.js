@@ -494,14 +494,16 @@ export function cameraView(kind, state, reset = false) {
 }
 
 // Straight-down view showing `half` metres around `center` (Navigate: the robot's 12 x 12 m memory).
-export function topView(center, half = 5) {
+// lift: move the subject up by this fraction of the half-height (Navigate keeps the robot above its stage bar).
+export function topView(center, half = 5, { lift = 0 } = {}) {
   view.camera_mode = 'top';
   const height = half / Math.tan(THREE.MathUtils.degToRad(view.camera.fov / 2)) / Math.min(1, Math.max(0.3, view.camera.aspect));
+  const dy = lift * height * Math.tan(THREE.MathUtils.degToRad(view.camera.fov / 2));
   view.scene.fog.density = Math.min(0.02, 1 / Math.max(1, height));
   view.controls.maxDistance = Math.max(80, height * 2); view.camera.far = Math.max(300, height * 3); view.camera.updateProjectionMatrix();
-  view.controls.target.set(center[0], center[1], 0);
+  view.controls.target.set(center[0], center[1] - dy, 0);
   view.followAnchor.set(center[0], center[1], center[2] ?? 0.75);
-  view.camera.position.set(center[0], center[1] - 0.001, height);
+  view.camera.position.set(center[0], center[1] - dy - 0.001, height);
   view.controls.enableRotate = false; view.controls.update(); markDirty();
 }
 

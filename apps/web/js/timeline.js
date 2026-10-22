@@ -4,15 +4,15 @@ import { $, finite, escape, clock, hasPose } from './util.js';
 import { UI, SERIES, alpha } from './palette.js';
 
 const LANES = [
-  { id: 'events', label: 'Events', unit: '' },
-  { id: 'goal', label: 'Goal distance', unit: 'm', color: UI.warn, value: (f, m) => goalDistance(f, m),
+  { id: 'events', label: 'Events', short: 'Events', unit: '' },
+  { id: 'goal', label: 'Goal distance', short: 'To goal', unit: 'm', color: UI.warn, value: (f, m) => goalDistance(f, m),
     threshold: m => m.navigation_criteria?.goal_radius_m ?? m.navigation?.goal_radius_m ?? m.node_rules?.goal_radius_m, thresholdLabel: 'goal radius' },
-  { id: 'planner', label: 'Planner compute', unit: 'ms', color: SERIES.planner, value: f => f.health?.planner_latency_ms,
+  { id: 'planner', label: 'Planner compute', short: 'Planner', unit: 'ms', color: SERIES.planner, value: f => f.health?.planner_latency_ms,
     threshold: () => 160, thresholdLabel: 'deploy replan 160 ms', step: true },
-  { id: 'sonic', label: 'SONIC inference', unit: 'ms', color: SERIES.sonic, value: f => f.health?.sonic_inference_ms,
+  { id: 'sonic', label: 'SONIC inference', short: 'SONIC', unit: 'ms', color: SERIES.sonic, value: f => f.health?.sonic_inference_ms,
     threshold: () => 20, thresholdLabel: '20 ms control tick' },
-  { id: 'tracking', label: 'Tracking RMSE', unit: 'rad', color: SERIES.tracking, value: f => f.health?.tracking_rmse_rad },
-  { id: 'contact', label: 'Obstacle contact', unit: 'N', color: SERIES.contact, value: f => f.health?.contact_force_n,
+  { id: 'tracking', label: 'Tracking RMSE', short: 'Tracking', unit: 'rad', color: SERIES.tracking, value: f => f.health?.tracking_rmse_rad },
+  { id: 'contact', label: 'Obstacle contact', short: 'Contact', unit: 'N', color: SERIES.contact, value: f => f.health?.contact_force_n,
     threshold: m => m.navigation_criteria?.obstacle_contact_threshold_n, thresholdLabel: 'collision' },
 ];
 
@@ -35,9 +35,27 @@ export function initTimeline({ onSeek }) {
     const t = tl.t0 + x / Math.max(1, rect.width - labelWidth() - 8) * (tl.t1 - tl.t0);
     tl.onSeek?.(t);
   };
-  tl.canvas.addEventListener('pointerdown', e => { tl.dragging = true; tl.canvas.setPointerCapture(e.pointerId); seekAt(e); });
-  tl.canvas.addEventListener('pointermove', e => { if (tl.dragging) seekAt(e); else hover(e); });
-  tl.canvas.addEventListener('pointerup', () => { tl.dragging = false; });
+  // A mouse seeks at once. A finger seeks on a tap or a sideways drag; a vertical swipe scrolls the page
+  // (touch-action: pan-y), never the cursor.
+  let touch = null;
+  tl.canvas.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch') { touch = { x: e.clientX, y: e.clientY, id: e.pointerId, mode: null }; return; }
+    tl.dragging = true; tl.canvas.setPointerCapture(e.pointerId); seekAt(e);
+  });
+  tl.canvas.addEventListener('pointermove', e => {
+    if (touch && e.pointerId === touch.id) {
+      const dx = Math.abs(e.clientX - touch.x), dy = Math.abs(e.clientY - touch.y);
+      if (!touch.mode && (dx > 8 || dy > 8)) touch.mode = dx > dy ? 'seek' : 'scroll';
+      if (touch.mode === 'seek') seekAt(e);
+      return;
+    }
+    if (tl.dragging) seekAt(e); else hover(e);
+  });
+  tl.canvas.addEventListener('pointerup', e => {
+    if (touch && e.pointerId === touch.id && !touch.mode) seekAt(e);
+    touch = null; tl.dragging = false;
+  });
+  tl.canvas.addEventListener('pointercancel', () => { touch = null; tl.dragging = false; });
   tl.canvas.addEventListener('pointerleave', () => { $('lanes-tip').hidden = true; });
   $('lanes-toggle')?.addEventListener('click', () => {
     const collapsed = document.body.classList.toggle('lanes-collapsed');
@@ -46,7 +64,8 @@ export function initTimeline({ onSeek }) {
   });
 }
 
-const labelWidth = () => (tl.canvas?.clientWidth ?? 800) < 520 ? 92 : 132;
+const narrow = () => (tl.canvas?.clientWidth ?? 800) < 520;
+const labelWidth = () => narrow() ? 76 : 132;
 
 export function setTimelineSession(session) {
   tl.session = session;
@@ -103,7 +122,7 @@ function drawBase() {
     const y0 = 2 + i * g.laneH, y1 = y0 + g.laneH - 3, mid = (y0 + y1) / 2;
     ctx.fillStyle = i % 2 ? UI.panel2 : UI.panel; ctx.fillRect(0, y0, g.width, g.laneH - 1);
     ctx.fillStyle = lane.available ? UI.muted : UI.dim;
-    ctx.fillText(lane.label, 8, mid);
+    ctx.fillText(narrow() ? lane.short : lane.label, 8, mid);
     if (lane.id === 'events') {
       for (const e of lane.events) {
         const x = xOf(e.time, g);
@@ -113,7 +132,7 @@ function drawBase() {
       if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText('No events recorded', g.left + 6, mid); }
       return;
     }
-    if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText('Unavailable in this recording', g.left + 6, mid); return; }
+    if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText(['simulation', 'live'].includes(tl.session?.metadata?.mode) ? 'No samples yet' : 'Unavailable in this recording', g.left + 6, mid); return; }
     const yOf = v => y1 - Math.min(1, v / lane.max) * (y1 - y0 - 3);
     if (lane.threshold !== null && lane.threshold <= lane.max * 1.001) {
       const ty = yOf(lane.threshold);

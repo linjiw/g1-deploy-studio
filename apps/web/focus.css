@@ -41,13 +41,13 @@ body.flow-focus { display: block; overflow: hidden; }
 .focus-layers button[aria-pressed="true"] i { opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot) 25%, transparent); }
 .focus-heading { width: 100%; padding: 12px 14px; border-radius: 14px; }
 .focus-heading:focus { outline: none; }
-.focus-mode { margin: 0 0 4px; color: var(--dim); font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; line-height: 1.45; }
+.focus-mode { margin: 0 0 4px; color: var(--dim); font-size: 12px; font-weight: 600; line-height: 1.45; }
 #focus-root[data-live="true"] .focus-mode { color: var(--accent-ink); }
 #focus-root[data-preview="true"] .focus-mode { color: var(--c-amber); }
 #focus-scene-name { font-size: 15px; font-weight: 650; line-height: 1.35; margin: 0 0 8px; overflow-wrap: anywhere; }
 .focus-outcome { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 10px; padding: 3px 10px; border-radius: 999px; background: var(--warn-soft); color: var(--c-amber); font-size: 12px; font-weight: 600; line-height: 1.4; }
 .focus-outcome::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.focus-outcome[data-outcome="goal_completion"] { background: var(--ok-soft); color: var(--c-green); }
+.focus-outcome[data-outcome="goal_completion"], .focus-outcome[data-outcome="walks_arrived"] { background: var(--ok-soft); color: var(--c-green); }
 .focus-outcome[data-outcome="obstacle_collision"], .focus-outcome[data-outcome="fall"], .focus-outcome[data-outcome="runtime_error"] { background: var(--bad-soft); color: var(--c-red); }
 .focus-source { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 3px 10px; margin: 0; font-size: 12.5px; line-height: 1.45; }
 .focus-source dt { color: var(--dim); }

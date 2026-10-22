@@ -84,7 +84,7 @@ await R.check('RV1', "The node's launch goal is shown as NOT FROM STUDIO, in red
   assert(ready(s, 'goal_verified')?.status === 'block' && s.nav.ready_ok === false, JSON.stringify(s.nav.ready));
   await sleep(800);
   const text = await panel();
-  assert(/NOT FROM STUDIO/.test(text) && /launch goal/i.test(text) && /do not press g/i.test(text), text.slice(0, 600));
+  assert(/not from studio/i.test(text) && /launch goal/i.test(text) && /do not press g/i.test(text), text.slice(0, 600));
   await R.shot('launch-goal');
   await end();
   return { warning: s.nav.goal_warning };
@@ -153,7 +153,7 @@ await R.check('RV5', "Without the runner's joints the robot is drawn from its LI
     return { marker: !!view.rootMarker?.visible, robot: !!view.robot?.root.visible, unavailable: !document.querySelector('#scene-unavailable').hidden,
       badge: document.querySelector('#source-badge').textContent, frames: window.__studio.state.session?.frames?.length };
   });
-  assert(view.marker && !view.unavailable && /LIO ESTIMATE/.test(view.badge), JSON.stringify(view));
+  assert(view.marker && !view.unavailable && /LIO estimate/i.test(view.badge), JSON.stringify(view));
   await R.shot('no-joints');
   await end();
   return view;

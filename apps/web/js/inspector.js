@@ -53,8 +53,8 @@ function renderIntent(state) {
       : notice('No reference payload at this cursor. Reference joints and tracking error stay unavailable.', 'warning'), { evidence: wire ? 'measured' : 'commanded' });
   const exec = card('Observed execution', `${state.frozenFrame ? notice(`Diagnostic: state held at ${clock(m.time)} while the cursor advances.`, 'warning') : ''}${fact(m?.frame_id === 'odom' ? 'Root · odom' : 'Root · world', hasRoot(m) ? `[${vector(m.position, 2)}] m` : 'Unavailable')}
       ${fact('Heading', hasRoot(m) ? num(Math.atan2(2 * (m.quaternion_wxyz[0] * m.quaternion_wxyz[3] + m.quaternion_wxyz[1] * m.quaternion_wxyz[2]), 1 - 2 * (m.quaternion_wxyz[2] ** 2 + m.quaternion_wxyz[3] ** 2)), 3, 'rad') : 'Unavailable')}
-      ${fact('Joint reference RMSE', num(h.tracking_rmse_rad, 3, 'rad'))}${fact('PD target RMSE', num(h.command_tracking_rmse_rad, 3, 'rad'))}`, { evidence: hasRoot(m) ? (m.classification === 'estimated' ? 'estimated' : meta.mode === 'simulation' || isLockstep(state) ? 'sim-truth' : 'recorded') : 'unavailable' });
-  $('intent-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${wire ? 'REFERENCE PUBLISHER → COLLECTOR' : 'PLANNER → SONIC'}</span><h3>What comes next</h3></div>${nav}${plan}${ref}${exec}`;
+      ${fact('Joint reference RMSE', num(h.tracking_rmse_rad, 3, 'rad'))}${fact('PD target RMSE', num(h.command_tracking_rmse_rad, 3, 'rad'))}`, { evidence: hasRoot(m) ? (m.classification === 'estimated' ? 'estimated' : meta.mode === 'simulation' || isLockstep(state) || (meta.recording_kind === 'navigation-session' && meta.robot !== 'real') ? 'sim-truth' : 'recorded') : 'unavailable' });
+  $('intent-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${wire ? 'Reference publisher → collector' : 'Planner → SONIC'}</span><h3>What comes next</h3></div>${nav}${plan}${ref}${exec}`;
 }
 
 // ---------------------------------------------------------------- Joints
@@ -62,7 +62,7 @@ function buildJoints(state) {
   const names = state.session.joint_names ?? [];
   const groups = LIMBS.map(([label, re]) => [label, names.map((n, i) => [n, i]).filter(([n]) => re.test(n))]);
   const hasCommand = state.session.frames.some(f => f.command?.joints);
-  $('joints-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">NAMED JOINTS · MUJOCO ORDER</span><h3>Planned vs executed</h3><p>Radians. Error = state − reference.${hasCommand ? ' PD target is the recorded simulated command.' : ''}</p></div>
+  $('joints-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">Named joints · MuJoCo order</span><h3>Planned vs executed</h3><p>Radians. Error = state − reference.${hasCommand ? ' PD target is the recorded simulated command.' : ''}</p></div>
     <div class="joint-chart-head"><select id="joint-select" class="joint-select" aria-label="Joint to inspect">${names.map((n, i) => `<option value="${i}">${escape(n)}</option>`).join('')}</select><div class="chart-legend"><span class="lg-state">State</span><span class="lg-ref">Reference</span>${hasCommand ? '<span class="lg-cmd">PD target</span>' : ''}</div></div>
     <div id="joint-chart"></div>
     <table class="joint-table" data-testid="joint-table"><thead><tr><th>Joint</th><th>State</th><th>Ref</th><th>Error</th>${hasCommand ? '<th>Target</th>' : ''}</tr></thead>
@@ -152,7 +152,7 @@ function torqueSummary(t, actuators = null) {
   const hits = Object.keys(t.peak_commanded_nm).filter(atLimit), legHits = hits.filter(isLeg), otherHits = hits.filter(n => !isLeg(n));
   const ref = k => t.exceedance_substeps?.[k] ? Object.values(t.exceedance_substeps[k]).reduce((a, b) => a + b, 0) : null;
   const refs = [['training', 'training'], ['g1-current', 'current G1'], ['g1-rev1', 'rev_1_0'], ['source', 'source 88']];
-  return `<details class="torque-details" ${hits.length ? 'open' : ''}><summary>Leg torque vs limit ${legHits.length ? `<span class="chip chip-commanded">AT LIMIT ${legHits.length} leg joint${legHits.length > 1 ? 's' : ''}</span>` : ''}${otherHits.length ? ` <span class="chip">+${otherHits.length} arm/waist</span>` : ''}</summary>
+  return `<details class="torque-details" ${hits.length ? 'open' : ''}><summary>Leg torque vs limit ${legHits.length ? `<span class="chip chip-commanded">At limit ${legHits.length} leg joint${legHits.length > 1 ? 's' : ''}</span>` : ''}${otherHits.length ? ` <span class="chip">+${otherHits.length} arm/waist</span>` : ''}</summary>
     ${actuators ? fact('Actuator profile', `${actuators.label ?? actuators.profile}`) : fact('Actuator profile', 'source model (run predates profiles)')}
     ${t.exceedance_substeps ? `<table class="joint-table ref-table"><thead><tr><th>Substeps at/above</th>${refs.map(([, l]) => `<th>${escape(l)}</th>`).join('')}</tr></thead>
       <tbody><tr><td>all joints</td>${refs.map(([k]) => `<td>${ref(k) === null ? (k in t.exceedance_substeps ? '0' : '—') : escape(ref(k))}</td>`).join('')}</tr></tbody></table>` : ''}
@@ -172,8 +172,23 @@ function anchorCard(state) {
     ${tiny('The planner was given the state predicted at request + latency from the landed plan; this is the error of that prediction. It assumes SONIC tracks the plan exactly, so a lagging tracker makes it optimistic.')}`, { evidence: 'estimated' });
 }
 
+// A navigation session is a sequence of walks, each graded by node.py's rules: show them, not a whole-run verdict.
+const WALK_OUTCOME = { arrived: ['Arrived', 'good'], stopped: ['Stopped', 'warn'], timeout: ['Timed out', 'warn'], estop: ['E-stop', 'bad'], fell: ['Fell', 'bad'], session_end: ['Session ended', 'muted'] };
+function sessionCard(state) {
+  const meta = state.session.metadata, result = meta.test_result, legs = result.legs ?? [];
+  return card(`Session · ${result.arrived ?? 0} of ${result.walks ?? legs.length} walks arrived`, `
+    ${legs.length ? `<ol class="nav-walks">${legs.map(l => { const [text, tone] = WALK_OUTCOME[l.outcome] ?? [l.outcome ?? 'Walking', 'muted'];
+      return `<li><span class="outcome outcome-${tone}">${escape(text)}</span> to (${num(l.goal_xy?.[0], 2)}, ${num(l.goal_xy?.[1], 2)})
+        <small>${finite(l.final_dist_m) ? `${num(l.final_dist_m, 2)} m off · ` : ''}${finite(l.duration_s) ? `${num(l.duration_s, 1)} s · ` : ''}${finite(l.path_m) ? `${num(l.path_m, 1)} m walked` : ''}${l.max_contact_n > 5 ? ` · contact ${num(l.max_contact_n, 0)} N` : ''}${l.reason ? ` · ${escape(l.reason)}` : ''}</small>
+        ${finite(l.go_at_s) ? `<button class="link-button" data-seek="${l.go_at_s}">Go to this walk</button>` : ''}</li>`; }).join('')}</ol>` : tiny('No walks in this session.')}
+    ${fact('Motion', num(result.motion_s, 1, 's'))}${result.plan_latency_s ? fact('Planner p50 / p95', `${num(result.plan_latency_s.p50 * 1000, 0)} / ${num(result.plan_latency_s.p95 * 1000, 0, 'ms')}`) : ''}
+    ${result.end_reason ? tiny(`Ended: ${result.end_reason}.`) : ''}
+    ${torqueSummary(result.torque, result.actuators ?? meta.actuators)}`, { evidence: meta.robot === 'real' ? 'estimated' : 'sim-truth', id: 'recorded-outcome' });
+}
+
 function outcomeCard(state) {
   const meta = state.session.metadata, result = meta.test_result;
+  if (result && Number.isFinite(result.walks)) return sessionCard(state);
   if (!result?.outcome) return '';
   const f = fidelity(meta);
   const last = state.session.frames.at(-1), interval = last?.post_action?.contact;
@@ -201,7 +216,7 @@ function renderHealth(state) {
     ${lock ? tiny(modelledLatency(state)
       ? `CPU host time. Simulated time does not wait for these: each replan drives SONIC ${modelledLatency(state)} ms after it is requested (modelled latency), so they are compute measurements, not real-time deadline results. Planner compute is the most recent planner call; Intent shows the compute of the plan that is executing.`
       : 'CPU lockstep: physics pauses while the planner runs, so these are compute measurements, not real-time deadline results.') : ''}`, { evidence: 'observed' });
-  const streams = card('Freshness at cursor', `${opt('State age', h.state_age_ms, 'No state stream', v => fact('State age', `${num(v, 1, 'ms')}${h.state_stale ? ' · STALE' : ''}`, h.state_stale ? 'value-amber' : ''))}
+  const streams = card('Freshness at cursor', `${opt('State age', h.state_age_ms, 'No state stream', v => fact('State age', `${num(v, 1, 'ms')}${h.state_stale ? ' · stale' : ''}`, h.state_stale ? 'value-amber' : ''))}
     ${opt('Reference age', h.reference_age_ms, 'No reference timestamp', v => fact('Reference age', num(v, 1, 'ms')))}
     ${opt('Receiver status', h.stream_status, 'Only for transport captures', v => fact('Receiver status', v))}
     ${opt('Observed receive rate', h.observed_rate_hz, 'Only for transport captures', v => fact('Observed receive rate', num(v, 1, 'Hz')))}
@@ -214,7 +229,7 @@ function renderHealth(state) {
     if (!finite(h[{ 'Low-command freshness': 'lowcmd_age_ms', 'GPU utilization': 'gpu_utilization' }[name]])) missing.push([name, reason]);
   const recent = events.filter(e => e.time <= state.time).slice(-8).reverse();
   const diag = card('Replay diagnostic', `<label class="diagnostic-toggle"><input id="freeze-state" data-testid="freeze-state" type="checkbox" ${state.frozenFrame ? 'checked' : ''} ${hasPose(state.frame) ? '' : 'disabled'}> Hold state while the cursor advances</label>${tiny('Injects a stale measured state in the viewer only. Display marks it stale after 100 ms. No producer or controller is affected.')}`, { cls: state.frozenFrame ? 'card-warning' : '' });
-  $('health-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${meta.mode === 'simulation' ? 'LIVE CPU WORKER' : meta.mode === 'partial-live' ? 'PARTIAL LIVE SAMPLES · RUN ENDED WITHOUT RECORDING' : 'RECORDED DIAGNOSTICS'}</span><h3>Run health</h3></div>
+  $('health-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">${meta.mode === 'simulation' ? 'Live CPU worker' : meta.mode === 'partial-live' ? 'Partial live samples · run ended without a recording' : 'Recorded diagnostics'}</span><h3>Run health</h3></div>
     ${outcomeCard(state)}${anchorCard(state)}${goalCard}${timing}${pipelineHealthLink(state)}${contact}${streams}${runtime}
     ${card('Events up to cursor', recent.length ? `<ol class="event-list">${recent.map(e => `<li><time>${clock(e.time)} · ${escape(e.source)}</time><button class="event-control" data-seek="${e.time}">${escape(e.message)}</button></li>`).join('')}</ol>` : '<p class="unavailable">No event before this cursor.</p>', { evidence: 'recorded' })}
     ${diag}${unavailableList(missing)}
@@ -244,16 +259,16 @@ function renderPerception(state) {
   const unseen = state.session.metadata?.privileged_map ? '' : notice('Planner limitation: the source Flow selector and route treat unseen cells as free. Studio keeps unseen space visibly unknown.', 'warning');
   if (p?.frames) {
     const s = perceptionAt(state.session, state.time);
-    $('perception-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">CAUSAL SIMULATED PERCEPTION</span><h3>What the planner observes</h3><p>Latest map and LiDAR sample at or before the cursor.</p></div>
+    $('perception-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">Causal simulated perception</span><h3>What the planner observes</h3><p>Latest map and LiDAR sample at or before the cursor.</p></div>
       ${s ? card('Map snapshot', `<div class="map-stats"><div><strong>${s.observed_cells?.support?.toLocaleString() ?? '—'}</strong><span>support cells</span></div><div><strong>${s.observed_cells?.ceiling?.toLocaleString() ?? '—'}</strong><span>ceiling cells</span></div><div><strong>${s.unknown_cells?.toLocaleString() ?? '—'}</strong><span>unknown cells</span></div></div>
-        ${fact('Map sample time', num(s.time, 3, 's'))}${fact('Map age at cursor', num((state.time - s.time) * 1000, 0, 'ms'))}${fact('Sensor acquisition', num(s.sensor_capture_time, 3, 's'))}${fact('Sensor latency', num(s.sensor_latency_s * 1000, 0, 'ms'))}${fact('Rate', num(s.rate_hz, 1, 'Hz'))}${fact('Resolution', num(s.resolution_m, 3, 'm'))}`, { evidence: 'estimated' })
+        ${fact('Map sample time', num(s.time, 3, 's'))}${fact('Map age at cursor', state.time - s.time >= 1 ? num(state.time - s.time, 2, 's') : num((state.time - s.time) * 1000, 0, 'ms'))}${fact('Sensor acquisition', num(s.sensor_capture_time, 3, 's'))}${fact('Sensor latency', num(s.sensor_latency_s * 1000, 0, 'ms'))}${fact('Rate', num(s.rate_hz, 1, 'Hz'))}${fact('Resolution', num(s.resolution_m, 3, 'm'))}`, { evidence: 'estimated' })
         + card('LiDAR', `${fact('Raw returns', s.raw_points_count ?? s.raw_lidar?.length ?? 'Unavailable')}${fact('After self-filter', s.filtered_points_count ?? s.filtered_lidar?.length ?? 'Unavailable')}${fact('Self-filter removed · cumulative', s.self_removed ?? 'Unavailable')}${tiny(s.note ?? 'Bounded visualization samples.')}
         <details class="raw-details"><summary>Mount extrinsics and mask convention</summary><pre>${escape(JSON.stringify({ extrinsics: s.extrinsics, mask_convention: s.mask_convention }, null, 1))}</pre></details>`, { evidence: 'sim-truth' })
         : notice('No perception sample at or before this cursor.', 'warning')}${unseen}
       <p class="tiny">Use the <strong>Robot view</strong> camera to see returns from the sensor mount, or Sensors to pin raw / filtered LiDAR.</p>`;
     return;
   }
-  $('perception-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">PERCEPTION / MAPPING</span><h3>Observed space</h3></div>
+  $('perception-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">Perception / mapping</span><h3>Observed space</h3></div>
     ${p?.available ? card('Final accumulated map', `<div class="map-stats"><div><strong>${(p.observed_cells?.support ?? p.support_points?.length)?.toLocaleString() ?? '—'}</strong><span>support</span></div><div><strong>${(p.observed_cells?.ceiling ?? p.ceiling_points?.length)?.toLocaleString() ?? '—'}</strong><span>ceiling</span></div></div>${fact('Resolution', num(p.resolution_m, 3, 'm'))}${fact('Unknown cells', p.unknown_cells?.toLocaleString() ?? 'Unavailable')}${notice('Final snapshot without capture time: it does not show perception at the cursor.', 'warning')}`, { evidence: 'estimated' })
       : notice(p?.reason ?? 'No perception was recorded in this session.', 'neutral')}${unseen}`;
 }
@@ -262,7 +277,7 @@ function renderPerception(state) {
 function renderGraph(state) {
   const kind = sessionKind(state.session), g = state.frame.observed_graph ?? state.session.graph ?? {};
   const h = sampleHealth(state);
-  $('graph-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">COMMUNICATION TOPOLOGY</span><h3>System connections</h3><p>${escape(KIND_LABEL[kind])}</p></div><div id="graph-map" class="graph-map"></div>
+  $('graph-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">Communication topology</span><h3>System connections</h3><p>${escape(KIND_LABEL[kind])}</p></div><div id="graph-map" class="graph-map"></div>
     ${state.frame.observed_graph ? card('Observed receiver edge', `${fact('Receiver status', h.stream_status ?? 'Unavailable')}${fact('Last receive rate', num(h.observed_rate_hz, 1, 'Hz'))}${fact('Reference receipt age', num(h.reference_age_ms, 1, 'ms'))}${fact('Sequence gaps', h.sequence_gaps ?? 'Unavailable')}`, { evidence: 'observed' }) : ''}
     ${card('Discovery boundaries', `${fact('ROS 2 graph', g.ros2?.available ? 'Recorded' : 'Not discovered')}${fact('DDS participant discovery', 'Not performed')}${fact('DDS domain', g.dds_domain ?? 'Not recorded')}${tiny(g.dds_domain_note ?? 'Studio opens no DDS participant. A ROS 2 graph would never show the ZMQ edges.')}`, { evidence: 'configured' })}
     <button class="wide-button" data-workspace-open="system">Open full system map →</button>`;
@@ -272,7 +287,7 @@ function renderGraph(state) {
 // ---------------------------------------------------------------- Source
 function renderSource(state) {
   const m = state.session.metadata, prov = m.provenance ?? {}, policy = m.policy_profile;
-  $('source-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">REPRODUCIBLE PROVENANCE</span><h3>Source evidence</h3></div>
+  $('source-content').innerHTML = `<div class="tab-intro"><span class="eyebrow">Reproducible provenance</span><h3>Source evidence</h3></div>
     <a class="export-link" href="/api/export?id=${encodeURIComponent(state.sessionId)}" download>↓ Export normalized MCAP</a>
     ${policy ? card('Policy profile', `${fact('Profile', policy.label ?? policy.id)}${fact('Research block', policy.research_block ?? 'Not a Flow research block')}${fact('Revision', policy.revision ?? 'Bundle snapshot')}${fact('Identity SHA-256', (policy.identity_sha256 ?? '').slice(0, 16) || 'Unavailable')}${policy.config_path ? fact('Config', policy.config_path.split('/').slice(-1)[0]) : ''}`, { evidence: 'configured' }) : ''}
     ${card('Session', `${fact('Mode', m.mode === 'simulation' ? 'Live CPU worker' : 'Replay · read-only')}${fact('Recording', m.recording_kind)}${fact('Robot model', m.model_variant)}${fact('Policy', m.policy_identity)}${fact('Clock', m.clock_domain)}${fact('Frame', m.frame_id)}${fact('Quaternion', m.quaternion_convention)}${fact('Hardware validated', m.hardware_validated ? 'Yes' : 'No')}${fact('Hardware command path', m.command_path_enabled ? 'YES — unexpected' : 'None')}${fact('Adapter', prov.adapter ?? 'Unavailable')}`)}
@@ -300,7 +315,7 @@ export function renderInspector(state, { force = false } = {}) {
   else if (t === 'pipeline') renderPipeline(state, perceptionAt(state.session, state.time), force);
   else if (t === 'graph') renderGraph(state);
   else renderSource(state);
-  $('inspector-time').textContent = `SYNCHRONIZED · ${clock(state.frame.time)}`;
+  $('inspector-time').textContent = `Synchronized · ${clock(state.frame.time)}`;
 }
 
 export function selectTab(name, state) {

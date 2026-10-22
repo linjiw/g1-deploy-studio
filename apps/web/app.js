@@ -11,7 +11,7 @@ import { arena, initArena, renderPanel as renderArenaPanel, loadFromMap, fitAren
 import { rh, initRehearse, render as renderRehearse, selectMap as rehearseSelectMap, previewMarkers } from './js/rehearse.js';
 import { runs, initRuns, refreshRuns, drawCompare, selectedRuns, runColor } from './js/runs.js';
 import { renderSystemMap, renderRobotContract, KIND_LABEL, sessionKind } from './js/system.js';
-import { nav, initNavigate, render as renderNavigate, pickGoal, overlay as navOverlay } from './js/navigate.js';
+import { nav, initNavigate, render as renderNavigate, pickGoal, overlay as navOverlay, resetPreview as resetNavPreview } from './js/navigate.js';
 import { initFocus } from './js/focus.js';
 
 const state = {
@@ -42,7 +42,7 @@ on('workbench:clear', message => { if ($('workbench-error').textContent === mess
 on('arena:error', message => { $('workbench-error').textContent = message; $('workbench-error').hidden = false; });
 
 // ------------------------------------------------------------------ sessions
-const OUTCOME_MARK = { goal_completion: '✓', timeout: '⏱', obstacle_collision: '✕', fall: '✕', runtime_error: '✕' };
+const OUTCOME_MARK = { goal_completion: '✓', timeout: '◷', obstacle_collision: '✕', fall: '✕', runtime_error: '✕' };  // text glyphs, never emoji
 function sessionOption(s) {
   const mark = s.status === 'running' ? '●' : Number.isFinite(s.walks) ? (s.walks && s.arrived === s.walks ? '✓' : '◐') : OUTCOME_MARK[s.outcome] ?? '';
   const policy = s.policy_id && s.policy_id !== 'flow-bundle-20261008' ? ` · ${s.policy_id.replace('flow-', '').replace(/-s\d$/, '')}` : '';
@@ -97,7 +97,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     updateModeBadge(); updatePolicyChip(); updateRecordingWarning();
     $('privileged-badge').hidden = !m.privileged_map;
     $('robot-view-label').textContent = robotViewLabel();
-    $('playback-state').textContent = ['simulation', 'live'].includes(m.mode) ? 'LIVE' : 'PAUSED';
+    $('playback-state').textContent = ['simulation', 'live'].includes(m.mode) ? 'Live' : 'Paused';
     setTimelineSession(session);
     renderFrame(true);
     const built = await scene.loadSessionScene(session, id, () => generation === state.loadGeneration);
@@ -129,7 +129,7 @@ function updateModeBadge() {
   const m = state.session?.metadata ?? {};
   const live = m.mode === 'simulation';
   if (m.mode === 'partial-live') {
-    $('mode-badge').textContent = `RUN ${String(state.liveStatus ?? 'ENDED').toUpperCase()} · PARTIAL LIVE SAMPLES`;
+    $('mode-badge').textContent = `Run ${String(state.liveStatus ?? 'ended')} · partial live samples`;
     $('mode-badge').classList.remove('sim');
     $('run-outcome').innerHTML = outcomeChip(null, state.liveStatus ?? 'failed');
     return;
@@ -139,8 +139,8 @@ function updateModeBadge() {
   document.body.classList.toggle('live-navigation', (m.kind === 'navigation' || m.recording_kind === 'robot-link') && (live || m.mode === 'live'));
   if (m.kind === 'navigation' || m.recording_kind === 'robot-link') {
     const real = m.recording_kind === 'robot-link' || m.robot === 'real', running = live || m.mode === 'live';
-    $('mode-badge').textContent = running ? (real ? '● LIVE · REAL ROBOT · OBSERVE + GOALS' : `● LIVE · SIMULATED ROBOT · ${level}`)
-      : real ? 'REPLAY · ROBOT SESSION · M5' : `REPLAY · NAVIGATION SESSION · ${level}`;
+    $('mode-badge').textContent = running ? (real ? '● Live · real robot · observe + goals' : `● Live · simulated robot · ${level}`)
+      : real ? 'Replay · robot session · M5' : `Replay · navigation session · ${level}`;
     $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
     $('mode-badge').classList.toggle('sim', running);
     const r = m.test_result;
@@ -148,7 +148,7 @@ function updateModeBadge() {
       : r ? `<span class="outcome ${r.arrived === r.walks && r.walks ? 'outcome-good' : 'outcome-warn'}">${r.arrived ?? 0}/${r.walks ?? 0} walks arrived</span>` : '';
     return;
   }
-  $('mode-badge').textContent = detached ? `◌ DETACHED CPU SIMULATION · ${level}` : live ? `● LIVE CPU SIMULATION · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\.(flow_)?policy_worker/.test(m.provenance?.adapter ?? '') ? `REPLAY · CPU REHEARSAL · ${level}` : `REPLAY · RECORDED LOCKSTEP · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'REPLAY · ZMQ CAPTURE · L0' : m.fidelity === 'L3' ? 'REPLAY · REAL-TIME CHAIN · L3' : 'REPLAY · L0';
+  $('mode-badge').textContent = detached ? `◌ Detached CPU simulation · ${level}` : live ? `● Live CPU simulation · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\.(flow_)?policy_worker/.test(m.provenance?.adapter ?? '') ? `Replay · CPU rehearsal · ${level}` : `Replay · recorded lockstep · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'Replay · ZMQ capture · L0' : m.fidelity === 'L3' ? 'Replay · real-time chain · L3' : 'Replay · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;
@@ -171,12 +171,12 @@ function updateRecordingWarning() {
   if (['simulation', 'live'].includes(m.mode)) {
     node.hidden = !['failed', 'detached'].includes(state.liveStatus);
     node.textContent = state.liveStatus === 'detached'
-      ? 'RUN DETACHED · The gateway restarted while this worker kept running. Following its files read-only; this gateway does not own it and cannot cancel it. The recording opens when the worker finishes.'
-      : `WORKER FAILED · ${m.termination_reason ?? m.error ?? 'The worker stopped before normal completion.'} Showing received live samples; open the recorded failure for all captured execution.`;
+      ? 'Run detached · The gateway restarted while this worker kept running. Following its files read-only; this gateway does not own it and cannot cancel it. The recording opens when the worker finishes.'
+      : `Worker failed · ${m.termination_reason ?? m.error ?? 'The worker stopped before normal completion.'} Showing received live samples; open the recorded failure for all captured execution.`;
     return;
   }
   node.hidden = !m.incomplete && m.recording_complete !== false;
-  node.textContent = `INCOMPLETE RECORDING · ${m.termination_reason ?? m.error ?? 'Stopped before normal completion.'} Executed motion is shown up to the last captured sample. This is a recorded failure, not a navigation success.`;
+  node.textContent = `Incomplete recording · ${m.termination_reason ?? m.error ?? 'Stopped before normal completion.'} Executed motion is shown up to the last captured sample. This is a recorded failure, not a navigation success.`;
 }
 
 // ------------------------------------------------------------------ frame rendering
@@ -210,9 +210,9 @@ function updateHud(sample) {
   const crit = meta.navigation_criteria ?? {};
   if (!hasPose(m) && !hasRoot(m)) {
     $('hud').innerHTML = hudItem('Receiver', h.stream_status ?? 'unavailable', '', h.stream_status === 'fresh' ? 'good' : 'warn') + hudItem('Reference age', h.reference_age_ms, 'ms') + hudItem('Receive rate', h.observed_rate_hz, 'Hz');
-    $('pose-caption').textContent = 'ROBOT STATE UNAVAILABLE · no measured or world-root pose recorded';
-    $('reference-caption').textContent = f.reference ? 'REFERENCE VALUES · pose stream · no world-root position' : 'REFERENCE UNAVAILABLE at this time';
-    $('source-badge').className = 'chip chip-measured'; $('source-badge').textContent = 'RECORDED ZMQ';
+    $('pose-caption').textContent = 'Robot state unavailable · no measured or world-root pose recorded';
+    $('reference-caption').textContent = f.reference ? 'Reference values · pose stream · no world-root position' : 'Reference unavailable at this time';
+    $('source-badge').className = 'chip chip-measured'; $('source-badge').textContent = 'Recorded ZMQ';
     return;
   }
   // Navigation sessions carry the goal per frame (it changes from walk to walk).
@@ -235,29 +235,34 @@ function updateHud(sample) {
     + hudItem('Contact', contact, 'N', contact > threshold ? 'bad' : contact > 0 ? 'warn' : '')
     + hudItem('Plan rule', f.plan?.rule ? f.plan.rule.replaceAll('_', ' ') : null, '')
     + (exec ? hudItem('Exec check · est.', `${exec.ok ? 'ok' : 'fail'} · ${num(exec.clearance_m * 100, 1)} cm`, '', exec.ok ? 'good' : 'warn') : '')
-    + (sample && !meta.privileged_map ? hudItem('Map age', (state.time - sample.time) * 1000, 'ms') : '');
+    + (sample && !meta.privileged_map ? (state.time - sample.time >= 1 ? hudItem('Map age', state.time - sample.time, 's') : hudItem('Map age', (state.time - sample.time) * 1000, 'ms')) : '');
   const age = h.state_age_ms;
+  if (document.body.classList.contains('previewing')) return;  // the preview owns the caption and the source badge
+  // A live session's staged goal is in the node's status, not yet in the frames (they carry the goal of a walk).
+  const staged = !goal && f.navigation && nav.job?.id === state.sessionId ? nav.job.latest?.navigation?.goal?.xy : null;
   $('navigation-caption').textContent = f.navigation
-    ? `${f.navigation.walk ? `Walk ${f.navigation.walk}` : 'Standing'} · ${goal ? `goal [${vector(goal, 2)}] m` : 'no goal'} · ${String(f.navigation.phase ?? '').toLowerCase()}`
+    ? `${f.navigation.walk ? `Walk ${f.navigation.walk}` : 'Standing'} · ${goal ? `goal [${vector(goal, 2)}] m` : staged ? `goal staged [${vector(staged, 2)}] m` : 'no goal'} · ${String(f.navigation.phase ?? '').toLowerCase()}`
     : goal ? `Goal [${vector(goal, 2)}] m · ${crit.label ?? ''}` : '';
   const truth = meta.recording_kind !== 'robot-link' && (meta.mode === 'simulation' || ['sonic-mujoco-lockstep', 'navigation-session'].includes(meta.recording_kind));
-  $('pose-caption').textContent = `${state.frozenFrame ? 'DIAGNOSTIC HELD STATE' : m.classification === 'estimated' ? 'LIO ESTIMATE · odom frame' : truth ? 'SIM-TRUTH' : 'RECORDED'} · xyz [${vector(m.position, 2)}] m · yaw ${num(yawOf(q), 2, 'rad')}${state.frozenFrame ? ` · ${num(age, 0, 'ms')} old` : ''}`;
-  $('reference-caption').textContent = scene.view.layers.perception && sample ? (finite(sample.time) && state.session.perception?.frames ? `MAP · causal sample ${clock(sample.time)} · unknown cells stay empty` : 'MAP · final accumulated snapshot · capture time unavailable') : f.reference ? 'Pink: SONIC reference now · amber: +0.4 s / +0.9 s · line: planner prediction' : 'No reference packets in this recording';
+  $('pose-caption').textContent = `${state.frozenFrame ? 'Diagnostic held state' : m.classification === 'estimated' ? 'LIO estimate · odom frame' : truth ? 'Sim truth' : 'Recorded'} · xyz [${vector(m.position, 2)}] m · yaw ${num(yawOf(q), 2, 'rad')}${state.frozenFrame ? ` · ${num(age, 0, 'ms')} old` : ''}`;
+  $('reference-caption').textContent = scene.view.layers.perception && sample ? (finite(sample.time) && state.session.perception?.frames ? `Map · causal sample ${clock(sample.time)} · unknown cells stay empty` : 'Map · final accumulated snapshot · capture time unavailable') : f.reference ? 'Pink: SONIC reference now · amber: +0.4 s / +0.9 s · line: planner prediction' : 'No reference packets in this recording';
   const badge = $('source-badge'), estimated = m.classification === 'estimated';
   badge.className = `chip ${state.frozenFrame ? 'chip-unavailable' : estimated ? 'chip-estimated' : truth ? 'chip-sim-truth' : 'chip-recorded'}`;
-  badge.textContent = state.frozenFrame ? 'STATE HELD' : estimated ? 'LIO ESTIMATE' : truth ? 'SIM-TRUTH' : 'RECORDED';
+  badge.textContent = state.frozenFrame ? 'State held' : estimated ? 'LIO estimate' : truth ? 'Sim truth' : 'Recorded';
   badge.title = estimated ? 'Pose is the LIO odometry estimate streamed by the deploy PC; a robot has no ground truth.' : truth ? EVIDENCE['sim-truth'].tip : EVIDENCE.recorded.tip;
 }
 
 // ------------------------------------------------------------------ playback
+const svg = d => `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">${d}</svg>`;
+const PLAY_ICON = svg('<path d="m8 5 11 7-11 7z"/>'), PAUSE_ICON = svg('<rect x="7" y="5" width="3.6" height="14" rx="1"/><rect x="13.4" y="5" width="3.6" height="14" rx="1"/>');
 function setPlaying(value) {
   // Pausing lands on the wall-clock time of the pause, not on the last rendered frame.
   const landing = !value && state.playing && state.session && !state.loading;
   if (landing) state.time = Math.min(state.session.metadata.duration_s, anchor.sim + (performance.now() - anchor.wall) / 1000 * anchor.speed);
   state.playing = value;
-  $('play').innerHTML = value ? 'Ⅱ <span>Pause</span>' : '▶ <span>Play</span>';
+  $('play').innerHTML = value ? `${PAUSE_ICON}<span>Pause</span>` : `${PLAY_ICON}<span>Play</span>`;
   $('play').setAttribute('aria-label', value ? 'Pause recording' : 'Play recording');
-  $('playback-state').textContent = value ? 'PLAYING' : ['simulation', 'live'].includes(state.session?.metadata?.mode) ? 'LIVE' : 'PAUSED';
+  $('playback-state').textContent = value ? 'Playing' : ['simulation', 'live'].includes(state.session?.metadata?.mode) ? 'Live' : 'Paused';
   updateView({ play: value ? '1' : null });
   if (value && scene.view.camera_mode === 'scene' && state.session?.metadata?.goal_xy) cameraView('follow', true);
   reanchor();
@@ -289,7 +294,7 @@ function tick(now) {
       const fps = frameTimes.length > 4 ? (frameTimes.length - 1) / ((now - frameTimes[0]) / 1000) : null;
       const limited = fps !== null && fps < 15;
       if ($('render-rate').hidden === limited) $('render-rate').hidden = !limited;
-      if (limited) $('render-rate').textContent = `RENDER-LIMITED · ${fps.toFixed(1)} fps · real-time clock kept`;
+      if (limited) $('render-rate').textContent = `Render-limited · ${fps.toFixed(1)} fps · real-time clock kept`;
     }
     if (state.time >= state.session.metadata.duration_s) {
       if (state.loop && state.session.metadata.duration_s > state.session.frames[0].time) seek(state.session.frames[0].time);
@@ -299,8 +304,11 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 
-function cameraView(kind, reset = false) {
+function markCamera(kind) {
   document.querySelectorAll('[data-camera]').forEach(b => { const a = b.dataset.camera === kind; b.classList.toggle('active', a); b.setAttribute('aria-pressed', String(a)); });
+}
+function cameraView(kind, reset = false) {
+  markCamera(kind);
   scene.cameraView(kind, state, reset);
   updateView({ camera: kind });
 }
@@ -312,8 +320,8 @@ function syncLayers() {
 }
 function robotViewLabel() {
   const mount = state.session?.perception?.frames?.[0]?.extrinsics?.[0];
-  return mount ? 'ROBOT VIEW · recorded MID-360 mount pose, facing pelvis heading · renders the simulated scene and map, not a camera sensor'
-    : 'ROBOT VIEW · approximate viewpoint 0.45 m above the pelvis (no mount extrinsics in this recording) · renders the simulated scene, not a camera sensor';
+  return mount ? 'Robot view · recorded MID-360 mount pose, facing pelvis heading · renders the simulated scene and map, not a camera sensor'
+    : 'Robot view · approximate viewpoint 0.45 m above the pelvis (no mount extrinsics in this recording) · renders the simulated scene, not a camera sensor';
 }
 function setRobotView(enabled) {
   scene.setRobotView(enabled);
@@ -387,7 +395,7 @@ function appendLiveFrame(latest) {
   updateRecordingWarning(); updateModeBadge();
   renderFrame(true);
   const terminal = ['completed', 'failed', 'cancelled'].includes(latest.status);
-  $('playback-state').textContent = terminal ? `RUN ${latest.status.toUpperCase()}` : latest.status === 'detached' ? 'RUN DETACHED · FOLLOWING FILES' : 'LIVE';
+  $('playback-state').textContent = terminal ? `Run ${latest.status}` : latest.status === 'detached' ? 'Run detached · following files' : 'Live';
 }
 
 // ------------------------------------------------------------------ Navigate (live navigation sessions)
@@ -413,7 +421,8 @@ function robotLinkChrome(job) {
   const live = job?.kind === 'robot' && ['starting', 'running', 'cancelling', 'detached'].includes(job.status);
   const chip = $('hardware-chip');
   chip.classList.toggle('robot-live', live);
-  chip.textContent = live ? '◈ Robot link · goal + stand only' : '◈ No motor commands';
+  chip.lastChild.textContent = live ? 'Robot link · goal + stand only' : 'No motor commands';
+  chip.title = live ? 'The robot link may stage a goal and ask for a stand on node.py; Go stays with the operator.' : 'Studio has no DDS participant and no motor-command path. On a real robot it may only stage a goal and ask for a stand on node.py; Go stays with the operator.';
   $('footer-mode').lastChild.textContent = live
     ? ' Loopback only · robot link live: goal and stand to node.py; never Go, quit or motor commands'
     : ' Loopback only · replay, owned CPU simulation and the robot link (goal and stand only)';
@@ -427,16 +436,24 @@ async function attachNav(job) {
   }
   if (!job?.latest?.frame) return;
   if (state.sessionId !== job.id) {
-    if (navAttach.loading === job.id) return;
+    // Only Navigate follows the live session: elsewhere (or after picking another run) the view stays put.
+    if (state.workspace !== 'navigate' || navAttach.loading === job.id) return;
     navAttach.loading = job.id;
     const ok = await loadSession(job.id, { keepCamera: true }).finally(() => { navAttach.loading = null; });
     if (!ok) return;
     $('session-picker').value = job.id;
-    if (state.workspace === 'navigate') { navLayers(true); scene.topView(job.latest.frame.position, 5); }
+    if (state.workspace === 'navigate') { navLayers(true); navTopView(job.latest.frame.position); }
   }
   if (state.sessionId === job.id && ['starting', 'running', 'cancelling'].includes(job.status) && job.latest.frame)
     appendLiveFrame({ ...job.latest, status: job.latest.status, runtime: job.runtime });
   if (state.workspace === 'navigate') { scene.setNavOverlay(navOverlay()); refreshNavMap(job); }
+}
+// Navigate's map view: top-down on the robot, closer on narrow stages; the camera buttons say Top.
+function navTopView(position) {
+  const width = $('viewport').clientWidth || 800;
+  // The stage bar sits at the bottom: the robot sits above the middle, so the floor ahead of it stays clickable.
+  scene.topView(position, width < 520 ? 3.2 : width < 900 ? 4 : 5, { lift: width < 520 ? 0.32 : 0.22 });
+  markCamera('top');
 }
 function navLayers(entering) {
   const env = $('layer-environment'), map = $('layer-perception');
@@ -448,10 +465,13 @@ function navLayers(entering) {
   }
   syncLayers();
 }
-on('navigate:job', job => attachNav(job).catch(e => showError(e.message)));
+// The Navigate tab carries a dot while a session runs, so leaving it never hides a running robot.
+const markNavLive = job => document.body.classList.toggle('nav-live', !!job && ['starting', 'running', 'cancelling', 'detached'].includes(job.status));
+on('navigate:job', job => { markNavLive(job); attachNav(job).catch(e => showError(e.message)); });
 on('navigate:overlay', () => { if (state.workspace === 'navigate') scene.setNavOverlay(navOverlay()); });
 on('navigate:layers', () => { if (state.workspace === 'navigate') navLayers(true); $('layer-environment').checked = nav.showTruth; syncLayers(); });
 on('navigate:finished', async job => {
+  markNavLive(null);
   robotLinkChrome(job);
   $('preview-note').hidden = true;
   await refreshSessionList();
@@ -470,7 +490,15 @@ on('navigate:finished', async job => {
 });
 
 on('rehearse:job', job => { if (state.workspace === 'rehearse' || rh.attached === job.id) attachLive(job).catch(e => showError(e.message)); });
-on('rehearse:started', () => { rh.attached = null; $('workbench-error').hidden = true; });
+on('rehearse:started', () => {
+  rh.attached = null; $('workbench-error').hidden = true;
+  // Say at once that the run started: the preview stays until the worker's first sample replaces it.
+  if (state.workspace === 'rehearse' && document.body.classList.contains('previewing')) {
+    $('mode-badge').textContent = '● Starting the CPU simulation'; $('mode-badge').classList.add('sim');
+    $('navigation-caption').textContent = 'Booting the policy and SONIC on the CPU: the robot appears with its first sample, in about 10–30 s.';
+  }
+  $('rh-job')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+});
 on('rehearse:finished', async job => {
   await refreshSessionList();
   const viewing = (rh.attached === job.id && state.sessionId === job.id) || rh.followDetached === job.id;
@@ -486,10 +514,10 @@ on('rehearse:finished', async job => {
     state.liveStatus = job.status;
     Object.assign(state.session.metadata, { mode: 'partial-live', termination_reason: job.error ?? `Run ${job.status}` });
     updateModeBadge();
-    $('playback-state').textContent = `RUN ${String(job.status).toUpperCase()}`;
+    $('playback-state').textContent = `Run ${String(job.status)}`;
     renderInspector(state, { force: true });
     $('recording-warning').hidden = false;
-    $('recording-warning').textContent = `RUN ${String(job.status).toUpperCase()} · ${job.error ?? 'No recording was saved.'} Showing only the live samples received; nothing after them is inferred.`;
+    $('recording-warning').textContent = `Run ${String(job.status)} · ${job.error ?? 'No recording was saved.'} Showing only the live samples received; nothing after them is inferred.`;
   }
   if (rh.attached === job.id) rh.attached = null;
   if (opened && state.sessionId === job.result_session_id) $('session-picker').value = job.result_session_id;
@@ -499,17 +527,40 @@ on('rehearse:suite-finished', () => { refreshRuns().catch(() => {}); refreshSess
 // While Rehearse previews a not-yet-run preset, the inspector, lanes and HUD still describe the
 // last opened recording: mark them as such instead of letting them read as the preview's data.
 function setPreviewing(on) {
+  const was = document.body.classList.contains('previewing');
   document.body.classList.toggle('previewing', on);
   $('preview-note').hidden = !on;
-  if (on) $('preview-note').textContent = `Inspector, timeline and HUD show the last opened recording (${state.session?.metadata?.title ?? state.sessionId ?? 'none'}), not this preview.`;
+  if (on) $('preview-note').textContent = `The inspector and timeline still show the last recording (${state.session?.metadata?.title ?? state.sessionId ?? 'none'}), not this preview.`;
+  // A preview has run nothing: the title chips must not describe the last recording.
+  if (on) {
+    $('mode-badge').textContent = 'Preview · not run'; $('mode-badge').classList.remove('sim'); $('mode-badge').title = 'Configured geometry only: no policy has run in it yet.';
+    $('policy-chip').hidden = true; $('privileged-badge').hidden = true;
+  } else if (was && state.session) { updateModeBadge(); updatePolicyChip(); $('privileged-badge').hidden = !state.session.metadata.privileged_map; }
 }
+function restoreTitle() {
+  if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
+}
+// Navigate before a session: the chosen world and start, configured and not yet run.
+on('navigate:preview', p => {
+  if (state.workspace !== 'navigate') return;
+  if (!p) {
+    if (scene.view.arenaGroup.visible && !rh.attached) { scene.setArenaPreview(null); setPreviewing(false); restoreTitle(); }
+    return;
+  }
+  setPreviewing(true);
+  scene.setArenaPreview(p.map, { start: p.start, yaw: p.yaw });
+  scene.fitScene(scene.sceneBounds([p.start]));
+  $('session-title').textContent = p.label;
+  $('source-badge').className = 'chip chip-configured'; $('source-badge').textContent = 'Configured';
+  $('navigation-caption').textContent = 'The real room, as configured. Once it stands, the robot knows it only through its own LiDAR.';
+});
 on('rehearse:preview', markers => {
   if (state.workspace !== 'rehearse' || rh.attached || rehearsePreviewSuspensions) return;
   setPreviewing(true);
   scene.setArenaPreview(markers.map, { start: markers.start, yaw: markers.yaw, goal: markers.goal });
   scene.fitScene(scene.sceneBounds([markers.start, markers.goal]));
   $('session-title').textContent = `Preview · ${markers.map?.label ?? 'arena'}`;
-  $('source-badge').className = 'chip chip-configured'; $('source-badge').textContent = 'CONFIGURED';
+  $('source-badge').className = 'chip chip-configured'; $('source-badge').textContent = 'Configured';
   $('navigation-caption').textContent = 'Not yet run. Press Run preset to execute the selected policy in the CPU simulation.';
 });
 on('rehearse:edit-arena', async id => { await setWorkspace('arena'); await loadFromMap(id).catch(e => showError(e.message)); });
@@ -522,7 +573,7 @@ on('arena:preview3d', enabled => {
   if (enabled) {
     $('session-title').textContent = `Arena draft · ${arena.label || 'unsaved'}`;
     $('navigation-caption').textContent = 'Draft arena geometry, starts and goals. Save it, then use Rehearse to run a policy on it.';
-    $('source-badge').className = 'chip chip-configured'; $('source-badge').textContent = 'CONFIGURED';
+    $('source-badge').className = 'chip chip-configured'; $('source-badge').textContent = 'Configured';
   } else if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
   if (enabled) { const q = activePreset(); scene.setArenaPreview(arenaDocument(), { start: q?.start_xy, yaw: q?.start_yaw_rad, goal: q?.goal_xy }); scene.fitScene(); }
 });
@@ -563,6 +614,7 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
   if (!WORKSPACES[name]) name = 'replay';
   const ws = WORKSPACES[name], previous = state.workspace;
   state.workspace = name;
+  for (const key of Object.keys(WORKSPACES)) document.body.classList.toggle(`ws-${key}`, key === name);
   document.querySelectorAll('[data-workspace]').forEach(b => { const a = b.dataset.workspace === name; b.classList.toggle('active', a); b.setAttribute('aria-pressed', String(a)); });
   $('workbench-error').hidden = true;
   $('tool-panel').hidden = !ws.panel;
@@ -573,7 +625,8 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
   if (previous === 'runs' && name !== 'runs') scene.setComparison([]);
   if (previous === 'arena' && name !== 'arena' && arena.preview3d) { arena.preview3d = false; scene.setArenaPreview(null); }
   if (name !== 'rehearse') setPreviewing(false);
-  if (previous === 'navigate' && name !== 'navigate') { scene.view.onPick = null; scene.setNavOverlay(null); scene.setNavMap(null); navAttach.mapKey = null; navLayers(false); }
+  if (previous === 'navigate' && name !== 'navigate') { scene.view.onPick = null; scene.setNavOverlay(null); scene.setNavMap(null); navAttach.mapKey = null; navLayers(false); resetNavPreview(); }
+  if (name === 'navigate' && previous !== 'navigate') resetNavPreview();
   if (name !== 'rehearse' && name !== 'arena' && !rh.attached && scene.view.arenaGroup.visible) {
     scene.setArenaPreview(null);
     if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
@@ -598,6 +651,7 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
       const catalog = await ensureCatalog();
       catalog.nav_options ??= await request('/api/nav/options').catch(() => null);
       if (!nav.catalog) await initNavigate(catalog); else { nav.catalog = catalog; renderNavigate(); }
+      if (state.workspace !== 'navigate') return;
       scene.view.onPick = xy => pickGoal(xy);
       navLayers(true);
       scene.setNavOverlay(navOverlay());
@@ -623,7 +677,7 @@ async function renderSystem() {
     <div class="panel-section"><h4>This source</h4><p class="tiny">${escape(KIND_LABEL[kind])}</p>
     <label class="check"><input id="system-deploy" type="checkbox" ${state.systemDeploy ? 'checked' : ''}> Show the real-time deployment topology instead</label></div>
     <div class="panel-section"><h4>Boundary</h4><p class="tiny">Studio is observe-only. It never publishes <code>rt/lowcmd</code>, hand commands or ZMQ <code>pose</code>, and never connects to the planner node control port :5562. Physical E-stop and operator procedures own the robot.</p></div>`;
-  $('system-stage').innerHTML = `<div class="system-layout"><section><span class="eyebrow">DEPLOYMENT CHAIN</span><h3>${state.systemDeploy ? 'Real-time deployment (source-configured)' : escape(state.session?.metadata?.title ?? 'System')}</h3><div id="system-map-host"></div></section>
+  $('system-stage').innerHTML = `<div class="system-layout"><section><span class="eyebrow">Deployment chain</span><h3>${state.systemDeploy ? 'Real-time deployment (source-configured)' : escape(state.session?.metadata?.title ?? 'System')}</h3><div id="system-map-host"></div></section>
     <section id="robot-contract"></section></div>`;
   const draw = () => renderSystemMap($('system-map-host'), state.session, { selected: inspector.systemNode, showDeploy: !!state.systemDeploy,
     onSelect: id => { inspector.systemNode = id; $('system-detail').innerHTML = systemDetails(id, state.session, state.robot); draw(); } });
@@ -634,18 +688,26 @@ async function renderSystem() {
 
 // ------------------------------------------------------------------ chrome
 function buildLegend() {
-  $('evidence-legend').innerHTML = `<h3>Evidence key</h3><p class="tiny">Every value carries one of these classes. Hover a chip anywhere for its reason.</p>
+  $('evidence-legend').innerHTML = `<h3>Evidence key</h3><p class="callout ok">${escape($('hardware-chip').title)}</p><p class="tiny">Every value carries one of these classes. Hover a chip anywhere for its reason.</p>
     ${Object.entries(EVIDENCE).map(([k, e]) => `<div class="legend-row">${chip(k)}<span>${escape(e.tip)}</span></div>`).join('')}
     <p class="tiny">CPU lockstep pauses physics while the planner runs. Success in Studio is a simulation result, never hardware readiness.</p>`;
 }
 function closePopovers(except = null) {
   document.querySelectorAll('.popover').forEach(p => { if (p.id !== except) p.hidden = true; });
-  document.querySelectorAll('[aria-expanded][aria-controls]').forEach(b => { if (b.getAttribute('aria-controls') !== except) b.setAttribute('aria-expanded', 'false'); });
+  document.querySelectorAll('[aria-expanded][aria-controls]').forEach(b => { if (b.getAttribute('aria-controls') !== except && document.getElementById(b.getAttribute('aria-controls'))?.classList.contains('popover')) b.setAttribute('aria-expanded', 'false'); });
 }
 function togglePopover(id, button) {
   const node = $(id), open = node.hidden;
   closePopovers(id);
   node.hidden = !open; button?.setAttribute('aria-expanded', String(open));
+}
+function setInspectorDrawer(open) {
+  open = !!open && matchMedia('(min-width: 1024px) and (max-width: 1279px)').matches;
+  document.body.classList.toggle('show-inspector', open);
+  $('inspector-backdrop').hidden = !open;
+  $('inspector-toggle').setAttribute('aria-expanded', String(open));
+  $('inspector-toggle').classList.toggle('active', open);
+  if (open) document.querySelector('#focus-inspector [role=tab][aria-selected=true]')?.focus({ preventScroll: true });
 }
 function initInspectorResize() {
   const handle = $('inspector-resize');
@@ -664,6 +726,7 @@ function initInspectorResize() {
 
 function onKey(e) {
   if (focus?.handleKey(e)) return;
+  if (e.key === 'Escape' && document.body.classList.contains('show-inspector')) { setInspectorDrawer(false); $('inspector-toggle').focus(); return; }
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
   if (state.workspace === 'arena' && e.key !== '?') return;  // the arena editor owns the keyboard
   const k = e.key;
@@ -676,11 +739,18 @@ function onKey(e) {
   else if (k === 'm' && !$('layer-perception').disabled) { $('layer-perception').checked = !$('layer-perception').checked; syncLayers(); updateView({ map: $('layer-perception').checked ? '1' : null }); }
   else if (/^[1-7]$/.test(k)) { const tab = document.querySelectorAll('[data-tab]')[Number(k) - 1]; if (tab) { selectTab(tab.dataset.tab, state); updateView({ panel: tab.dataset.tab }); } }
   else if (k === '?') togglePopover('help-overlay', $('help-button'));
-  else if (k === 'Escape') closePopovers();
+  else if (k === 'Escape') { closePopovers(); setInspectorDrawer(false); }
 }
 
 function bindChrome() {
-  $('session-picker').addEventListener('change', e => { if (rh.attached && rh.attached !== e.target.value) rh.attached = null; loadSession(e.target.value); });
+  $('session-picker').addEventListener('change', async e => {
+    const id = e.target.value;
+    if (rh.attached && rh.attached !== id) rh.attached = null;
+    // A live Navigate session follows its robot; another run opens in Replay while the session keeps running
+    // (Navigate returns to it).
+    if (state.workspace === 'navigate' && nav.job && id !== nav.job.id && ['starting', 'running', 'detached'].includes(nav.job.status)) await setWorkspace('replay');
+    loadSession(id);
+  });
   $('play').addEventListener('click', () => { if (!state.session) return; if (state.time >= state.session.metadata.duration_s) seek(state.session.frames[0].time); setPlaying(!state.playing); });
   $('restart').addEventListener('click', () => { if (state.session) { setPlaying(false); seek(state.session.frames[0].time); } });
   $('step-back').addEventListener('click', () => step(-1));
@@ -708,6 +778,11 @@ function bindChrome() {
   document.querySelectorAll('[data-workspace]').forEach(b => b.addEventListener('click', () => setWorkspace(b.dataset.workspace)));
   $('tool-close').addEventListener('click', () => focus?.active ? focus.closeSheet() : setWorkspace('replay'));
   $('evidence-button').addEventListener('click', () => togglePopover('evidence-legend', $('evidence-button')));
+  $('inspector-toggle').addEventListener('click', () => setInspectorDrawer(!document.body.classList.contains('show-inspector')));
+  $('hardware-chip').addEventListener('click', () => togglePopover('evidence-legend', $('evidence-button')));
+  $('help-evidence').addEventListener('click', () => togglePopover('evidence-legend', $('evidence-button')));
+  $('inspector-backdrop').addEventListener('click', () => setInspectorDrawer(false));
+  matchMedia('(min-width: 1024px) and (max-width: 1279px)').addEventListener('change', () => setInspectorDrawer(false));
   $('help-button').addEventListener('click', () => togglePopover('help-overlay', $('help-button')));
   document.addEventListener('click', e => {
     const inspect = e.target.closest('[data-inspect-pipeline]');
@@ -716,7 +791,7 @@ function bindChrome() {
     if (seekButton) { setPlaying(false); seek(Number(seekButton.dataset.seek)); }
     const open = e.target.closest('[data-workspace-open]');
     if (open) setWorkspace(open.dataset.workspaceOpen);
-    if (!e.target.closest('.popover, #layers-button, #evidence-button, #help-button')) closePopovers();
+    if (!e.target.closest('.popover, #layers-button, #evidence-button, #help-button, #hardware-chip')) closePopovers();
   });
   window.addEventListener('keydown', onKey);
 }
@@ -728,7 +803,11 @@ async function initialize() {
   } catch (error) { showError(`3D renderer could not start: ${error.message}`); $('loading-overlay').hidden = true; return; }
   initTimeline({ onSeek: t => { setPlaying(false); seek(t); } });
   initSensors(); buildLegend(); initInspectorResize(); bindChrome();
+  // Notes, popovers and chips that float under the title row follow its height (it wraps on narrow stages).
+  new ResizeObserver(([entry]) => $('viewport-shell').style.setProperty('--vp-top-h', `${Math.ceil(entry.target.getBoundingClientRect().height)}px`)).observe(document.querySelector('.vp-top'));
   focus = initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, cameraView, previewMarkers, sampleHealth });
+  $('focus-details-close').addEventListener('click', () => setInspectorDrawer(false));
+  $('focus-enter').addEventListener('click', () => setInspectorDrawer(false));
   requestAnimationFrame(tick);
   request('/api/version').then(v => { $('build-info').textContent = `build ${v.commit ? v.commit.slice(0, 7) : 'unknown'}${v.dirty ? ' · modified tree' : ''}`; $('build-info').title = v.describe ?? ''; }).catch(() => {});
   window.__studio = {

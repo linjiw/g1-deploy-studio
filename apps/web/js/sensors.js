@@ -28,7 +28,7 @@ function card(sensor, pinned = false) {
   const tone = !available ? 'missing' : sensor.status === 'fresh' ? 'available' : 'unknown';
   return `<article class="sensor-card ${pinned ? 'pinned' : ''}" data-sensor-card="${escape(sensor.id)}">
     <div class="sensor-card-heading"><strong>${escape(sensor.label)}</strong><span class="sensor-state ${tone}">${escape(sensor.status)}</span></div>
-    <div class="sensor-classification">${available ? (CLASS_EVIDENCE[sensor.classification] ? chip(CLASS_EVIDENCE[sensor.classification]) : `<span class="chip chip-unavailable" title="Unrecognized classification">${escape(sensor.classification ?? 'UNCLASSIFIED')}</span>`) : chip('unavailable')}<span>${escape(sensor.synchronized ? 'session clock' : 'unsynchronized')}</span></div>
+    <div class="sensor-classification">${available ? (CLASS_EVIDENCE[sensor.classification] ? chip(CLASS_EVIDENCE[sensor.classification]) : `<span class="chip chip-unavailable" title="Unrecognized classification">${escape(sensor.classification ?? 'Unclassified')}</span>`) : chip('unavailable')}<span>${escape(sensor.synchronized ? 'session clock' : 'unsynchronized')}</span></div>
     ${available ? payloadView(sensor) : `<p class="sensor-reason">${escape(sensor.reason ?? 'This source was not captured.')}</p>`}
     ${available ? fact('Age / rate', `${num(sensor.age_ms, 0, 'ms')} / ${num(sensor.rate_hz, 1, 'Hz')}`) : ''}
     ${pinned ? '' : `<details><summary>Frame & provenance</summary>${fact('Frame', sensor.frame_id)}${fact('Clock', sensor.source_clock ?? sensor.source_clock_domain)}${fact('Source time', num(sensor.source_time, 3, 's'))}<pre>${escape(JSON.stringify({ extrinsics: sensor.extrinsics, provenance: sensor.provenance }, null, 1))}</pre></details>`}

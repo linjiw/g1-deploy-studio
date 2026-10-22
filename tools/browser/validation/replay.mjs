@@ -63,7 +63,7 @@ await R.check('1.3', 'Transport buttons: play/pause, restart, step forward/back'
   await page.click('#step-forward'); let s = await S(); near(s.time, 1.02, 0.0015, 'step forward');
   await page.click('#step-back'); await page.click('#step-back'); s = await S(); near(s.time, 0.98, 0.0015, 'step back');
   await page.click('#play'); await sleep(700); s = await S();
-  assert(s.playing && /Pause/.test(await page.locator('#play').textContent()) && await page.locator('#playback-state').textContent() === 'PLAYING', 'playing state');
+  assert(s.playing && /Pause/.test(await page.locator('#play').textContent()) && await page.locator('#playback-state').textContent() === 'Playing', 'playing state');
   await page.click('#play'); const p = await S(); assert(!p.playing && p.time > 1.2, `paused at ${p.time}`);
   await page.click('#restart'); s = await S(); assert(!s.playing && Math.abs(s.time - s.t0) < 1e-9, `restart ${s.time}`);
   return { pausedAt: p.time };
@@ -392,7 +392,7 @@ await R.check('2.3', 'Health tab: outcome, fidelity, torque, budgets, events see
   const shot = await R.shot('health-held');
   await page.uncheck('#freeze-state');
   const after = await page.locator('#source-badge').textContent();
-  assert(budgets === 3 && /STALE/.test(stale) && /HELD/.test(badge) && /DIAGNOSTIC HELD STATE/.test(cap) && /SIM-TRUTH/.test(after), `budgets ${budgets} stale ${/STALE/.test(stale)} badge ${badge} after ${after}`);
+  assert(budgets === 3 && /stale/i.test(stale) && /held/i.test(badge) && /diagnostic held state/i.test(cap) && /sim truth/i.test(after), `budgets ${budgets} stale ${/stale/i.test(stale)} badge ${badge} after ${after}`);
   // Seeking before the held time releases the hold.
   return { budgets, torque, evSeek, shot };
 });
@@ -400,7 +400,7 @@ await R.check('2.3', 'Health tab: outcome, fidelity, torque, budgets, events see
 await R.check('2.4', 'Map tab: causal perception (bundle), final-snapshot honesty (DDS), unavailable by design (WX)', async () => {
   await page.click('#tab-perception'); await seek(page, 1.0); await sleep(200);
   const b = await page.locator('#perception-content').textContent();
-  assert(/CAUSAL SIMULATED PERCEPTION/.test(b) && /Map snapshot/.test(b) && /Map age at cursor/.test(b), `bundle map ${b.slice(0, 200)}`);
+  assert(/causal simulated perception/i.test(b) && /Map snapshot/.test(b) && /Map age at cursor/.test(b), `bundle map ${b.slice(0, 200)}`);
   const shotB = await R.shot('map-bundle');
   await open(page, 'sonic-dds-tutorial'); await page.click('#tab-perception'); await sleep(200);
   const d = await page.locator('#perception-content').textContent();

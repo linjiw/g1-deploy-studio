@@ -201,7 +201,7 @@ function drawPreset(ctx, q, active) {
   ctx.beginPath(); ctx.moveTo(gx - 6, gy); ctx.lineTo(gx + 6, gy); ctx.moveTo(gx, gy - 6); ctx.lineTo(gx, gy + 6); ctx.stroke();
   if (active || arena.view.scale > 60) {
     ctx.font = active ? '600 11px Inter, system-ui' : '10px Inter, system-ui'; ctx.fillStyle = active ? UI.ink : UI.dim; ctx.textAlign = 'left';
-    ctx.fillText('START', sx + 10, sy - 10); ctx.fillText(active ? `GOAL · ${q.label}` : q.label, gx + 10, gy - 10);
+    ctx.fillText('Start', sx + 10, sy - 10); ctx.fillText(active ? `Goal · ${q.label}` : q.label, gx + 10, gy - 10);
   }
 }
 
@@ -397,7 +397,7 @@ function updateStatus() {
       : 'Printable build sheet for the active preset: floor measurements from the start mark, the console command and the rehearsal evidence (new tab)';
   }
   const issues = presetIssues();
-  node.innerHTML = `<div class="arena-counts"><span><strong>${arena.boxes.length}</strong> boxes</span><span><strong>${arena.presets.length}</strong> presets</span><span>${arena.savedId ? `<span class="chip chip-recorded">SAVED ${escape(arena.savedId.slice(-6))}</span>` : '<span class="chip chip-unavailable">UNSAVED DRAFT</span>'}</span></div>
+  node.innerHTML = `<div class="arena-counts"><span><strong>${arena.boxes.length}</strong> boxes</span><span><strong>${arena.presets.length}</strong> presets</span><span>${arena.savedId ? `<span class="chip chip-recorded">Saved ${escape(arena.savedId.slice(-6))}</span>` : '<span class="chip chip-unavailable">Unsaved draft</span>'}</span></div>
     ${issues.length ? `<ul class="issues">${issues.map(i => `<li>${escape(i)}</li>`).join('')}</ul>` : '<p class="tiny ok">Preflight: every start and goal clears the standing footprint. Route feasibility is not checked; only a rehearsal can tell.</p>'}`;
   document.querySelectorAll('[data-preset-index]').forEach(row => {
     const q = arena.presets[Number(row.dataset.presetIndex)]; if (!q) return;

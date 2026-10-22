@@ -66,7 +66,7 @@ await R.check('R2', 'Connect: live LIO pose (estimated, odom frame), streams fre
   assert(/g on the node console/.test(text), 'go note');
   assert(/reconstruction/i.test(s.nav.map.label ?? s.nav.map.basis ?? ''), `map basis ${JSON.stringify(s.nav.map)}`);
   const badge = await page.locator('#source-badge').textContent();
-  assert(/LIO ESTIMATE/.test(badge), `source badge ${badge}`);
+  assert(/LIO estimate/i.test(badge), `source badge ${badge}`);
   await sleep(1500);
   await R.shot('connected');
   return { streams, badge: await page.locator('#mode-badge').textContent() };

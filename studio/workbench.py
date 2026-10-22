@@ -584,7 +584,7 @@ class Workbench:
         if key in self.catalog.providers:
             return
         label = (job.get('scenario') or {}).get('label') or 'Navigation session'
-        self.catalog.register(key, job['output']/'run/session.json', f'LIVE · {label} (previous gateway)', provider=lambda: self.session_data(key),
+        self.catalog.register(key, job['output']/'run/session.json', f'Live · {label} (previous gateway)', provider=lambda: self.session_data(key),
                               extra={'group': 'Navigation sessions', 'status': 'detached', 'started_unix_s': job.get('started_unix_s'),
                                      'scenario_label': label, 'kind': job.get('kind'), 'robot': (job.get('navigation') or {}).get('robot')})
 
@@ -845,7 +845,7 @@ class Workbench:
                                        **({'bundle_id': profile['bundle_id']} if profile.get('bundle_id') else {})})
                 script = 'flow_policy_worker.py' if profile.get('loader') == 'flow-callback' else 'policy_worker.py'
                 job['process'] = self._launch(output, script, request, lease_fd)
-                self.catalog.register(key, output/'run/session.json', f"LIVE · {scenario['label']}", provider=lambda: self.session_data(key),
+                self.catalog.register(key, output/'run/session.json', f"Live · {scenario['label']}", provider=lambda: self.session_data(key),
                                       extra={'group': 'CPU rehearsals', 'status': 'running', 'policy_id': profile['id'],
                                              'started_unix_s': job['started_unix_s'], 'map_id': scenario['map_id'],
                                              'scenario_label': scenario['label'], 'suite_id': suite_id})
@@ -948,7 +948,7 @@ class Workbench:
                            'actuators': actuator_profile, 'odometry': odometry, 'map_mode': map_mode,
                            'policy': {'identity_sha256': policy_identity['identity_sha256']}}
                 job['process'] = self._launch(output, 'nav_worker.py', request, lease_fd)
-                self.catalog.register(key, output/'run/session.json', f'LIVE · {label}', provider=lambda: self.session_data(key),
+                self.catalog.register(key, output/'run/session.json', f'Live · {label}', provider=lambda: self.session_data(key),
                                       extra={'group': 'Navigation sessions', 'status': 'running', 'policy_id': profile['id'],
                                              'started_unix_s': job['started_unix_s'], 'map_id': map_id,
                                              'scenario_label': label, 'kind': 'navigation'})
@@ -1014,7 +1014,7 @@ class Workbench:
                     job['process'] = subprocess.Popen([sys.executable, '-u', '-m', 'studio.robot_link', '--config', str(output/'request.json'),
                                                        '--output', str(output/'run')], cwd=ROOT, env=env, stdout=log,
                                                       stderr=subprocess.STDOUT, start_new_session=True, pass_fds=(lock_fd,))
-                self.catalog.register(key, output/'run/session.json', f'LIVE · {label}', provider=lambda: self.session_data(key),
+                self.catalog.register(key, output/'run/session.json', f'Live · {label}', provider=lambda: self.session_data(key),
                                       extra={'group': 'Navigation sessions', 'status': 'running', 'started_unix_s': job['started_unix_s'],
                                              'scenario_label': label, 'kind': 'robot', 'robot': 'real'})
                 threading.Thread(target=self._monitor, args=(key,), daemon=True).start()

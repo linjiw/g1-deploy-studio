@@ -12,11 +12,11 @@ const CAMERA_LABEL = { orbit: 'Orbit', follow: 'Follow', top: 'Top', scene: 'Fit
 function policyName(p) {
   if (!p) return 'Policy unavailable';
   if (p.research_block) return `Flow ${p.research_block}${/retrieval-free/i.test(p.variant ?? '') ? '-RF' : ''}`;
-  return p.short_label ?? p.label ?? p.id ?? 'Policy unavailable';
+  return p.label ?? p.short_label ?? p.id ?? 'Policy unavailable';  // the same name as the policy chip and Navigate
 }
 
 // Kept pure so provenance and pending-run behavior can be checked independently.
-export function focusPresentation(state, rh, preview = false) {
+export function focusPresentation(state, rh, preview = false, layers = null, previewTitle = null) {
   const meta = state.session?.metadata ?? {};
   const selected = rh.catalog?.policies?.find(p => p.id === rh.policyId);
   const active = ACTIVE.includes(rh.job?.status);
@@ -31,12 +31,19 @@ export function focusPresentation(state, rh, preview = false) {
   if (waiting) mode = 'Preparing simulation · awaiting samples';
   if (!empty && meta.mode === 'partial-live') mode = `Run ${state.liveStatus ?? 'ended'} · partial samples`;
   if (!empty && state.liveStatus === 'detached') mode = 'Detached simulation · read-only';
-  const source = empty ? 'Configured geometry · telemetry unavailable' : meta.privileged_map ? 'Privileged scene boxes · simulator truth' : state.session?.perception?.available ? 'Recorded perception · see Details for source' : 'Map source unavailable';
+  // The map named is the one drawn: the robot's own (perception layer) or the configured room (simulator truth).
+  const perceived = state.session?.perception?.available && (layers ? layers.perception : true);
+  const source = empty ? 'Configured geometry · telemetry unavailable' : meta.privileged_map ? 'Privileged scene boxes · simulator truth'
+    : perceived ? (live ? "Live perception · the robot's own LiDAR map" : 'Recorded perception · see Details for source')
+    : layers?.environment ? 'Configured room · simulator truth (the robot does not see it)' : 'Map source unavailable';
+  // A navigation session is graded walk by walk, not as one run.
+  const walks = meta.test_result && Number.isFinite(meta.test_result.walks) ? meta.test_result : null;
   return { empty, live, waiting, active, displayed, selected: selected ? `${policyName(selected)}${selected.matches_adopted ? ' · adopted' : ''}` : 'Choose in Setup',
     mode, source, canReplay: !empty && !live && !state.loading && !!state.session?.frames?.length,
-    title: empty ? rh.map?.label ?? 'Choose an arena in Setup' : meta.title ?? state.sessionId ?? 'Recorded session',
+    title: empty ? previewTitle ?? rh.map?.label ?? 'Choose an arena in Setup' : meta.title ?? state.sessionId ?? 'Recorded session',
     identity: profile?.identity_sha256 ?? profile?.config_sha256 ?? null, realRobot,
-    outcome: empty || live ? null : meta.test_result?.outcome ?? null };
+    outcome: empty || live ? null : walks ? (walks.walks && walks.arrived === walks.walks ? 'walks_arrived' : 'walks_partial') : meta.test_result?.outcome ?? null,
+    walks: walks ? `${walks.arrived ?? 0} of ${walks.walks ?? 0} walks arrived` : null };
 }
 
 const icon = (path) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
@@ -51,7 +58,7 @@ const icons = {
 };
 
 export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, cameraView, previewMarkers, sampleHealth }) {
-  let active = false, sheet = null, entering = false, lastFocus = null, returnFocus = null;
+  let active = false, sheet = null, entering = false, lastFocus = null, returnFocus = null, cameFrom = 'replay';
   const root = document.createElement('div');
   root.id = 'focus-root'; root.hidden = true;
   root.innerHTML = `
@@ -97,18 +104,19 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
   const inspector = document.querySelector('.inspector');
   inspector.id = 'focus-inspector';
   const header = document.createElement('div'); header.className = 'focus-details-header';
-  header.innerHTML = '<strong>Recording details</strong><button id="focus-details-close" aria-label="Close recording details">✕</button>';
+  header.innerHTML = '<strong>Details</strong><button id="focus-details-close" aria-label="Close details">✕</button>';
   inspector.prepend(header);
   const text = (id, value) => { const el = $(id); if (el.textContent !== value) el.textContent = value; };
 
-  function presentation() { return focusPresentation(state, rh, document.body.classList.contains('previewing')); }
+  // A preview (Rehearse's preset, Navigate's world) names itself in the scene title.
+  function presentation() { const preview = document.body.classList.contains('previewing'); return focusPresentation(state, rh, preview, scene.view.layers, preview ? $('session-title').textContent : null); }
   function refresh() {
     if (!active) return;
     const p = presentation(), meta = state.session?.metadata ?? {}, frame = state.measuredFrame ?? state.frame;
     text('focus-mode', p.mode); text('focus-scene-name', p.title);
     const outcomes = { goal_completion: 'Goal completed', timeout: 'Time limit reached', obstacle_collision: 'Obstacle collision', fall: 'Fall', runtime_error: 'Runtime error' };
     $('focus-outcome').hidden = !p.outcome;
-    text('focus-outcome', p.outcome ? `Recorded outcome · ${outcomes[p.outcome] ?? p.outcome.replaceAll('_', ' ')}` : '');
+    text('focus-outcome', p.walks ? `Recorded session · ${p.walks}` : p.outcome ? `Recorded outcome · ${outcomes[p.outcome] ?? p.outcome.replaceAll('_', ' ')}` : '');
     $('focus-outcome').dataset.outcome = p.outcome ?? '';
     text('focus-displayed-policy', p.displayed); text('focus-selected-policy', p.selected); text('focus-provenance', p.source);
     $('focus-displayed-policy').title = p.empty ? '' : `Displayed recording: ${state.sessionId ?? 'unavailable'}${p.identity ? ` · identity ${p.identity}` : ''}`;
@@ -183,16 +191,20 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
     if (active || entering) return;
     entering = true; lastFocus = document.activeElement;
     try {
-      if (!['replay', 'rehearse'].includes(state.workspace)) await setWorkspace('replay');
+      cameFrom = state.workspace;
+      // Navigate stays Navigate (its own map and goals); other workspaces present their recording from Replay.
+      if (!['replay', 'rehearse', 'navigate'].includes(state.workspace)) await setWorkspace('replay');
       active = true; root.hidden = false; document.body.classList.add('flow-focus');
       updateView({ focus: '1' });
       refresh(); root.querySelector('.focus-heading').focus({ preventScroll: true });
     } finally { entering = false; }
   }
-  function exit() {
+  async function exit({ restore = true } = {}) {
     if (!active) return;
     closeSheet({ restore: false }); active = false; root.hidden = true;
     document.body.classList.remove('flow-focus'); updateView({ focus: null });
+    // Back where Stage was entered (Setup opens Rehearse, which must not become the new home).
+    if (restore && cameFrom && cameFrom !== state.workspace) await setWorkspace(cameFrom);
     (lastFocus?.isConnected && lastFocus !== document.body ? lastFocus : $('focus-enter')).focus();
   }
   function handleKey(e) {
@@ -214,7 +226,7 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
   }
 
   $('focus-enter').addEventListener('click', enter);
-  $('focus-exit').addEventListener('click', exit);
+  $('focus-exit').addEventListener('click', () => exit());
   $('focus-setup').addEventListener('click', () => openSheet('setup'));
   $('focus-inspect').addEventListener('click', () => openSheet('details'));
   $('focus-details-close').addEventListener('click', () => closeSheet());
@@ -231,7 +243,7 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
     closeSheet(); refresh();
   });
   for (const event of ['session', 'frame', 'rehearse:preview', 'rehearse:job', 'rehearse:finished', 'workbench:error', 'workbench:clear']) on(event, refresh);
-  on('workspace', name => { if (active && !['rehearse', 'replay'].includes(name)) exit(); });
+  on('workspace', name => { if (active && !['rehearse', 'replay', 'navigate'].includes(name)) exit({ restore: false }); });
   const observer = new MutationObserver(refresh);
   observer.observe($('rehearse-panel'), { childList: true, subtree: true });
   for (const id of ['workbench-error', 'recording-warning', 'play', 'camera-orbit', 'camera-follow', 'camera-top', 'camera-scene'])
