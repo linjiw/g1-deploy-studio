@@ -202,6 +202,8 @@
 .poster { position: absolute; inset: 0; z-index: 9; display: grid; place-items: center; padding: 24px; color: #fff; }
 .poster img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .poster::before { content: ""; position: absolute; inset: 0; z-index: 1; background: radial-gradient(80% 70% at 50% 55%, rgba(10, 14, 19, .25), rgba(10, 14, 19, .78)); }
+/* The split view's poster carries its labels: keep them readable at rest. */
+.poster.small::before { background: radial-gradient(60% 55% at 50% 60%, rgba(10, 14, 19, .5), rgba(10, 14, 19, .08)); }
 .poster-body { position: relative; z-index: 2; text-align: center; display: grid; justify-items: center; gap: 14px; max-width: 560px; }
 .poster-body h3 { margin: 0; font-size: clamp(22px, 3.6cqi, 34px); letter-spacing: -.02em; line-height: 1.15; text-shadow: 0 2px 24px rgba(0, 0, 0, .5); }
 .poster-body p { margin: 0; color: rgba(255, 255, 255, .78); font-size: 14px; text-shadow: 0 1px 10px rgba(0, 0, 0, .6); }
@@ -217,7 +219,13 @@
 .stage.narrow .chrome.top-left { max-width: calc(100% - 100px); }
 .stage.narrow .title-chip small { display: none; }
 .stage.narrow .pill .t { display: none; }
-.stage.narrow .layers { padding-right: 28px; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 36px), transparent); }
+/* Narrow stages: the layer pills wrap into rows across the width, so every one is in sight. */
+.stage.narrow .chrome.top-left { right: 10px; left: 10px; max-width: none; }
+.stage.narrow .layers { flex-wrap: wrap; border-radius: 16px; overflow: visible; }
+.stage.narrow .layers button { padding: 5px 9px; font-size: 12px; gap: 6px; }
+.stage.narrow.embedded .chrome.top-left { top: 52px; }
+.stage.narrow .chrome.top-right { z-index: 5; flex-direction: row; align-items: center; }
+.stage.narrow .help { left: 10px; right: 10px; width: auto; top: auto; bottom: calc(max(10px, env(safe-area-inset-bottom)) + var(--dock-h) + 10px); max-height: 60%; }
 .stage.narrow .result .facts, .stage.narrow .result .r-more { display: none; }
 .stage.narrow .result .r-text { font-size: 12.5px; }
 .stage.narrow .hud { top: auto; bottom: calc(max(10px, env(safe-area-inset-bottom)) + var(--dock-h) + 10px); right: 10px; left: auto; width: auto; max-width: 62%; grid-template-columns: 1fr 1fr; padding: 6px 8px; }
