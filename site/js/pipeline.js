@@ -52,9 +52,9 @@ export function initPipeline(container, detail) {
     `<path class="edge ${kind}" d="${d}" marker-end="url(#arrow-${kind})"/><text class="elabel ${kind === 'studio-write' ? 'studio' : ''}" x="${x}" y="${y}" text-anchor="${anchor}">${escape(label)}</text>`).join('');
   const nodes = Object.entries(NODES).map(([id, n]) => `<g class="node" data-id="${id}" tabindex="0" role="button" aria-label="${escape(`${n.title}: ${n.sub}`)}">
     <rect x="${n.x}" y="${n.y}" width="${W}" height="${H}"/><text x="${n.x + 14}" y="${n.y + 28}">${escape(n.title)}</text><text class="sub" x="${n.x + 14}" y="${n.y + 49}">${escape(n.sub)}</text></g>`).join('');
-  const marker = (id, color) => `<marker id="arrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${color}"/></marker>`;
+  const marker = id => `<marker id="arrow-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-${id}"/></marker>`;
   container.innerHTML = `<svg viewBox="0 0 1000 516" xmlns="http://www.w3.org/2000/svg">
-    <defs>${marker('flow', '#4a6474')}${marker('motor', '#efbb70')}${marker('studio-write', '#56d9d0')}${marker('operator', '#7be0a5')}${marker('never', '#f07870')}</defs>
+    <defs>${['flow', 'motor', 'studio-write', 'operator', 'never'].map(marker).join('')}</defs>
     <rect class="zone" x="16" y="18" width="968" height="122" rx="14"/><text class="zone-label" x="28" y="134">G1 ROBOT</text>
     <rect class="zone" x="16" y="190" width="968" height="120" rx="14"/><text class="zone-label" x="28" y="304">DEPLOY PC</text>
     <rect class="zone" x="16" y="376" width="968" height="110" rx="14"/><text class="zone-label" x="28" y="480">PEOPLE AND VIEWS</text>

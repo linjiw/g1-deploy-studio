@@ -105,8 +105,12 @@ class WalkExportTests(unittest.TestCase):
         frames = []
         for k in range(7):
             qpos = [0.1 * k, 0.0, 0.79, 1.0, 0.0, 0.0, 0.0] + [0.01 * j for j in range(29)]
+            # The reference SONIC tracks: 0.2 m ahead of the estimate and 2 cm higher, every joint 0.1 rad off;
+            # the first frame has none.
+            reference = None if k == 0 else {'position': [0.1 * k + 0.21, 0.0, 0.81], 'quaternion_wxyz': [1.0, 0.0, 0.0, 0.0],
+                                              'joints': [0.01 * j + 0.1 for j in range(29)], 'position_basis': 'planner-diagnostic-not-consumed-by-sonic'}
             frames.append({'time': 0.02 * k, 'qpos': qpos, 'estimate': {'position': [0.1 * k + 0.01, 0.0, 0.79]},
-                           'navigation': {'phase': 'PRESCAN' if k < 2 else 'RUN'},
+                           'reference': reference, 'navigation': {'phase': 'PRESCAN' if k < 2 else 'RUN'},
                            'health': {'tilt_rad': 0.01, 'contact_force_n': 0.0, 'goal_dist_m': 1.0 - 0.1 * k}})
         session = {'frames': frames, 'events': [{'time': 0.0, 'type': 'goal', 'message': 'walk 1'},
                                                 {'time': 0.04, 'type': 'replan', 'message': 'x'}],
@@ -136,6 +140,47 @@ class WalkExportTests(unittest.TestCase):
         np.testing.assert_array_equal(codes, self.step[0].ravel())
         self.assertEqual(heights[2 * 5 + 3], 55)
         self.assertEqual(d['outcome'], 'arrived')
+
+    def test_walks_carry_the_reference_sonic_tracks_and_missing_frames_stay_null(self):
+        d = export.walk_data('w', 'g00-00', self.run_dir, *self.base)
+        self.assertIsNone(d['ref'][0])  # no reference recorded at the first frame: null, not the robot's own pose
+        self.assertEqual(d['ref'][1][:3], [410, 0, 810])  # frame 2 (every second tick): x = 0.41 m, z = 0.81 m in mm
+        self.assertEqual(d['ref'][1][3:7], [10000, 0, 0, 0])
+        self.assertEqual(d['ref'][1][7], 100)  # joint 1 + 0.1 rad, in mrad
+        self.assertEqual(d['ref_basis'], 'planner-diagnostic-not-consumed-by-sonic')
+        e = export.execution(d)
+        self.assertEqual(len(e['lag_m']), 3)  # walking frames with a reference: 2, 4 and 6 (frame 0 has none, 1 is a pre-scan)
+        for lag, dz, rms in zip(e['lag_m'], e['dz_m'], e['rms_rad']):
+            self.assertAlmostEqual(lag, 0.2, places=3)  # against the robot's estimate, both in the planner's frame
+            self.assertAlmostEqual(dz, 0.02, places=3)
+            self.assertAlmostEqual(rms, 0.1, places=3)
+
+    def test_grades_follow_the_site_rule(self):
+        g = export.grade_key
+        self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': 20, 'final_dist_m': 0.2, 'final_dist_estimate_m': 0.2}), 'clean')
+        self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': 101, 'final_dist_m': 0.9, 'final_dist_estimate_m': 0.9}), 'contact')
+        self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': None, 'final_dist_m': 0.7, 'final_dist_estimate_m': 0.3}), 'off')
+        self.assertEqual(g({'outcome': 'arrived', 'max_contact_n': 0, 'final_dist_m': 4.2, 'final_dist_estimate_m': 4.1}), 'away')
+        self.assertEqual(g({'outcome': 'fell', 'max_contact_n': 300}), 'fell')
+
+    def test_the_walk_list_has_one_row_per_walk(self):
+        index = {'start_xy': [0.0, 0.0], 'cells': [{'id': 'g00-00', 'xy': [3.0, 4.0]}],
+                 'walks': {'g00-00': {'outcome': 'arrived', 'max_contact_n': 140.4, 'final_dist_m': 0.234, 'final_dist_estimate_m': 0.1, 'duration_s': 12.34}}}
+        self.assertEqual(export.walk_list(index), [['g00-00', 'contact', 5.0, 140, 0.23, 12.3]])
+        self.assertEqual(export.LIST_FIELDS, ['id', 'grade', 'dist_m', 'contact_n', 'final_m', 'duration_s'])
+
+    def test_split_views_put_plan_body_scenarios_first_and_start_before_the_moment(self):
+        d = export.walk_data('w', 'g00-00', self.run_dir, *self.base)
+        d['events'] = [{'t': 0.04, 'type': 'arrived', 'msg': 'arrived', 'dist': 0.38}]
+        off = dict(d, goal_id='g00-01', final_dist_m=0.8, final_dist_estimate_m=0.35)
+        pick = {'contact': {'world': 'w', 'goal': 'g00-00', 'at': 3.0, 'note': 'Peaks at 400 N.'}}
+        out = export.closer_scenarios([('w', d), ('w', off)], pick)
+        self.assertEqual([x['id'] for x in out], ['contact', 'estimate'])
+        self.assertEqual(out[0]['mode'], 'body')
+        self.assertEqual(out[0]['at'], 1.5)  # 1.5 s before the moment
+        self.assertIn('Peaks at 400 N.', out[0]['caption'])
+        self.assertEqual(out[1]['goal'], 'g00-01')
+        self.assertIn('0.35 m from the goal by its estimate and 0.80 m by simulator truth', out[1]['caption'])
 
     def test_example_notes_name_how_an_unclean_walk_ends(self):
         clean = {'max_contact_n': 20.0, 'final_dist_m': 0.3, 'outcome': 'arrived', 'reason': None}

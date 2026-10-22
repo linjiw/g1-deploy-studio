@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f4f5f7">
+  <title>The execution gap · G1 Deploy Studio</title>
+  <meta name="description" content="The planner knows where to go. The tracker decides whether the body gets there. Studio's recordings put the plan body and the executed body side by side.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://linjiw.github.io/g1-deploy-studio/next/">
+  <meta property="og:title" content="The execution gap · G1 Deploy Studio">
+  <meta property="og:description" content="The plan body (the pose the tracker is chasing) against the body a simulated Unitree G1 executed, measured in recorded walks of the deploy stack.">
+  <meta property="og:image" content="https://linjiw.github.io/g1-deploy-studio/assets/closer.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f1419'/%3E%3Ctext x='5' y='22' fill='%23fff' font-size='16' font-weight='700' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../css/base.css">
+  <link rel="stylesheet" href="../css/site.css">
+  <link rel="stylesheet" href="../css/stage.css">
+  <script type="importmap">{"imports":{"three":"../vendor/three/three.module.min.js","three/addons/":"../vendor/three/addons/"}}</script>
+  <script type="module" src="../js/next.js"></script>
+</head>
+<body>
+<a class="skip" href="#gap">Skip to the comparison</a>
+<header class="top">
+  <a class="brand" href="../"><span class="mark">G1</span><span>Deploy Studio</span></a>
+  <nav aria-label="Sections"><a href="#gap">Closer look</a><a href="#numbers">Numbers</a><a href="#trackers">Two trackers</a><a href="#method">Method</a><a href="../demo/">Demo</a></nav>
+  <a class="gh" href="https://github.com/linjiw/g1-deploy-studio">GitHub</a>
+</header>
+<main>
+<section class="hero">
+  <p class="eyebrow">The next step</p>
+  <h1 class="wide">The planner knows where to go. The tracker decides whether the body gets there.</h1>
+  <p class="lede">The deploy stack plans a whole-body motion and hands it to a tracking policy, SONIC, that turns it into motor targets. Studio records both: the <b>plan body</b>, the pose SONIC is chasing, and the body the simulated G1 executed. Everything on this page is measured by Studio in its own recordings.</p>
+  <div class="cta"><a class="button primary" href="#gap">Compare them</a><a class="button" href="../demo/">Try the demo</a></div>
+</section>
+
+<section id="gap">
+  <div class="section-head">
+    <p class="eyebrow">Take a closer look · the execution gap</p>
+    <h2>One plan. The body that followed it.</h2>
+    <p>Left, the plan body; right, the executed body, in step. Each half follows its own pelvis, so the posture compares without the lag. Switch to overlay to see the lag.</p>
+  </div>
+  <div class="chips" id="closer-chips" role="group" aria-label="Scenarios"></div>
+  <div class="stage embedded closer-slot" id="closer-stage" data-tour="../#tour">
+    <div class="poster small">
+      <img src="../assets/closer.jpg" width="1200" height="600" alt="The plan body and the executed body side by side" fetchpriority="high">
+      <div class="poster-body"><div class="row"><button class="start" data-closer-start><span class="tri" aria-hidden="true"></span>Play the comparison</button></div><small>about 1 MB · recorded walks · your browser runs no policy</small></div>
+    </div>
+  </div>
+  <p class="split-caption" id="closer-caption" aria-live="polite"></p>
+</section>
+
+<section id="numbers" class="band">
+  <div class="section-head">
+    <p class="eyebrow">Why it matters</p>
+    <h2>Three numbers from Studio's recordings.</h2>
+    <p>Walking frames at 25 Hz from every recorded walk; simulation, one seed per goal.</p>
+  </div>
+  <div class="highlights" id="numbers-cards"></div>
+  <div class="card table-card">
+    <h3>Where the gap shows</h3>
+    <div class="table-wrap"><table class="outcomes" id="gap-table"><caption class="sr-only">Plan-to-body distance and contact per room</caption></table></div>
+    <p class="fineprint">Plan to body<sup><a href="#fn-body">1</a></sup>: median over walking frames. Contact<sup><a href="#fn-contact">2</a></sup>: walks with more than 100 N at any frame.</p>
+  </div>
+</section>
+
+<section id="trackers">
+  <div class="section-head">
+    <p class="eyebrow">One plan. Two trackers.</p>
+    <h2>The same plan stream, another tracker, scenario by scenario.</h2>
+    <p>Studio is adding a tracker axis to its rehearsals: the recorded plan stream sent to a different tracker and scored the same way. The table fills in when one is run; until then only SONIC's column is measured.</p>
+  </div>
+  <div class="card table-card">
+    <div class="table-wrap"><table class="outcomes trackers" id="tracker-table"><caption class="sr-only">Execution measures per scenario and tracker</caption></table></div>
+    <p class="fineprint">SONIC: the deploy stack's tracking policy, in these recordings. Another tracker: not run yet; nothing is estimated in its place.</p>
+  </div>
+</section>
+
+<section id="local" hidden></section>
+
+<section id="method" class="band">
+  <div class="section-head">
+    <p class="eyebrow">Method</p>
+    <h2>How these are measured.</h2>
+  </div>
+  <ol class="footnotes wide-notes">
+    <li id="fn-body"><b>Plan body and plan to body.</b> The plan body is the reference SONIC is tracking at each 20 ms tick (row 0 of its reference window): 29 joint angles and an orientation, recorded by Studio's simulated robot and kept at 25 Hz. Its pelvis position is the planner's diagnostic; SONIC never receives it. Plan to body is the distance between that pelvis and the robot's own estimate of its pelvis, both in the planner's frame, over walking frames.</li>
+    <li id="fn-contact"><b>Contact.</b> Peak obstacle contact force over 100 N at any frame of the walk, simulator truth.</li>
+    <li id="fn-joints"><b>Joint gap.</b> Root-mean-square difference over the 29 joint angles between the plan body and the executed body, per walking frame.</li>
+    <li id="fn-sim"><b>Simulation.</b> CPU MuJoCo, planner budget 16 candidates and 10 ODE steps, 160 ms planner latency with predictive anchoring, LIO-level odometry drift, one memory per session, the current G1 actuator limits, seed 0. Not a hardware result.</li>
+  </ol>
+</section>
+</main>
+<footer>
+  <p><b>G1 Deploy Studio</b> · Apache-2.0 · research software, not affiliated with Unitree Robotics or NVIDIA. <a href="../">Back to the main page</a>. This page runs no policy and sends nothing anywhere: it is static files.</p>
+</footer>
+</body>
+</html>

@@ -15,17 +15,30 @@ export const OUTCOME = {
 };
 
 // One verdict per walk for colours and badges: arrival by the robot's estimate is not the whole story.
-export function grade(walk) {
-  const contact = (walk.max_contact_n ?? 0) > 100;
+// The same rule as tools/site/export.py grade_key: contact over 100 N, then the final distance by simulator truth.
+export const GRADES = {
+  clean: { label: 'Arrived', short: 'Clean', color: 0x7be0a5, css: 'var(--ok)' },
+  contact: { label: 'Arrived, with contact', short: 'Contact', color: 0xefbb70, css: 'var(--warn)' },
+  off: { label: 'Arrived by its estimate, off by truth', short: 'Off by truth', color: 0xefbb70, css: 'var(--warn)' },
+  away: { label: 'Arrived, then moved away', short: 'Moved away', color: 0xefbb70, css: 'var(--warn)' },
+  stopped: { label: 'Stopped', short: 'Stopped', color: 0xefbb70, css: 'var(--warn)' },
+  estop: { label: 'E-stop', short: 'E-stop', color: 0xf07870, css: 'var(--bad)' },
+  fell: { label: 'Fell', short: 'Fell', color: 0xf07870, css: 'var(--bad)' },
+};
+export function gradeKey(walk) {
   if (walk.outcome === 'arrived') {
-    if (contact) return { key: 'contact', label: 'Arrived, with contact', color: 0xefbb70 };
+    if ((walk.max_contact_n ?? 0) > 100) return 'contact';
     // Off by truth: its estimate was wrong, or (its estimate agreeing) it moved away after arriving, as in a deferred stand.
-    if ((walk.final_dist_m ?? 0) > 0.6) return { key: 'off', label: (walk.final_dist_estimate_m ?? 0) > 0.6 ? 'Arrived, then moved away' : 'Arrived by its estimate, off by truth', color: 0xefbb70 };
-    return { key: 'clean', label: 'Arrived', color: 0x7be0a5 };
+    if ((walk.final_dist_m ?? 0) > 0.6) return (walk.final_dist_estimate_m ?? 0) > 0.6 ? 'away' : 'off';
+    return 'clean';
   }
-  const o = OUTCOME[walk.outcome] ?? { label: walk.outcome, color: 0x8aa0ad };
-  return { key: walk.outcome, label: o.label, color: o.color };
+  return walk.outcome;
 }
+export function grade(walk) {
+  const key = gradeKey(walk), g = GRADES[key] ?? { label: OUTCOME[key]?.label ?? key, short: key, color: 0x8aa0ad, css: 'var(--ink-3)' };
+  return { key, ...g };
+}
+export const hex = c => `#${(c ?? 0x888888).toString(16).padStart(6, '0')}`;
 
 // node.py phases (studio/nav_worker.py reproduces the state machine).
 export const PHASE = {

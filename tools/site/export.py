@@ -27,7 +27,19 @@ from tools.site.worlds import WORLDS, describe  # noqa: E402
 
 STRIDE = 2            # 50 Hz control ticks -> 25 Hz frames
 LIDAR_POINTS = 400    # per 1 Hz snapshot
-SCHEMA = 1
+SCHEMA = 2            # 2: walks carry the reference pose SONIC tracks (ref), rooms their grade counts
+
+
+def grade_key(walk):
+    """One verdict per walk, as the site colours it (site/js/util.js grade): arrival by the robot's estimate is not
+    the whole story, so contact over 100 N and the final distance by simulator truth are graded too."""
+    if walk.get('outcome') == 'arrived':
+        if (walk.get('max_contact_n') or 0) > 100:
+            return 'contact'
+        if (walk.get('final_dist_m') or 0) > 0.6:
+            return 'away' if (walk.get('final_dist_estimate_m') or 0) > 0.6 else 'off'
+        return 'clean'
+    return walk.get('outcome') or 'unknown'
 
 
 def _ints(values, scale):
@@ -79,11 +91,20 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
     picked = frames[::STRIDE]
     if picked[-1] is not frames[-1]:
         picked.append(frames[-1])
-    q, est, tilt, force, dist, times = [], [], [], [], [], []
+    q, est, tilt, force, dist, times, ref = [], [], [], [], [], [], []
     phases = []
+    ref_basis = None
     for k, f in enumerate(picked):
         qpos = f['qpos']
         q += _ints(qpos[:3], 1000) + _ints(qpos[3:7], 1e4) + _ints(qpos[7:36], 1000)
+        # The reference SONIC is tracking at this tick (row 0 of its window), quantized like q. Its root position is
+        # the planner's, in the planner's frame, and SONIC never receives it; a frame without one stays null.
+        r = f.get('reference') or {}
+        if isinstance(r.get('position'), list) and isinstance(r.get('quaternion_wxyz'), list) and len(r.get('joints') or []) == 29:
+            ref.append(_ints(r['position'][:3], 1000) + _ints(r['quaternion_wxyz'][:4], 1e4) + _ints(r['joints'], 1000))
+            ref_basis = ref_basis or r.get('position_basis')
+        else:
+            ref.append(None)
         est += _ints((f.get('estimate') or {}).get('position', qpos[:3])[:2], 1000)
         h = f.get('health') or {}
         tilt.append(None if h.get('tilt_rad') is None else int(round(h['tilt_rad'] * 1000)))
@@ -129,10 +150,21 @@ def walk_data(world_id, goal_id, run, base_codes, base_heights):
             'final_dist_m': leg.get('final_dist_true_m'), 'final_dist_estimate_m': leg.get('final_dist_m'),
             'path_m': leg.get('path_m'), 'max_contact_n': leg.get('max_contact_n'), 'plans_n': leg.get('plans'),
             'fps': 50 / STRIDE, 'n': len(picked), 'time': times,
-            'q': q, 'est': est, 'tilt_mrad': tilt, 'contact_n': force, 'goal_cm': dist, 'phases': phases,
+            'q': q, 'ref': ref, 'ref_basis': ref_basis, 'est': est, 'tilt_mrad': tilt, 'contact_n': force, 'goal_cm': dist, 'phases': phases,
             'plans': plans, 'plan_starts': [[round(t * 0.02, 3), i] for t, i in starts] if starts else None,
             'lidar': lidar, 'map': map_steps, 'events': events,
             'rtf': report.get('worker_real_time_factor')}
+
+
+LIST_FIELDS = ['id', 'grade', 'dist_m', 'contact_n', 'final_m', 'duration_s']
+
+
+def walk_list(index):
+    """Every walk of a room in one row each, for the site's walk picker (no need to load the room to list it)."""
+    cells = {c['id']: c for c in index['cells']}
+    r = lambda v, d: None if v is None else round(float(v), d)
+    return [[gid, grade_key(x), r(math.dist(cells[gid]['xy'], index['start_xy']), 2), r(x['max_contact_n'], 0), r(x['final_dist_m'], 2), r(x['duration_s'], 1)]
+            for gid, x in sorted(index['walks'].items())]
 
 
 def world_index(world_id, base, runs_out):
@@ -294,7 +326,7 @@ def featured(out, worlds):
         facts['deferral_drift'] = {'walks': len(every), 'over_0_5m': sum(x[2]['moved_m'] > 0.5 for x in every),
                                    'max_m': c['moved_m'], 'max_held_s': c['held_s']}
         if c['moved_m'] > 0.5:
-            pick['drift'] = {'world': w, 'goal': d['goal_id'], 'label': 'Watch it walk away',
+            pick['drift'] = {'world': w, 'goal': d['goal_id'], 'label': 'Watch it walk away', 'at': c['t'],
                              'note': f"In this one the robot arrives at {c['t']:.1f} s and moves {c['moved_m']:.2f} m in the "
                                      f"{c['held_s']:.1f} s its stand is deferred" + (', until Studio forces it.' if any(e['type'] == 'stand_forced' for e in d['events']) else '.')
                                      + _ending(d)}
@@ -304,7 +336,7 @@ def featured(out, worlds):
             # The longest wait; among equal waits the one that stays put, so the drift example stays its own card.
             w, d, c = max(causes[cause], key=lambda x: (x[2]['held_s'], -x[2]['moved_m']))
             if c['held_s'] >= 0.5:
-                pick[key] = {'world': w, 'goal': d['goal_id'], 'label': label,
+                pick[key] = {'world': w, 'goal': d['goal_id'], 'label': label, 'at': c['t'],
                              'note': f"{len(causes[cause])} of {len(walks)} recorded walks deferred a stand this way (classified from "
                                      f"the recorded map and the room's boxes). In this one the stand waits {c['held_s']:.1f} s, from {c['t']:.1f} s"
                                      + (', until Studio forces it (a 20 s limit in simulation).' if any(e['type'] == 'stand_forced' for e in d['events']) else '.')
@@ -332,7 +364,8 @@ def featured(out, worlds):
                             'door_halfwidth_m': half_door}
         if best:
             d, ok = best
-            pick['doorway'] = {'world': 'doorway', 'goal': d['goal_id'], 'label': 'Watch it go through',
+            at = next((d['time'][k] for k in range(1, d['n']) if d['q'][36 * (k - 1)] < 2000 <= d['q'][36 * k]), None)
+            pick['doorway'] = {'world': 'doorway', 'goal': d['goal_id'], 'label': 'Watch it go through', 'at': at,
                                'note': f"{through} of {far} recorded walks to the far side went through the door; {clean} of them arrived without contact over 100 N."}
     # The beam: pelvis height under the beam's footprint against the same walk elsewhere.
     beams = [b for b in indexes.get('corridor', {}).get('boxes', []) if b['z_bottom'] > 0.3]
@@ -342,19 +375,29 @@ def featured(out, worlds):
         for w, d in walks:
             if w != 'corridor':
                 continue
-            under, other = [], []
+            under, other, planned, first = [], [], [], None
             for k in range(d['n']):
                 x, y, z = (d['q'][k * 36 + a] / 1000 for a in range(3))
-                (under if _box_distance([x, y], b) == 0 else other).append(z)
+                inside = _box_distance([x, y], b) == 0
+                (under if inside else other).append(z)
+                if inside and first is None:
+                    first = d['time'][k]
+                # The plan's pelvis under the beam: the reference root, where the reference itself is under it.
+                r = (d.get('ref') or [None] * d['n'])[k]
+                if r and _box_distance([r[0] / 1000, r[1] / 1000], b) == 0:
+                    planned.append(r[2] / 1000)
             if under and other:
-                dips.append((float(np.median(other) - min(under)), d, min(under), float(np.median(other))))
+                dips.append((float(np.median(other) - min(under)), d, min(under), float(np.median(other)),
+                             min(planned) if planned else None, first))
         clean = [x for x in dips if x[1]['outcome'] == 'arrived' and (x[1]['max_contact_n'] or 0) <= 100]
         facts['beam'] = {'walks_under': len(dips), 'clean': len(clean), 'beam_bottom_m': b['z_bottom'],
-                         'pelvis_under_m': [round(x[2], 3) for x in dips], 'pelvis_elsewhere_m': [round(x[3], 3) for x in dips]}
+                         'pelvis_under_m': [round(x[2], 3) for x in dips], 'pelvis_elsewhere_m': [round(x[3], 3) for x in dips],
+                         'planned_under_m': [None if x[4] is None else round(x[4], 3) for x in dips]}
         if dips:
-            dip, d, zu, zo = max(clean or dips, key=lambda x: x[0])
-            pick['beam'] = {'world': 'corridor', 'goal': d['goal_id'], 'label': 'Watch it pass under',
+            dip, d, zu, zo, zp, first = max(clean or dips, key=lambda x: x[0])
+            pick['beam'] = {'world': 'corridor', 'goal': d['goal_id'], 'label': 'Watch it pass under', 'at': first,
                             'note': f"This walk: lowest pelvis {zu:.2f} m under the beam against a median of {zo:.2f} m on the rest of the walk"
+                                    + (f"; the plan's lowest pelvis there was {zp:.2f} m" if zp is not None else '')
                                     + ('' if (d['max_contact_n'] or 0) <= 100 else f"; it also pushed against a wall with {d['max_contact_n']:.0f} N") + '.'}
     # Contact: the room where walks touch walls most, and one of its walks with a clear strike.
     touched = [(w, d) for w, d in walks if (d['max_contact_n'] or 0) > 100]
@@ -380,10 +423,95 @@ def featured(out, worlds):
         mine = sorted((d for w, d in touched if w == room), key=lambda d: d['max_contact_n'])
         if mine:
             d = mine[len(mine) // 2]
-            pick['contact'] = {'world': room, 'goal': d['goal_id'], 'label': 'Watch a walk that touches',
+            k = max(range(d['n']), key=lambda k: d['contact_n'][k] or 0)
+            pick['contact'] = {'world': room, 'goal': d['goal_id'], 'label': 'Watch a walk that touches', 'at': d['time'][k],
                                'note': f"This walk peaks at {d['max_contact_n']:.0f} N and is still reported as {d['outcome']} by the node."}
-    (out / 'featured.json').write_text(json.dumps({'examples': pick, 'facts': facts}, indent=1))
+    facts['execution'] = execution_facts(walks)
+    closer = closer_scenarios(walks, pick)
+    (out / 'featured.json').write_text(json.dumps({'examples': pick, 'facts': facts, 'closer': closer}, indent=1))
     return pick, facts
+
+
+def _phase_per_frame(d):
+    marks = d['phases'] + [[d['n'], None]]
+    out = [None] * d['n']
+    for (k0, p), (k1, _) in zip(marks, marks[1:]):
+        out[k0:k1] = [p] * (k1 - k0)
+    return out
+
+
+def execution(d):
+    """Planned against executed body while walking (RUN frames with a reference): how far the plan's pelvis is from
+    the robot's own estimate of its pelvis (both in the planner's frame: SONIC never receives the root position, it
+    tracks joints and orientation), the pelvis height gap (plan minus truth) and the RMS gap over the 29 joints."""
+    ref = d.get('ref') or []
+    lag, dz, rms = [], [], []
+    for k, phase in enumerate(_phase_per_frame(d)):
+        r = ref[k] if k < len(ref) else None
+        if phase != 'RUN' or not r:
+            continue
+        lag.append(math.hypot(r[0] / 1000 - d['est'][2 * k] / 1000, r[1] / 1000 - d['est'][2 * k + 1] / 1000))
+        dz.append(r[2] / 1000 - d['q'][36 * k + 2] / 1000)
+        j = (np.asarray(r[7:36], float) - np.asarray(d['q'][36 * k + 7:36 * k + 36], float)) / 1000
+        rms.append(float(np.sqrt(np.mean(j * j))))
+    return {'lag_m': lag, 'dz_m': dz, 'rms_rad': rms} if lag else None
+
+
+def execution_facts(walks):
+    """The execution gap over every recorded walk, pooled over walking frames, and per room."""
+    pooled, rooms, n = {'lag_m': [], 'dz_m': [], 'rms_rad': []}, {}, 0
+    for w, d in walks:
+        e = execution(d)
+        if not e:
+            continue
+        n += 1
+        for key in pooled:
+            pooled[key] += e[key]
+        rooms.setdefault(w, []).extend(e['lag_m'])
+    if not n:
+        return None
+    q = lambda v, p: round(float(np.percentile(v, p)), 3)
+    return {'walks': n, 'frames': len(pooled['lag_m']), 'fps': 50 / STRIDE,
+            'lag_m': {'median': q(pooled['lag_m'], 50), 'p95': q(pooled['lag_m'], 95)},
+            'pelvis_dz_m': {'median': q(pooled['dz_m'], 50), 'p5': q(pooled['dz_m'], 5), 'p95': q(pooled['dz_m'], 95)},
+            'joint_rms_deg': {'median': round(math.degrees(q(pooled['rms_rad'], 50)), 1), 'p95': round(math.degrees(q(pooled['rms_rad'], 95)), 1)},
+            'lag_by_room_m': {w: q(v, 50) for w, v in rooms.items()}}
+
+
+def closer_scenarios(walks, pick):
+    """Walks for the split views ("Take a closer look"): where to start, what to compare and a caption from the data."""
+    out = []
+    by_id = {(w, d['goal_id']): d for w, d in walks}
+    # Truth against estimate: the walk that arrived by its estimate and ends furthest from the goal by truth.
+    off = [(w, d) for w, d in walks if grade_key(d) == 'off']
+    if off:
+        w, d = max(off, key=lambda x: x[1]['final_dist_m'])
+        k = d['n'] - 1
+        error = [math.dist(d['q'][36 * i:36 * i + 2], d['est'][2 * i:2 * i + 2]) / 1000 for i in range(d['n'])]
+        arrived = next((e for e in d['events'] if e['type'] == 'arrived'), None)
+        deferred = next((e for e in d['events'] if e['type'] == 'stand_deferred'), None)
+        text = (f"node.py's arrival rule uses the robot's own estimate: within 0.4 m of the goal."
+                + (f" It arrived at {arrived['t']:.1f} s with its estimate {arrived['dist']:.2f} m from the goal." if arrived and arrived.get('dist') is not None else '')
+                + (f" Its stand was then deferred and it kept moving." if deferred else '')
+                + f" At the end it is {d['final_dist_estimate_m']:.2f} m from the goal by its estimate and {d['final_dist_m']:.2f} m by simulator truth;"
+                  f" the estimate is {error[k]:.2f} m off there (at most {max(error):.2f} m during the walk).")
+        out.append({'id': 'estimate', 'mode': 'estimate', 'world': w, 'goal': d['goal_id'], 'at': 0,
+                    'title': 'Arrived by its estimate', 'chip': 'Truth vs estimate', 'caption': text})
+    for key, title, chip, text in (
+            ('contact', 'At a wall end', 'Wall end',
+             'Where the walk turns into the opening at the end of a wall. Compare where the plan puts the body with where the body goes.'),
+            ('beam', 'Under the beam', 'Low beam', 'The beam hangs below standing height. Compare how low the plan puts the pelvis with how low the body goes.'),
+            ('doorway', 'Through the door', 'Tight passage', 'A 1 m door in a 2 m wall. Compare the plan body with the body as it goes through.'),
+            ('drift', 'A deferred stand walks away', 'Deferred stand',
+             "The node defers its stand and holds the last plan's final frame. The plan body stays put; the robot keeps moving.")):
+        p = pick.get(key)
+        if not p:
+            continue
+        d = by_id.get((p['world'], p['goal']))
+        at = p.get('at')
+        out.append({'id': key, 'mode': 'body', 'world': p['world'], 'goal': p['goal'], 'at': max(0.0, round((at or 0) - 1.5, 2)),
+                    'title': title, 'chip': chip, 'caption': text + ' ' + p['note']})
+    return [x for x in out if x['mode'] == 'body'] + [x for x in out if x['mode'] != 'body']
 
 
 def main(argv=None):
@@ -401,7 +529,9 @@ def main(argv=None):
             outcomes[walk['outcome']] = outcomes.get(walk['outcome'], 0) + 1
         catalog.append({'id': w, 'title': index['title'], 'blurb': index['blurb'], 'walks': len(index['walks']), 'outcomes': outcomes,
                         'contact': sum((x['max_contact_n'] or 0) > 100 for x in index['walks'].values()),
-                        'off_by_truth': sum(x['outcome'] == 'arrived' and (x['final_dist_m'] or 0) > 0.6 for x in index['walks'].values())})
+                        'off_by_truth': sum(x['outcome'] == 'arrived' and (x['final_dist_m'] or 0) > 0.6 for x in index['walks'].values()),
+                        'grades': {k: sum(grade_key(x) == k for x in index['walks'].values()) for k in sorted({grade_key(x) for x in index['walks'].values()})},
+                        'list_fields': LIST_FIELDS, 'list': walk_list(index)})
         print(w, len(index['walks']), outcomes)
     (args.out / 'worlds.json').write_text(json.dumps({'v': SCHEMA, 'worlds': catalog}, indent=1))
     print('featured', featured(args.out, [c['id'] for c in catalog]))

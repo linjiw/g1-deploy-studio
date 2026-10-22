@@ -2,6 +2,8 @@
 # Assemble the static site: site/ + three.js from node_modules + the exported data and the tour video.
 #   tools/site/build.sh <out dir> <site-data dir> [media dir]
 # The data and media are not in Git (they are generated, see docs/SITE.md); CI downloads them from a release.
+# NEXT_LOCAL=<json> adds material to the next-step page that is not published (a local build only: never in CI);
+# without it the page gets an empty data/next-local.json and shows only what Studio measured.
 set -euo pipefail
 OUT=${1:?out dir}
 DATA=${2:?site-data dir}
@@ -23,5 +25,13 @@ cp "$THREE/examples/jsm/utils/BufferGeometryUtils.js" "$OUT/vendor/three/addons/
 # Data: everything the exporter wrote except the local mesh list (absolute source paths).
 (cd "$DATA" && tar --exclude='robot-meshes.txt' --exclude='*.tmp' -cf - .) | tar -xf - -C "$OUT/data"
 if [ -n "$MEDIA" ] && [ -d "$MEDIA" ]; then cp -r "$MEDIA/." "$OUT/media/"; fi
+if [ -n "${NEXT_LOCAL:-}" ]; then
+  [ -z "${CI:-}" ] || { echo "NEXT_LOCAL is for local builds only" >&2; exit 1; }
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$NEXT_LOCAL"
+  cp "$NEXT_LOCAL" "$OUT/data/next-local.json"
+  echo "next-local: $NEXT_LOCAL (local build: do not publish $OUT)"
+else
+  echo '{}' > "$OUT/data/next-local.json"
+fi
 touch "$OUT/.nojekyll"
 echo "site: $OUT ($(du -sh "$OUT" | cut -f1))"

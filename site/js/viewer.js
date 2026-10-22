@@ -1,4 +1,4 @@
-// The 3D view: one WebGL context for the whole page, rendered only when something changed.
+// The 3D view: rendered only when something changed, on a transparent canvas over the stage's backdrop.
 // World frame as in Studio and MuJoCo: right-handed, Z up, metres; quaternions w, x, y, z.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -8,59 +8,58 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 
 export const COLORS = {
-  bg: 0x0b1117, floor: 0x111a21, grid: 0x1d2a33, teal: 0x56d9d0, amber: 0xefbb70, red: 0xf07870, violet: 0xc4a0d9,
-  green: 0x7be0a5, box: 0x8fa4b3, white: 0xe6eef2, pink: 0xff6fb5, blue: 0x7fb4ff,
+  teal: 0x56d9d0, amber: 0xefbb70, red: 0xf07870, violet: 0xc4a0d9,
+  green: 0x7be0a5, box: 0x8fa4b3, white: 0xe6eef2, pink: 0xff6fb5, blue: 0x7fb4ff, ghost: 0xff8fcf,
 };
 // The robot's map, one texel per 5 cm memory cell (Studio's palette): never observed cells stay transparent.
 const MAP_RGBA = { 1: [38, 92, 96, 150], 2: [239, 187, 112, 215], 3: [240, 120, 112, 235], 4: [196, 160, 217, 215] };
 const VOXEL_RGB = { 2: new THREE.Color(0xefbb70), 3: new THREE.Color(0xf07870), 4: new THREE.Color(0xc4a0d9) };
 const MAX_VOXELS = 24000;
+const FLOOR_M = 32;   // the backdrop floor: a square this wide, fading to transparent at its edge
 
-const tmp = { q: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), m: new THREE.Matrix4(), s: new THREE.Vector3(), p: new THREE.Vector3() };
+const tmp = { q: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), m: new THREE.Matrix4(), s: new THREE.Vector3(), p: new THREE.Vector3(), size: new THREE.Vector2() };
 
 export class Viewer {
   constructor(container, { onPick, onHover } = {}) {
     this.container = container;
-    const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'default' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'default' });
+    renderer.setClearColor(0x000000, 0);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
     const scene = this.scene = new THREE.Scene();
-    scene.background = new THREE.Color(COLORS.bg);
-    scene.fog = new THREE.Fog(COLORS.bg, 14, 30);
-    const camera = this.camera = new THREE.PerspectiveCamera(38, 1, 0.05, 80);
+    const camera = this.camera = new THREE.PerspectiveCamera(36, 1, 0.05, 80);
     camera.up.set(0, 0, 1);
     camera.position.set(-3.2, -4.6, 3.6);
     const controls = this.controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(1.2, 0, 0.4);
     controls.enableDamping = true; controls.dampingFactor = 0.12;
     controls.maxPolarAngle = Math.PI * 0.49; controls.minDistance = 1.2; controls.maxDistance = 22;
-    // OrbitControls sets touch-action: none on the canvas; on touch screens let a vertical swipe scroll the page.
-    if (window.matchMedia('(pointer: coarse)').matches) renderer.domElement.style.touchAction = 'pan-y';
     controls.addEventListener('change', () => this.dirty());
     controls.addEventListener('start', () => this.start());
-    scene.add(new THREE.HemisphereLight(0xcfe8f0, 0x1a2228, 1.15));
+    scene.add(new THREE.HemisphereLight(0xdcecf4, 0x1a2228, 1.2));
     const sun = this.sun = new THREE.DirectionalLight(0xffffff, 1.6);
     sun.position.set(-3, -4, 8); sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     Object.assign(sun.shadow.camera, { left: -2.5, right: 2.5, top: 2.5, bottom: -2.5, near: 0.5, far: 20 });
     sun.shadow.bias = -0.0005;
     scene.add(sun, sun.target);
-    const floor = this.floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshStandardMaterial({ color: COLORS.floor, roughness: 0.95 }));
-    floor.receiveShadow = true; floor.name = 'floor';
+    const floor = this.floor = new THREE.Mesh(new THREE.PlaneGeometry(FLOOR_M, FLOOR_M),
+      new THREE.MeshStandardMaterial({ map: floorTexture(renderer), transparent: true, depthWrite: false, roughness: 1, metalness: 0 }));
+    floor.receiveShadow = true; floor.name = 'floor'; floor.renderOrder = -1;
     scene.add(floor);
     this.groups = {};
-    for (const name of ['world', 'map', 'voxels', 'lidar', 'route', 'plan', 'trail', 'markers', 'outcomes', 'robot']) {
+    for (const name of ['world', 'map', 'voxels', 'lidar', 'route', 'plan', 'trail', 'markers', 'outcomes', 'robot', 'ghost']) {
       const g = new THREE.Group(); g.name = name; this.groups[name] = g; scene.add(g);
     }
     this.lineMaterials = [];
     this.needsRender = true; this.running = false; this.visible = true;
-    this.onFrame = null;
-    this.robot = null;
+    this.onFrame = null;     // (now) => animating?  called every frame while running
+    this.onRender = null;    // () => void            called after every drawn frame (to place DOM chips)
+    this.views = null;       // split screen: [{ x, w, before(), after() }], x and w in fractions of the width
+    this.robot = null; this.ghosts = {};
     this.follow = false;
-    this._resize = () => this.resize();
-    new ResizeObserver(this._resize).observe(container);
+    new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
     this._pickSetup(onPick, onHover);
     new IntersectionObserver(entries => { this.visible = entries[0].isIntersecting; if (this.visible) this.start(); }, { threshold: 0.01 }).observe(container);
@@ -69,27 +68,54 @@ export class Viewer {
 
   // ----- render loop: rAF only while visible; draw only when dirty, damping or a frame callback asks
   start() {
-    if (this.running) return;
+    if (this.running || this.disposed) return;
     this.running = true;
     let idle = 0;
     const tick = now => {
-      if (!this.visible) { this.running = false; return; }
+      if (!this.visible || this.disposed) { this.running = false; return; }
       const animating = this.onFrame ? this.onFrame(now) : false;
       const moved = this.controls.update();
-      if (this.needsRender || moved || animating) { this.renderer.render(this.scene, this.camera); this.needsRender = false; idle = 0; }
+      if (this.needsRender || moved || animating) { this.render(); this.needsRender = false; idle = 0; }
       // Nothing moved for half a second (damping settled, no walk playing): stop until something changes.
       else if (++idle > 30) { this.running = false; return; }
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }
+  render() {
+    const r = this.renderer, size = r.getDrawingBufferSize(tmp.size), pr = r.getPixelRatio();
+    if (!this.views) {
+      r.setScissorTest(false); r.setViewport(0, 0, size.x / pr, size.y / pr);
+      r.render(this.scene, this.camera);
+    } else {
+      const w = size.x / pr, h = size.y / pr;
+      r.setScissorTest(true);
+      for (const v of this.views) {
+        const x = Math.round(v.x * w), vw = Math.round(v.w * w);
+        r.setViewport(x, 0, vw, h); r.setScissor(x, 0, vw, h);
+        v.before?.(); r.render(this.scene, this.camera); v.after?.();
+      }
+      r.setScissorTest(false);
+    }
+    this.onRender?.();
+  }
   dirty() { this.needsRender = true; if (!this.running && this.visible) this.start(); }
   resize() {
     const w = this.container.clientWidth || 1, h = this.container.clientHeight || 1;
+    // Big canvases draw fewer device pixels per CSS pixel: about 3.5 million at most.
+    this.renderer.setPixelRatio(Math.max(1, Math.min(window.devicePixelRatio || 1, 1.75, Math.sqrt(3.5e6 / (w * h)))));
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
-    for (const m of this.lineMaterials) m.resolution.set(w, h);
+    const share = this.views ? this.views[0].w : 1;
+    this.camera.aspect = w * share / h; this.camera.updateProjectionMatrix();
+    for (const m of this.lineMaterials) m.resolution.set(w * share, h);
     this.dirty();
+  }
+  setViews(views) { this.views = views; this.resize(); }
+  // A world point in CSS pixels from the container's top left, or null when it is behind the camera.
+  project(x, y, z = 0) {
+    const v = tmp.p.set(x, y, z).project(this.camera);
+    if (v.z > 1) return null;
+    return [(v.x + 1) / 2 * this.container.clientWidth, (1 - v.y) / 2 * this.container.clientHeight];
   }
 
   _pickSetup(onPick, onHover) {
@@ -106,15 +132,15 @@ export class Viewer {
     el.addEventListener('pointerup', e => {
       if (!down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-      if (moved < 7 && performance.now() - down.t < 600 && onPick) { const xy = toWorld(e); if (xy) onPick(xy); }
+      if (moved < 7 && performance.now() - down.t < 600 && onPick && !this.views) { const xy = toWorld(e); if (xy) onPick(xy, e); }
       down = null;
     });
     el.addEventListener('pointermove', e => {
-      if (!onHover || e.pointerType === 'touch' || down) return;
+      if (!onHover || e.pointerType === 'touch' || down || this.views) return;
       hoverPending = e;
       if (this._hoverQueued) return;
       this._hoverQueued = true;
-      requestAnimationFrame(() => { this._hoverQueued = false; const xy = toWorld(hoverPending); onHover(xy); });
+      requestAnimationFrame(() => { this._hoverQueued = false; onHover(toWorld(hoverPending)); });
     });
     el.addEventListener('pointerleave', () => onHover && onHover(null));
   }
@@ -143,11 +169,9 @@ export class Viewer {
   // ----- the real room (simulation geometry: shown only as the sim truth it is)
   setWorld(world) {
     clear(this.groups.world);
-    const b = world.bounds, w = b.max[0] - b.min[0], h = b.max[1] - b.min[1];
-    const grid = new THREE.GridHelper(Math.ceil(Math.max(w, h)) + 2, (Math.ceil(Math.max(w, h)) + 2) * 2, COLORS.grid, COLORS.grid);
-    grid.rotation.x = Math.PI / 2; grid.position.set((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, 0.001);
-    grid.material.transparent = true; grid.material.opacity = 0.55;
-    this.groups.world.add(grid);
+    const b = world.bounds;
+    // The floor's grid is drawn in whole metres: centre it on a whole metre near the room.
+    this.floor.position.set(Math.round((b.min[0] + b.max[0]) / 2), Math.round((b.min[1] + b.max[1]) / 2), 0);
     this.boxes = new THREE.Group();
     for (const box of world.boxes) this.boxes.add(boxMesh(box));
     this.groups.world.add(this.boxes);
@@ -181,15 +205,14 @@ export class Viewer {
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false }));
       mesh.renderOrder = 1; mesh.userData.n = n;
       this.groups.map.add(mesh); this.mapMesh = mesh;
-      const size = n * map.res_m;
-      mesh.scale.set(size, size, 1);
-      mesh.position.set(map.lo[0] + (n - 1) * map.res_m / 2, map.lo[1] + (n - 1) * map.res_m / 2, 0.005);
+      mesh.scale.set(n * map.res_m, n * map.res_m, 1);
       clear(this.groups.voxels);
       const voxels = this.voxels = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.7, transparent: true, opacity: 0.9 }), MAX_VOXELS);
       voxels.count = 0; voxels.frustumCulled = false;
       voxels.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_VOXELS * 3), 3);
       this.groups.voxels.add(voxels);
     }
+    this.mapMesh.position.set(map.lo[0] + (n - 1) * map.res_m / 2, map.lo[1] + (n - 1) * map.res_m / 2, 0.005);
     this._paintAll();
   }
   applyMapChanges(step) {  // {g: gaps between flat indices, v: code or code * 1000 + height cm}
@@ -230,14 +253,8 @@ export class Viewer {
     v.count = count;
     v.instanceMatrix.needsUpdate = true; if (v.instanceColor) v.instanceColor.needsUpdate = true;
   }
-  mapCodeAt(xy) {
-    const m = this.map; if (!m) return null;
-    const i = Math.round((xy[0] - m.lo[0]) / m.res), j = Math.round((xy[1] - m.lo[1]) / m.res);
-    if (i < 0 || j < 0 || i >= m.n || j >= m.n) return null;
-    return { code: m.codes[i * m.n + j], height_cm: m.heights[i * m.n + j] };
-  }
 
-  // ----- LiDAR returns (cm integers, x y z triples) and the sensor origin
+  // ----- LiDAR returns (cm integers, x y z triples)
   setLidar(snapshot) {
     const g = this.groups.lidar;
     if (!this.lidarPoints) {
@@ -289,7 +306,7 @@ export class Viewer {
   setOutcomes(cells, colorOf) {  // recorded goals as small floor discs, coloured by outcome
     clear(this.groups.outcomes);
     if (!cells?.length) { this.dirty(); return; }
-    const mesh = new THREE.InstancedMesh(new THREE.CircleGeometry(0.11, 20), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.7, depthWrite: false }), cells.length);
+    const mesh = new THREE.InstancedMesh(new THREE.CircleGeometry(0.075, 20), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.8, depthWrite: false }), cells.length);
     cells.forEach((c, k) => {
       tmp.m.makeTranslation(c.xy[0], c.xy[1], 0.009);
       mesh.setMatrixAt(k, tmp.m); mesh.setColorAt(k, new THREE.Color(colorOf(c)));
@@ -298,18 +315,16 @@ export class Viewer {
     this.groups.outcomes.add(mesh);
     this.dirty();
   }
-
   dimOutcomes(dim) {
-    for (const m of this.groups.outcomes.children) m.material.opacity = dim ? 0.22 : 0.7;
+    for (const m of this.groups.outcomes.children) m.material.opacity = dim ? 0.25 : 0.8;
     this.dirty();
   }
 
-  // ----- the robot
-  async loadRobot(base) {
-    const [spec, index, bin] = await Promise.all([
-      fetch(`${base}/robot.json`).then(ok).then(r => r.json()),
-      fetch(`${base}/meshes.json`).then(ok).then(r => r.json()),
-      fetch(`${base}/meshes.bin`).then(ok).then(r => r.arrayBuffer())]);
+  // ----- the robot and its ghosts (the same model with another material)
+  async loadRobot(base, onProgress) {
+    const [spec, index] = await Promise.all([fetch(`${base}robot.json`).then(ok).then(r => r.json()), fetch(`${base}meshes.json`).then(ok).then(r => r.json())]);
+    const total = Math.max(...Object.values(index.meshes).map(m => m.offset + m.vertices * 6 + m.indices * 2));
+    const bin = await fetchBytes(`${base}meshes.bin`, total, onProgress);
     const geometries = {};
     for (const [name, m] of Object.entries(index.meshes)) {
       const q = new Uint16Array(bin, m.offset, m.vertices * 3), ind = new Uint16Array(bin, m.offset + m.vertices * 6, m.indices);
@@ -320,48 +335,38 @@ export class Viewer {
       g.setIndex(new THREE.BufferAttribute(new Uint16Array(ind), 1));
       geometries[name] = toCreasedNormals(g, Math.PI / 5);
     }
+    this._model = { spec, geometries };
     const materials = new Map();
-    const joints = [];
-    const body = node => {
-      const group = new THREE.Group(); group.name = node.name;
-      const restPosition = new THREE.Vector3(...node.position), restQuaternion = quat(node.quaternion_wxyz);
-      group.position.copy(restPosition); group.quaternion.copy(restQuaternion);
-      if (node.joint) {
-        const j = node.joint;
-        group.userData = { restPosition, restQuaternion, joint: j, axis: new THREE.Vector3(...j.axis).normalize(), pivot: new THREE.Vector3(...j.position) };
-        joints.push(group);
-      }
-      for (const g of node.geometries) {
-        if (g.type !== 'mesh' || !geometries[g.mesh]) continue;
-        const key = g.rgba.join(',');
-        if (!materials.has(key)) materials.set(key, new THREE.MeshStandardMaterial({ color: new THREE.Color(g.rgba[0], g.rgba[1], g.rgba[2]), roughness: 0.5, metalness: 0.25 }));
-        const mesh = new THREE.Mesh(geometries[g.mesh], materials.get(key));
-        mesh.position.fromArray(g.position); mesh.quaternion.copy(quat(g.quaternion_wxyz));
-        mesh.castShadow = true;
-        group.add(mesh);
-      }
-      for (const c of node.children) group.add(body(c));
-      return group;
-    };
-    const root = body(spec.root);
-    this.groups.robot.add(root);
-    this.robot = { root, joints, spec };
+    this.robot = buildRobot(spec, geometries, rgba => {
+      const key = rgba.join(',');
+      if (!materials.has(key)) materials.set(key, new THREE.MeshStandardMaterial({ color: new THREE.Color(rgba[0], rgba[1], rgba[2]), roughness: 0.5, metalness: 0.25 }));
+      return materials.get(key);
+    }, true);
+    this.groups.robot.add(this.robot.root);
     this.dirty();
     return this.robot;
+  }
+  ghost(name, { color = COLORS.ghost, opacity = 0.34 } = {}) {
+    if (this.ghosts[name]) return this.ghosts[name];
+    if (!this._model) return null;
+    const material = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3, roughness: 0.6, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 });
+    const g = buildRobot(this._model.spec, this._model.geometries, () => material, false);
+    g.material = material; g.root.visible = false;
+    this.groups.ghost.add(g.root);
+    this.ghosts[name] = g;
+    return g;
+  }
+  setGhost(name, qpos, style) {
+    const g = this.ghost(name, style);
+    if (!g) return;
+    g.root.visible = !!qpos;
+    if (qpos) poseRobot(g, qpos);
+    this.dirty();
   }
   // qpos: [x, y, z, qw, qx, qy, qz, 29 joint angles] in the model's qpos order (MuJoCo, named joints)
   setPose(qpos) {
     if (!this.robot) return;
-    for (const group of this.robot.joints) {
-      const d = group.userData, j = d.joint;
-      if (j.type === 'free') { group.position.set(qpos[0], qpos[1], qpos[2]); group.quaternion.set(qpos[4], qpos[5], qpos[6], qpos[3]); continue; }
-      const angle = qpos[j.qpos_index];
-      tmp.q.setFromAxisAngle(d.axis, angle);
-      group.quaternion.copy(d.restQuaternion).multiply(tmp.q);
-      tmp.v.copy(d.pivot).applyQuaternion(tmp.q);
-      tmp.w.copy(d.pivot).sub(tmp.v).applyQuaternion(d.restQuaternion);
-      group.position.copy(d.restPosition).add(tmp.w);
-    }
+    poseRobot(this.robot, qpos);
     // The shadow follows the robot; the camera too when following.
     this.sun.target.position.set(qpos[0], qpos[1], 0); this.sun.position.set(qpos[0] - 3, qpos[1] - 4, 8);
     if (this.follow) {
@@ -382,29 +387,99 @@ export class Viewer {
     if (mode === 'top') {
       this.controls.target.set((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, 0);
       const fov = this.camera.fov * Math.PI / 180, fit = Math.max(b.max[1] - b.min[1], (b.max[0] - b.min[0]) / this.camera.aspect);
-      this.camera.position.set(this.controls.target.x, this.controls.target.y - 0.01, fit / 2 / Math.tan(fov / 2) * 1.08);
+      this.camera.position.set(this.controls.target.x, this.controls.target.y - 0.01, fit / 2 / Math.tan(fov / 2) * 1.12);
     } else {
       this.controls.target.set(cx, cy, 0.3);
-      const d = span * (narrow ? 1.15 : 0.66) + 1.2;
-      this.camera.position.set(cx - d * 0.62, cy - d * 0.7, d * 0.58);
+      const d = span * (narrow ? 1.35 : 0.86) + 1.6;
+      this.camera.position.set(cx - d * 0.6, cy - d * 0.68, d * 0.6);
     }
     this.controls.update();
     this.dirty();
   }
   // Keep the viewing direction; move the target to the middle of the points and back off to see all of them.
-  focus(points) {
+  focus(points, { margin = 1.2 } = {}) {
     if (this.follow || !points.length) return;
     const cx = points.reduce((a, p) => a + p[0], 0) / points.length, cy = points.reduce((a, p) => a + p[1], 0) / points.length;
     const r = Math.max(1.6, ...points.map(p => Math.hypot(p[0] - cx, p[1] - cy)));
     const dir = tmp.v.copy(this.camera.position).sub(this.controls.target).normalize();
     const fov = this.camera.fov * Math.PI / 180, aspect = Math.min(1, this.camera.aspect);
-    const d = Math.min(this.controls.maxDistance, (r + 1.2) / Math.tan(fov / 2) / aspect * 0.95);
+    const d = Math.min(this.controls.maxDistance, (r + margin) / Math.tan(fov / 2) / aspect * 0.95);
     this.controls.target.set(cx, cy, 0.4);
     this.camera.position.copy(this.controls.target).addScaledVector(dir, d);
     this.controls.update();
     this.dirty();
   }
-  dispose() { this.renderer.dispose(); }
+  // Look at a point from a heading (radians, the camera's direction from the target), a pitch and a distance.
+  look(target, { yaw = -2.3, pitch = 0.42, distance = 3.2 } = {}) {
+    const z = target[2] ?? 0.6, c = Math.cos(pitch);
+    this.controls.target.set(target[0], target[1], z);
+    this.camera.position.set(target[0] + Math.cos(yaw) * c * distance, target[1] + Math.sin(yaw) * c * distance, z + Math.sin(pitch) * distance);
+    this.controls.update();
+    this.dirty();
+  }
+  dispose() {
+    this.disposed = true;
+    this.renderer.dispose();
+    this.renderer.forceContextLoss?.();
+    this.renderer.domElement.remove();
+  }
+}
+
+function buildRobot(spec, geometries, materialOf, shadows) {
+  const joints = [];
+  const body = node => {
+    const group = new THREE.Group(); group.name = node.name;
+    const restPosition = new THREE.Vector3(...node.position), restQuaternion = quat(node.quaternion_wxyz);
+    group.position.copy(restPosition); group.quaternion.copy(restQuaternion);
+    if (node.joint) {
+      const j = node.joint;
+      group.userData = { restPosition, restQuaternion, joint: j, axis: new THREE.Vector3(...j.axis).normalize(), pivot: new THREE.Vector3(...j.position) };
+      joints.push(group);
+    }
+    for (const g of node.geometries) {
+      if (g.type !== 'mesh' || !geometries[g.mesh]) continue;
+      const mesh = new THREE.Mesh(geometries[g.mesh], materialOf(g.rgba));
+      mesh.position.fromArray(g.position); mesh.quaternion.copy(quat(g.quaternion_wxyz));
+      mesh.castShadow = shadows;
+      group.add(mesh);
+    }
+    for (const c of node.children) group.add(body(c));
+    return group;
+  };
+  return { root: body(spec.root), joints, spec };
+}
+
+function poseRobot(robot, qpos) {
+  for (const group of robot.joints) {
+    const d = group.userData, j = d.joint;
+    if (j.type === 'free') { group.position.set(qpos[0], qpos[1], qpos[2]); group.quaternion.set(qpos[4], qpos[5], qpos[6], qpos[3]); continue; }
+    const angle = qpos[j.qpos_index];
+    tmp.q.setFromAxisAngle(d.axis, angle);
+    group.quaternion.copy(d.restQuaternion).multiply(tmp.q);
+    tmp.v.copy(d.pivot).applyQuaternion(tmp.q);
+    tmp.w.copy(d.pivot).sub(tmp.v).applyQuaternion(d.restQuaternion);
+    group.position.copy(d.restPosition).add(tmp.w);
+  }
+}
+
+// The backdrop floor: a dark slab with a half-metre grid that fades to transparent, so it melts into the stage.
+function floorTexture(renderer) {
+  const px = 1024, c = document.createElement('canvas');
+  c.width = c.height = px;
+  const g = c.getContext('2d'), per = px / FLOOR_M;
+  const fade = g.createRadialGradient(px / 2, px / 2, px * 0.1, px / 2, px / 2, px / 2);
+  fade.addColorStop(0, 'rgba(30, 38, 47, 1)'); fade.addColorStop(0.5, 'rgba(25, 32, 40, 0.92)'); fade.addColorStop(1, 'rgba(20, 26, 33, 0)');
+  g.fillStyle = fade; g.fillRect(0, 0, px, px);
+  g.globalCompositeOperation = 'source-atop';
+  for (let k = 0; k <= FLOOR_M * 2; k++) {
+    const at = Math.round(k * per / 2) + 0.5;
+    g.strokeStyle = k % 2 === 0 ? 'rgba(128, 152, 170, 0.34)' : 'rgba(128, 152, 170, 0.14)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(at, 0); g.lineTo(at, px); g.moveTo(0, at); g.lineTo(px, at); g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return t;
 }
 
 function paintCell(data, m, idx) {
@@ -424,6 +499,23 @@ function boxMesh(b) {
   mesh.castShadow = true; mesh.receiveShadow = true;
   mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: overhead ? 0xc9a8e6 : 0xb8c8d4, transparent: true, opacity: 0.75 })));
   return mesh;
+}
+
+// Bytes with progress (0..1). A server may compress on the wire, so progress counts decoded bytes against the size
+// the mesh index gives.
+async function fetchBytes(url, total, onProgress) {
+  const r = ok(await fetch(url));
+  if (!r.body || !onProgress) return r.arrayBuffer();
+  const reader = r.body.getReader(), out = new Uint8Array(total);
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (got + value.length > out.length) throw new Error(`${url}: larger than its index says`);
+    out.set(value, got); got += value.length;
+    onProgress(got / total);
+  }
+  return out.buffer;
 }
 
 const quat = q => new THREE.Quaternion(q[1], q[2], q[3], q[0]);

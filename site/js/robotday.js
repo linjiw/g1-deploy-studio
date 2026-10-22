@@ -24,7 +24,7 @@ const STEPS = [
 const ICON = { pass: '✓', warn: '!', block: '✕' };
 
 export async function initRobotDay(root) {
-  const world = decodeWorld(await json(`data/${WORLD}/index.json`));
+  const world = decodeWorld(await json(`${WORLD}/index.json`));
   const cells = world.cells.filter(c => c.walk && c.walk.outcome === 'arrived' && (c.walk.max_contact_n ?? 0) <= 100);
   const near = cells.filter(c => Math.hypot(c.xy[0] - world.start_xy[0], c.xy[1] - world.start_xy[1]) <= MAX_GOAL_M);
   const suggest = near.slice().sort((a, b) => Math.abs(Math.hypot(...a.xy) - 2.4) - Math.abs(Math.hypot(...b.xy) - 2.4))[0] ?? null;
@@ -300,7 +300,7 @@ export async function initRobotDay(root) {
     if (id === 'day-g') {
       if (ready().some(i => i.status === 'block')) { D.message = 'In this demo g is refused while the checklist blocks. On the robot nothing would stop it: that is why the operator reads the list.'; render(); return; }
       D.message = null;
-      D.walk = new Walk(await walkJson(`data/${WORLD}/g/${D.sent.id}.json`));
+      D.walk = new Walk(await walkJson(`${WORLD}/g/${D.sent.id}.json`));
       resetMap();
       D.t = 0; D.step = 5; render(); $('day-replay')?.focus({ preventScroll: true }); play(); return;
     }

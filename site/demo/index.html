@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#11171d">
+  <title>Navigate demo · G1 Deploy Studio</title>
+  <meta name="description" content="Pick a goal on a Unitree G1's own LiDAR map, read Studio's checks, press Go and watch a recorded simulated walk of the deploy stack: the robot, its estimate, its map, the plan and the pose its tracker is chasing.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://linjiw.github.io/g1-deploy-studio/demo/">
+  <meta property="og:title" content="G1 Deploy Studio · Navigate demo">
+  <meta property="og:description" content="Send a simulated Unitree G1 somewhere and watch the deploy stack walk it there: recorded walks, played in your browser.">
+  <meta property="og:image" content="https://linjiw.github.io/g1-deploy-studio/assets/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f1419'/%3E%3Ctext x='5' y='22' fill='%23fff' font-size='16' font-weight='700' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../css/base.css">
+  <link rel="stylesheet" href="../css/stage.css">
+  <script type="importmap">{"imports":{"three":"../vendor/three/three.module.min.js","three/addons/":"../vendor/three/addons/"}}</script>
+  <link rel="modulepreload" href="../vendor/three/three.module.min.js">
+  <link rel="modulepreload" href="../vendor/three/three.core.min.js">
+  <link rel="modulepreload" href="../js/demo.js">
+  <link rel="modulepreload" href="../js/viewer.js">
+  <link rel="preload" href="../data/meshes.bin" as="fetch" crossorigin>
+  <style>html, body { margin: 0; height: 100%; background: #0c1015; overflow: hidden; }</style>
+</head>
+<body>
+<main id="demo" class="stage" aria-label="Navigate demo">
+  <div class="boot" role="status" aria-live="polite"><div class="boot-card"><b data-boot="label">Loading three.js</b><div class="bar"><i></i></div><small>About 1 MB: three.js, the G1 model and a room. Every walk is a recording; your browser runs no policy.</small></div></div>
+  <noscript><p style="position:absolute;inset:0;display:grid;place-items:center;color:#ffd59a">The demo needs JavaScript and WebGL. <a href="../#tour" style="color:#fff">Watch the tour instead</a>.</p></noscript>
+</main>
+<script type="module">
+  import { boot } from '../js/stage.js';
+  boot(document.getElementById('demo'), { embedded: false, home: '../' }).then(d => { window.studioDemo = d; });
+</script>
+</body>
+</html>
