@@ -70,6 +70,11 @@ def worlds(narrow_width_m):
                    'goals': [[1.33, -0.2], [2.33, -0.25], [1.72, 0.8], [1.95, -1.3]]},
         'narrow': {'map': lambda: narrow_world(narrow_width_m), 'start_xy': [0.0, 0.0], 'start_yaw_rad': 0.0,
                    'goals': [[2.0, 0.0], [2.6, 0.18], [3.1, -0.18], [2.3, 0.0]]},
+        # A stop inside the passage while walking through it: the goal is past the exit and the walk timeout (Studio's
+        # stand-in for the operator's Stand, deterministic per seed) ends the walk mid-passage (x 1.2-3.6 m is reached
+        # about 2.5-7.5 s after Go at the deploy budget).
+        'narrow-stop': {'map': lambda: narrow_world(narrow_width_m), 'start_xy': [0.0, 0.0], 'start_yaw_rad': 0.0,
+                        'goals': [[4.3, 0.0]] * 4, 'leg_timeouts_s': [4.5, 5.5, 6.5, 7.5]},
     }
 
 
@@ -168,6 +173,9 @@ def run_walk(spec, out, min_mem_gb, walk_wall_s):
     done = folder / 'row.json'
     if done.is_file():
         return json.loads(done.read_text())
+    if (folder / 'run').exists():  # an interrupted session of this tool: start the walk again
+        import shutil
+        shutil.rmtree(folder / 'run')
     row = dict(spec, status=None, error=None)
     s = None
     try:
@@ -253,7 +261,7 @@ def pairing(rows):
     by = {}
     for row in rows:
         if row.get('pre_stand_sha256'):
-            by.setdefault((row['world'], tuple(row['goal_xy']), row['seed']), {})[row['stand_mode']] = row
+            by.setdefault((row['world'], row['index']), {})[row['stand_mode']] = row
     pairs = [v for v in by.values() if len(v) == len(STAND_MODES)]
     same = sum(len({r['pre_stand_sha256'] for r in v.values()}) == 1 for v in pairs)
     return {'pairs': len(pairs), 'identical_before_first_stand': same}
@@ -280,22 +288,23 @@ def plan(args):
         for i in range(args.walks):
             goal = w['goals'][i % len(w['goals'])]
             seed = args.seed0 + i // len(w['goals'])
+            timeout = w['leg_timeouts_s'][i % len(w['leg_timeouts_s'])] if 'leg_timeouts_s' in w else args.leg_timeout
             for mode in args.modes:
                 req = {'schema_version': 1, 'id': f'stand-{world}-{mode}-{i:02d}'.replace('_', '-'), 'map': m,
                        'start_xy': w['start_xy'], 'start_yaw_rad': w['start_yaw_rad'], 'seed': seed,
                        'planner': prof['planner'], 'latency': prof['latency'], 'actuators': prof['actuators'],
                        'odometry': prof['odometry'], 'map_mode': prof['map_mode'], 'stand_mode': mode,
-                       'goal_radius_m': 0.4, 'prescan_s': 0.5, 'initial_prescan_s': 1.0, 'leg_timeout_s': args.leg_timeout,
-                       'max_motion_s': args.leg_timeout + 20, 'idle_timeout_s': 600}
+                       'goal_radius_m': 0.4, 'prescan_s': 0.5, 'initial_prescan_s': 1.0, 'leg_timeout_s': timeout,
+                       'max_motion_s': timeout + 20, 'idle_timeout_s': 600}
                 specs.append({'world': world, 'stand_mode': mode, 'index': i, 'goal_xy': goal, 'seed': seed,
-                              'profile': args.profile, 'request': req})
+                              'leg_timeout_s': timeout, 'profile': args.profile, 'request': req})
     return specs
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--out', required=True, type=Path)
-    ap.add_argument('--worlds', nargs='+', default=['detour', 'narrow'], choices=['detour', 'narrow'])
+    ap.add_argument('--worlds', nargs='+', default=['detour', 'narrow', 'narrow-stop'], choices=['detour', 'narrow', 'narrow-stop'])
     ap.add_argument('--modes', nargs='+', default=list(STAND_MODES), choices=list(STAND_MODES))
     ap.add_argument('--walks', type=int, default=8, help='walks per world and stand mode')
     ap.add_argument('--seed0', type=int, default=0)
@@ -314,7 +323,8 @@ def main(argv=None):
     specs = plan(args)
     if args.dry_run:
         for s in specs:
-            print(f"{s['world']:7s} {s['stand_mode']:10s} w{s['index']:02d} goal {s['goal_xy']} seed {s['seed']} ({s['profile']})")
+            print(f"{s['world']:11s} {s['stand_mode']:10s} w{s['index']:02d} goal {s['goal_xy']} seed {s['seed']} "
+                  f"timeout {s['leg_timeout_s']:g} s ({s['profile']})")
         print(f'{len(specs)} sessions; {args.workers} at a time; MemAvailable now {mem_available_gb():.1f} GB')
         return 0
     args.out.mkdir(parents=True, exist_ok=True)
@@ -330,7 +340,7 @@ def main(argv=None):
                     rows.append(row)
                     log.write(json.dumps(row) + '\n')
                     log.flush()
-                    print(f"{row['world']:7s} {row['stand_mode']:10s} w{row['index']:02d}: {row['status']} {row.get('outcome')} "
+                    print(f"{row['world']:11s} {row['stand_mode']:10s} w{row['index']:02d}: {row['status']} {row.get('outcome')} "
                           f"stand-contacts {sum(bool(e.get('stand')) for e in row.get('contacts', []))} "
                           f"walk-contacts {sum(not e.get('stand') for e in row.get('contacts', []))}", flush=True)
             except KeyboardInterrupt:
