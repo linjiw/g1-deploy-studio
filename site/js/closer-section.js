@@ -24,13 +24,30 @@ export function initCloserSection({ chips, stage, caption, keep = () => true }) 
     await loaded;
     if (!list.length) return null;
     if (!starting) {
-      stage.querySelector('.poster').hidden = true;
-      starting = boot(stage, { scenarios: [current, ...list.filter(x => x !== current)] }, () => import('./closer.js').then(m => m.mountCloser))
-        .then(v => { view = v; window.studioCloser = v; return v; });
+      const poster = stage.querySelector('.poster');
+      poster.hidden = true;
+      starting = boot(stage, { scenarios: [current, ...list.filter(x => x !== current)] }, () => import('./closer.js').then(m => m.mountCloser), {
+        onStopped: () => { starting = null; view = null; window.studioCloser = null; poster.hidden = false; poster.querySelector('.start')?.focus({ preventScroll: true }); },
+      }).then(v => { view = v; window.studioCloser = v; return v; });
     }
     return starting;
   };
   stage.querySelector('[data-closer-start]').addEventListener('click', start);
+  // Any recorded walk, plan body against body, from its start (the demo's "Plan vs body" sends it here).
+  const showWalk = async (world, goal, title = 'Your walk') => {
+    await loaded;
+    if (!list) return;
+    const sc = { id: 'walk', mode: 'body', world, goal, at: 0.6, clip_s: 9, view: 'split', title, chip: 'Your walk',
+                 caption: 'The walk you chose in the demo, from just after its pre-scan: the plan body on the left, the body that followed it on the right. Use the timeline to move through the walk.' };
+    const i = list.findIndex(x => x.id === 'walk');
+    if (i >= 0) list[i] = sc; else list.unshift(sc);
+    chips.querySelector('[data-sc="walk"]')?.remove();
+    chips.insertAdjacentHTML('afterbegin', `<button data-sc="walk" aria-pressed="false">Your walk<small>plan · body</small></button>`);
+    show(sc, true);
+    if (!starting) { start(); return; }
+    await starting;
+    view?.load(sc);
+  };
   chips.addEventListener('click', async e => {
     const b = e.target.closest('[data-sc]');
     if (!b || !list) return;
@@ -40,5 +57,5 @@ export function initCloserSection({ chips, stage, caption, keep = () => true }) 
     await starting;
     view?.load(sc);
   });
-  return { loaded, start };
+  return { loaded, start, showWalk };
 }

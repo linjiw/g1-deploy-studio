@@ -262,12 +262,46 @@ await check('the page idles: no animation runs while its part is off screen', as
 await check('every section is built once the page is idle (Tab reaches them)', async () => {
   const fresh = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
   await fresh.goto(URL_);
-  for (const sel of ['#pipeline .node', '#day-steps button', '#findings-cards .finding', '#closer-chips [data-sc]', '#chapters button'])
+  for (const sel of ['#pipeline .node', '#day-steps button', '#findings-cards .finding', '#closer-chips [data-sc]', '#chapters button', '#atlas-chart svg .dot'])
     await fresh.waitForSelector(sel, { state: 'attached', timeout: 15000 });
   await fresh.context().close();
   return 'diagram, robot day, findings, scenarios and chapters built without scrolling';
 });
 
+await check('every walk, one dot: the chart plays the walk it names, and its counts open the demo', async () => {
+  const { page: a } = await open({ width: 1440, height: 900 }, 'atlas');
+  await a.evaluate(() => { document.documentElement.style.scrollBehavior = 'auto'; document.getElementById('atlas').scrollIntoView(); });
+  await a.waitForSelector('#atlas-chart svg .dot', { timeout: 15000 });
+  const dots = await a.locator('#atlas-chart svg .dot').count();
+  if (dots !== totalWalks) throw new Error(`${dots} dots for ${totalWalks} walks`);
+  await a.click('#atlas-chart [data-metric="contact"]');
+  await a.focus('#atlas-chart svg'); await a.keyboard.press('End');
+  const named = await a.evaluate(() => document.querySelector('#atlas-chart .atlas-read a.watch').getAttribute('href'));
+  await a.keyboard.press('Enter');
+  await a.waitForFunction(() => window.studioDemo?.S.mode === 'playing', null, { timeout: 60000 });
+  const playing = await a.evaluate(() => `#try/${window.studioDemo.S.worldId}/${window.studioDemo.S.walk.goal_id}/play`);
+  if (playing !== named) throw new Error(`the chart named ${named}, the demo plays ${playing}`);
+  // From the result, the same walk in the split view.
+  await a.evaluate(() => { const d = window.studioDemo; d.seek(d.S.walk.duration); });
+  await a.click('#demo-stage [data-act="compare"]');
+  await a.waitForFunction(w => window.studioCloser?.S.scenario?.id === 'walk' && `#try/${window.studioCloser.S.world.id}/${window.studioCloser.S.walk.goal_id}/play` === w, playing, { timeout: 60000 });
+  // Stop: the posters come back and no WebGL canvas is left.
+  await a.click('#closer-stage [data-el="stop"]');
+  await a.evaluate(() => document.querySelector('#demo-stage [data-el="stop"]').click());
+  const left = await a.evaluate(() => ({ canvases: document.querySelectorAll('#demo-stage canvas, #closer-stage canvas').length, posters: [...document.querySelectorAll('#demo-stage .poster, #closer-stage .poster')].filter(p => !p.hidden).length }));
+  if (left.canvases || left.posters !== 2) throw new Error(`after Stop: ${JSON.stringify(left)}`);
+  // A count in the outcome table opens the room menu on exactly those walks.
+  await a.evaluate(() => document.getElementById('findings').scrollIntoView());
+  await a.waitForSelector('#outcome-table tfoot button.cell');
+  const cell = a.locator('#outcome-table tfoot button.cell').first();
+  const want = Number(await cell.innerText());
+  await cell.click();
+  await a.waitForFunction(() => window.studioDemo && !window.studioDemo.el.picker.hidden, null, { timeout: 60000 });
+  const rows = await a.locator('#demo-stage .walks [data-walk]').count();
+  await a.context().close();
+  if (rows !== want) throw new Error(`the table says ${want}, the room menu lists ${rows}`);
+  return `${dots} dots; Enter played ${playing}; Plan vs body opened it; Stop left ${left.canvases} canvases; a count of ${want} opened ${rows} walks`;
+});
 await check('next step: Studio-measured numbers only, the split view starts', async () => {
   const { page: next } = await open({ width: 1440, height: 900 }, 'next', 'next/');
   await next.waitForSelector('#numbers-cards .hl', { timeout: 15000 });

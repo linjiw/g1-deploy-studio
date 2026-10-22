@@ -4,7 +4,7 @@
 
 | Page | What it is |
 |---|---|
-| `/` | The project page: a demo slot that loads on **Start**, the highlights with the tour video, a split view (*Take a closer look*), the system diagram, the robot day, the findings with the outcome table, an FAQ with metric definitions, and a pointer to the next step |
+| `/` | The project page: a demo slot that loads on **Start** (and frees its memory on **Stop**), the highlights with the tour video, *every walk, one dot*, a split view (*Take a closer look*), the system diagram, the robot day, the findings with the outcome table, an FAQ with metric definitions, and a pointer to the next step |
 | `/demo/` | The Navigate demo, full-bleed. The main page's slot is the same app, embedded |
 | `/next/` | The execution gap: the plan body against the executed body, measured by Studio in its own recordings |
 
@@ -23,16 +23,27 @@ Owner decision, 2026-10-21, confirmed 2026-10-22 ("Recorded only, live in local 
 The 3D view fills the stage; the chrome floats over it and lets clicks through except on its controls.
 
 - **Top left:** the layer toggles, which are also the legend: Robot, Plan body, Its map, LiDAR, Plan, Real room (ghost, solid, off) and Outcomes. `?` opens the full legend and the keys.
-- **At the robot:** a hint, *Click the floor. It has to find its own way.*, which goes away after the first goal.
+- **At the robot:** a hint, *Click the floor. It has to find its own way.*, which goes away after the first goal. Above the dock, until the first walk plays, the operator's three steps light up in turn: pick a goal, send it, Go.
 - **At the goal:** Studio's six goal checks (`studio/goal_check.py`, precomputed for every grid cell). The chip shows the verdict, and expands to all six checks. A passing spot snaps to the nearest recorded goal. **Send goal** stages it ("sent, read back, verified"); **Go** (or `g`) plays the recorded walk. On narrow stages the chip is a sheet above the dock.
 - **Bottom:** the dock, with new goal, play, Go, the timeline with phase bands and events, speed, the room menu and the camera (orbit, top, follow).
 - **The room menu:** each room as a folder with its walks and a bar of their grades, plus **Went wrong**: every walk not graded clean, across rooms, worst first. Filters: clean, flagged, failed. **Pick one for me** plays a random walk from the current list.
 - **Headlines:** a large line at each phase change and at the events that matter (pre-scan, walking, arrived with the distance, stand deferred, stand forced, E-stop, fall, the final grade), also read to screen readers.
 - **The walk:** the robot (simulator truth), its own estimate (the blue ring), its LiDAR returns, the planner's map growing cell by cell, the plan it is tracking, the path walked, and the **plan body**: the reference pose SONIC is chasing, as a pink ghost. A readout shows the estimated distance to the goal, the tilt, contact, how far the plan body is, and the planner's rule.
 - **Keys:** `g` Go, Space pause, `r` or Esc new goal, ← → 1 s (Shift: one frame), `n` the room menu, `1`–`5` rooms, `b` `m` `l` `p` `w` `o` `v` layers, `c` camera, `f` follow, `?` legend.
+- **The result:** the grade, the numbers, and Replay, New goal, **Plan vs body** (this walk in the main page's split view, `#closer/<room>/<goal>`), **Copy link** and Went wrong.
+- **Stop** (in the page's slot): tears the demo down (its WebGL context, listeners and observers) and brings the poster back.
 - **Links:** `demo/#<room>/<goal>[/play[@<seconds>]]` opens a walk, and plays it from a moment. On the main page the same path follows `#try/`. The findings link to their example walks this way, two seconds before the moment they are about.
 
 Each walk is graded from its data: *arrived*, *arrived with contact* (over 100 N), *arrived by its estimate, off by truth* (more than 0.6 m by truth), *arrived, then moved away* (more than 0.6 m by truth and by its estimate at the end, as after a deferred stand that drifts), or the node's outcome. The rule is in `site/js/util.js` `gradeKey` and `tools/site/export.py` `grade_key`. `tools/site/check.mjs` checks the page against the raw walk.
+
+## Every walk, one dot
+
+`site/js/atlas.js` draws every recorded walk from `worlds.json`'s `list` rows. The x axis is how far the goal was from the start mark. The y axis is the visitor's choice of measure: the final distance from the goal by simulator truth (log scale, with the 0.4 m radius and the 0.6 m flag), the peak contact (log scale, with the 100 N flag and a "no contact" band) or the walk time.
+
+- Room chips filter the chart.
+- Moving across it, or focusing it and using the arrow keys, reads a walk out under the chart.
+- A click, or Enter, plays that walk in the demo.
+- The outcome table's counts open the demo's room menu on exactly those walks (a room and a grade; for all rooms, the Went wrong folder).
 
 ## Take a closer look: the split view
 
@@ -41,7 +52,7 @@ Each walk is graded from its data: *arrived*, *arrived with contact* (over 100 N
 - **Plan body vs executed body.** The left half shows the plan body, the right half the simulated G1. Each half's camera follows its own pelvis from the same direction, so posture compares without the lag. **Overlay** puts both in one view, so the lag shows.
 - **Truth vs estimate.** The robot where it is, and where it thinks it is. They are centimetres apart, so this one starts overlaid.
 
-The scenarios are picked from the data by the exporter (`featured.json` `closer`): a wall end with contact, the low beam, the 1 m door, a deferred stand that walks away, and the walk that arrived by its estimate but is off by truth. Each has a caption written from that walk's numbers. The walls are drawn as glass so they never hide a body.
+The scenarios are picked from the data by the exporter (`featured.json` `closer`): a wall end with contact, the low beam, the 1 m door, a deferred stand that walks away, and the walk that arrived by its estimate but is off by truth. Each has a caption written from that walk's numbers. The walls are drawn as glass so they never hide a body. A walk opened from the demo's result appears as *Your walk* and plays whole. **Stop** frees the split view.
 
 ## The next-step page
 

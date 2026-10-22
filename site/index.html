@@ -28,8 +28,9 @@
 <header class="top">
   <a class="brand" href="#top"><span class="mark">G1</span><span>Deploy Studio</span></a>
   <nav aria-label="Sections">
-    <a href="#try">Demo</a><a href="#highlights">Highlights</a><a href="#closer">Closer look</a><a href="#how">How it works</a><a href="#robot-day">Robot day</a><a href="#findings">Findings</a><a href="#faq">FAQ</a><a href="next/">Next step</a>
+    <a href="#try">Demo</a><a href="#highlights">Highlights</a><a href="#atlas">Every walk</a><a href="#closer">Closer look</a><a href="#how">How it works</a><a href="#robot-day">Robot day</a><a href="#findings">Findings</a><a href="#faq">FAQ</a><a href="next/">Next step</a>
   </nav>
+  <details class="menu"><summary aria-label="Sections">Menu</summary><nav aria-label="Sections (menu)"><a href="#try">Demo</a><a href="#highlights">Highlights</a><a href="#atlas">Every walk</a><a href="#closer">Closer look</a><a href="#how">How it works</a><a href="#robot-day">Robot day</a><a href="#findings">Findings</a><a href="#faq">FAQ</a><a href="next/">Next step</a></nav></details>
   <a class="gh" href="https://github.com/linjiw/g1-deploy-studio">GitHub</a>
 </header>
 
@@ -42,6 +43,7 @@
 </section>
 
 <section id="try" class="slot" aria-label="Navigate demo">
+  <p class="tool-hint">Click the floor of a room to pick a goal, then <b>Send</b> and <b>Go</b>. Or open the room menu and pick a recorded walk.</p>
   <div class="stage embedded" id="demo-stage" data-tour="#tour">
     <div class="poster">
       <img src="assets/hero.jpg" width="1200" height="900" alt="A recorded walk: the G1 weaving between three walls, over the map its LiDAR built" fetchpriority="high">
@@ -76,6 +78,15 @@
       <ol class="chapters" id="chapters" aria-label="Chapters"></ol>
     </div>
   </div>
+</section>
+
+<section id="atlas">
+  <div class="section-head">
+    <p class="eyebrow">Every walk</p>
+    <h2>One dot per walk. Click one to watch it.</h2>
+    <p>Each dot is one recorded walk: how far its goal was from the start mark, against how it ended. Switch the measure and the room; move across the chart, or focus it and use the arrow keys, to read a walk.</p>
+  </div>
+  <div class="card atlas" id="atlas-chart"></div>
 </section>
 
 <section id="closer">
@@ -132,7 +143,7 @@
   <div class="card table-card">
     <h3>Every walk, by how it ended</h3>
     <div class="table-wrap"><table class="outcomes" id="outcome-table"><caption class="sr-only">Recorded walks per room by grade</caption></table></div>
-    <p class="fineprint">One grade per walk, the first that applies: a fall or E-stop, then contact over 100 N<sup><a href="#fn-contact">2</a></sup>, then more than 0.6 m from the goal by simulator truth<sup><a href="#fn-truth">3</a></sup>. Simulation, one seed per goal: not a hardware result.</p>
+    <p class="fineprint">One grade per walk, the first that applies: a fall or E-stop, then contact over 100 N<sup><a href="#fn-contact">2</a></sup>, then more than 0.6 m from the goal by simulator truth<sup><a href="#fn-truth">3</a></sup>. Click a count to open those walks in the demo. Simulation, one seed per goal: not a hardware result.</p>
   </div>
 </section>
 
@@ -140,17 +151,18 @@
   <div class="section-head">
     <p class="eyebrow">Questions</p>
     <h2>What you are looking at.</h2>
+    <p><button class="link" id="faq-all" aria-controls="faq-list">Expand all</button></p>
   </div>
   <div class="faq-grid">
-    <div class="faq">
-      <details open><summary>Is this the real policy?</summary><p>The walks were made by the deploy stack's software: the frozen Flow student planner and the SONIC tracking policy, with Studio's reproduction of node.py's state machine, in MuJoCo with a simulated MID-360 LiDAR and the robot's deploy settings<sup><a href="#fn-sim">5</a></sup>. Your browser replays those recordings. Nothing here ran on a real robot.</p></details>
-      <details><summary>Why recorded, not live?</summary><p>A live policy in the browser would publish the SONIC release weights (NVIDIA Open Model License; the deploy repository deliberately does not redistribute them) and an export of the unpublished student planner, and download about 100 MB. Recording every reachable goal once keeps the weights on the research machine and makes the page work on a phone. Studio itself runs the stack live, locally.</p></details>
-      <details><summary>What does "arrived" mean?</summary><p>node.py's rule: its own pose estimate is within 0.4 m of the goal<sup><a href="#fn-arrived">1</a></sup>. That is not the whole story, so every walk is also graded by contact<sup><a href="#fn-contact">2</a></sup> and by the final distance by simulator truth<sup><a href="#fn-truth">3</a></sup>.</p></details>
-      <details><summary>Does it run on the real robot?</summary><p>Not yet. Studio's robot link is built and tested against a protocol fixture; the robot day above walks through its real checklist. Readiness checklists and parsed code are not hardware verification.</p></details>
-      <details><summary>What counts as contact?</summary><p>The simulator's contact force between the robot and an obstacle. A walk is flagged when it exceeds 100 N at any frame<sup><a href="#fn-contact">2</a></sup>. The node's outcome does not see contact, so most such walks still "arrive".</p></details>
-      <details><summary>What is the plan body?</summary><p>The reference pose SONIC is tracking at each instant: 29 joint angles and an orientation, from the plan. Its pelvis position is the planner's and SONIC never receives it, so the body can fall behind or beside it<sup><a href="#fn-body">4</a></sup>. Turn it on in the demo with <kbd>B</kbd>.</p></details>
-      <details><summary>Can I send it anywhere?</summary><p>Goals snap to recorded ones on a 0.4 m grid, every walk starts from the start mark, and each goal was recorded once with one seed. Spots that fail Studio's checks show why; that is what Studio would refuse to send.</p></details>
-      <details><summary>What does this page cost to load?</summary><p>Static files from GitHub Pages; nothing runs on a server. About 0.3 MB until you start something; about 1 MB for the demo (three.js, the robot, a room) and about 60 kB per walk. The video loads only when played.</p></details>
+    <div class="faq" id="faq-list">
+      <details open><summary>Is this the real policy?</summary><p><b>Yes: the deploy stack's own planner and tracker, recorded in simulation.</b> The walks were made by the deploy stack's software: the frozen Flow student planner and the SONIC tracking policy, with Studio's reproduction of node.py's state machine, in MuJoCo with a simulated MID-360 LiDAR and the robot's deploy settings<sup><a href="#fn-sim">5</a></sup>. Your browser replays those recordings. Nothing here ran on a real robot.</p></details>
+      <details><summary>Why recorded, not live?</summary><p><b>So that no weights leave the research machine.</b> A live policy in the browser would publish the SONIC release weights (NVIDIA Open Model License; the deploy repository deliberately does not redistribute them) and an export of the unpublished student planner, and download about 100 MB. Recording every reachable goal once keeps the weights on the research machine and makes the page work on a phone. Studio itself runs the stack live, locally.</p></details>
+      <details><summary>What does "arrived" mean?</summary><p><b>Arrived by the robot's own estimate.</b> node.py's rule: its own pose estimate is within 0.4 m of the goal<sup><a href="#fn-arrived">1</a></sup>. That is not the whole story, so every walk is also graded by contact<sup><a href="#fn-contact">2</a></sup> and by the final distance by simulator truth<sup><a href="#fn-truth">3</a></sup>.</p></details>
+      <details><summary>Does it run on the real robot?</summary><p><b>Not yet.</b> Studio's robot link is built and tested against a protocol fixture; the robot day above walks through its real checklist. Readiness checklists and parsed code are not hardware verification.</p></details>
+      <details><summary>What counts as contact?</summary><p><b>More than 100 N against an obstacle, at any moment.</b> The simulator's contact force between the robot and an obstacle. A walk is flagged when it exceeds 100 N at any frame<sup><a href="#fn-contact">2</a></sup>. The node's outcome does not see contact, so most such walks still "arrive".</p></details>
+      <details><summary>What is the plan body?</summary><p><b>The pose the tracker is chasing.</b> The reference pose SONIC is tracking at each instant: 29 joint angles and an orientation, from the plan. Its pelvis position is the planner's and SONIC never receives it, so the body can fall behind or beside it<sup><a href="#fn-body">4</a></sup>. Turn it on in the demo with <kbd>B</kbd>.</p></details>
+      <details><summary>Can I send it anywhere?</summary><p><b>Almost: to any recorded goal.</b> Goals snap to recorded ones on a 0.4 m grid, every walk starts from the start mark, and each goal was recorded once with one seed. Spots that fail Studio's checks show why; that is what Studio would refuse to send.</p></details>
+      <details><summary>What does this page cost to load?</summary><p><b>About 0.3 MB, then 1 MB for the demo.</b> Static files from GitHub Pages; nothing runs on a server. About 0.3 MB until you start something; about 1 MB for the demo (three.js, the robot, a room) and about 60 kB per walk. The video loads only when played.</p></details>
     </div>
     <ol class="footnotes" aria-label="Definitions">
       <li id="fn-arrived"><b>Arrived.</b> node.py's arrival rule: its own (LIO-level) pose estimate within the 0.4 m goal radius. The recording then ends when the robot stands still, or if it falls.</li>
@@ -183,13 +195,13 @@
   <div class="use-grid">
     <div class="card">
       <h3>Run it</h3>
-<pre><code>git clone https://github.com/linjiw/g1-deploy-studio
+<div class="code"><button class="copy" data-copy>Copy</button><pre><code>git clone https://github.com/linjiw/g1-deploy-studio
 cd g1-deploy-studio
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 npm ci
 .venv/bin/python -m studio.server --port 8790
-# then open http://127.0.0.1:8790/</code></pre>
+# then open http://127.0.0.1:8790/</code></pre></div>
       <p class="muted">What you get from this repository alone: the gateway, the browser app and the tests; Replay draws the robot only when a recording points at a local G1 model. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack (g1-student-deploy with the Flow student bundle and the SONIC policy), which is not public. No recordings, weights or robot meshes ship with the code.</p>
     </div>
     <div class="card">

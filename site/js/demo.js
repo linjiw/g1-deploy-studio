@@ -33,7 +33,9 @@ const HUD = [
   ['contact', 'Contact', 'truth', 'Obstacle contact force, simulator truth', ''],
   ['body', 'Plan body', 'off by', "While walking: how far the plan body's pelvis is from where the robot thinks its pelvis is", ''],
   ['planner', 'Planner', 'its rule', "The planner's choice among its sampled candidates", 'wide'],
+  ['event', 'Last event', 'node.py', 'The most recent event of the walk, as the node or Studio logged it', 'wide'],
 ];
+const QUIET = new Set(['waiting', 'goal', 'prescan', 'run', 'walk_end', 'ended']);
 
 export async function mountDemo(root, options = {}) {
   const demo = new Demo(root, options);
@@ -42,14 +44,17 @@ export async function mountDemo(root, options = {}) {
 }
 
 class Demo {
-  constructor(root, { embedded = false, hashPrefix = '', fullHref = null, home = null, progress = () => {} } = {}) {
-    Object.assign(this, { root, embedded, hashPrefix, fullHref, home, progress });
+  constructor(root, { embedded = false, hashPrefix = '', fullHref = null, home = null, progress = () => {}, onStop = null } = {}) {
+    Object.assign(this, { root, embedded, hashPrefix, fullHref, home, progress, onStop });
+    // Every listener outside the demo's own nodes goes through this, so Stop leaves nothing behind.
+    this.abort = new AbortController();
+    const sig = { signal: this.abort.signal };
     this.S = { worldId: null, world: null, selected: null, staged: null, mode: 'pick', walk: null, t: 0, playing: false,
                speed: 1, last: null, mapStep: -1, trailIndex: -1, planShown: null, lidarShown: null, uiAt: 0, hover: null, clicked: null,
                loadToken: 0, phase: null, events: 0, picked: false, folder: null, filter: 'all', detail: false,
                layers: { robot: true, body: true, map: true, lidar: true, plan: true, world: 'ghost', outcomes: true } };
     root.classList.add('demo', embedded ? 'embedded' : 'standalone');
-    root.insertAdjacentHTML('beforeend', template({ embedded, home }));
+    root.insertAdjacentHTML('beforeend', template({ embedded, home, stop: !!onStop }));
     this.el = {};
     for (const n of root.querySelectorAll('[data-el]')) this.el[n.dataset.el] = n;
     this.viewer = new Viewer(this.el.canvas, { onPick: xy => this.pick(xy), onHover: xy => this.hover(xy) });
@@ -66,14 +71,16 @@ class Demo {
     // demo always has them.
     this.engaged = !embedded;
     if (embedded) {
-      document.addEventListener('pointerdown', e => { this.engaged = root.contains(e.target); }, true);
-      root.addEventListener('focusin', () => { this.engaged = true; });
-      root.addEventListener('focusout', e => { if (e.relatedTarget && !root.contains(e.relatedTarget)) this.engaged = false; });
+      document.addEventListener('pointerdown', e => { this.engaged = root.contains(e.target); }, { capture: true, ...sig });
+      root.addEventListener('focusin', () => { this.engaged = true; }, sig);
+      root.addEventListener('focusout', e => { if (e.relatedTarget && !root.contains(e.relatedTarget)) this.engaged = false; }, sig);
     }
     // Narrow stages (phones, small slots) dock the goal checks and the result as sheets above the dock.
-    new ResizeObserver(() => { this.root.classList.toggle('narrow', this.root.clientWidth < 640); this.place(); }).observe(root);
+    this.observers = [new ResizeObserver(() => { this.root.classList.toggle('narrow', this.root.clientWidth < 640); this.place(); })];
+    this.observers[0].observe(root);
     // Sheets and the result sit above the dock, whose height depends on how it wraps.
-    new ResizeObserver(() => root.style.setProperty('--dock-h', `${this.el.dock.offsetHeight}px`)).observe(this.el.dock);
+    this.observers.push(new ResizeObserver(() => root.style.setProperty('--dock-h', `${this.el.dock.offsetHeight}px`)));
+    this.observers[1].observe(this.el.dock);
     this.bind();
   }
 
@@ -87,7 +94,7 @@ class Demo {
     await this.loadWorld(h?.world && this.catalog.some(w => w.id === h.world) ? h.world : this.catalog[0].id, { keepHash: true });
     this.progress(1, 'Ready');
     this.root.classList.add('is-ready');
-    window.addEventListener('hashchange', () => this.fromHash());
+    window.addEventListener('hashchange', () => this.fromHash(), { signal: this.abort.signal });
     if (h?.goal) await this.fromHash();
     else this.live('Standing at the start mark. Click the floor to pick a goal, or open the room menu.');
   }
@@ -142,6 +149,8 @@ class Demo {
       if (b.dataset.act === 'replay') { this.seek(0); this.play(); }
       if (b.dataset.act === 'new') this.reset();
       if (b.dataset.act === 'wrong') this.togglePicker(true, 'wrong');
+      if (b.dataset.act === 'compare') this.compare();
+      if (b.dataset.act === 'link') this.copyLink();
     });
     const scrub = E.scrub;
     scrub.addEventListener('input', () => {
@@ -161,11 +170,20 @@ class Demo {
     };
     E.walkList.addEventListener('pointerover', preview); E.walkList.addEventListener('focusin', preview);
     E.walkList.addEventListener('pointerleave', () => this.viewer.setMarker('hoverMarker', null));
+    const sig = { signal: this.abort.signal };
     document.addEventListener('pointerdown', e => {
       this.swallow = false;
       if (!E.picker.hidden && !E.picker.contains(e.target) && !E.rooms.contains(e.target)) { this.togglePicker(false); this.swallow = true; }
-    });
-    window.addEventListener('keydown', e => this.key(e));
+    }, sig);
+    window.addEventListener('keydown', e => this.key(e), sig);
+    E.stop?.addEventListener('click', () => this.onStop?.());
+  }
+  // Stop: the page's poster comes back; the WebGL context, observers and listeners go.
+  destroy() {
+    this.abort.abort();
+    for (const o of this.observers) o.disconnect();
+    clearTimeout(this._splash); clearTimeout(this._flash);
+    this.viewer.dispose();
   }
   inView() {
     if (!this.embedded) return true;
@@ -479,6 +497,21 @@ class Demo {
     if (this.S.walk) this.apply();
   }
 
+  // This walk in the split view of the main page (plan body against the executed body).
+  compare() {
+    const S = this.S, hash = `#closer/${S.worldId}/${S.walk.goal_id}`;
+    if (this.embedded) { location.hash = hash; return; }
+    location.href = new URL(`${this.home ?? '../'}${hash}`, location.href).href;
+  }
+  async copyLink() {
+    const S = this.S, path = `#${S.worldId}/${S.walk.goal_id}/play`;
+    const url = new URL(this.embedded ? `${this.fullHref}${path}` : path, location.href).href;
+    try { await navigator.clipboard.writeText(url); this.flash('Link copied: it opens this walk and plays it.'); }
+    catch { this.flash(url); }
+  }
+  // Open the room menu on a folder and, optionally, one grade (the outcome table's cells use this).
+  openPicker(folder, filter = 'all') { this.S.filter = filter; this.togglePicker(true, folder); }
+
   // ----- the picker: rooms as folders, every walk with its grade, and the walks that went wrong
   togglePicker(open = this.el.picker.hidden, folder = null) {
     const p = this.el.picker;
@@ -494,7 +527,7 @@ class Demo {
     const S = this.S;
     const all = S.folder === 'wrong' ? this.catalog.flatMap(w => listOf(w)).filter(x => x.grade !== 'clean')
       : listOf(this.catalog.find(w => w.id === S.folder) ?? this.catalog[0]);
-    return all.filter(x => S.filter === 'all' || bucket(x.grade) === S.filter);
+    return all.filter(x => S.filter === 'all' || bucket(x.grade) === S.filter || x.grade === S.filter);
   }
   renderPicker() {
     const S = this.S, E = this.el;
@@ -506,7 +539,9 @@ class Demo {
     const all = S.folder === 'wrong' ? wrong : listOf(this.catalog.find(w => w.id === S.folder) ?? this.catalog[0]);
     const counts = { all: all.length, clean: 0, flagged: 0, failed: 0 };
     for (const x of all) counts[bucket(x.grade)]++;
-    E.filters.innerHTML = [['all', 'All'], ['clean', 'Clean'], ['flagged', 'Flagged'], ['failed', 'Failed']].filter(([k]) => counts[k])
+    const grade = GRADES[S.filter] && !['clean'].includes(S.filter) ? [[S.filter, GRADES[S.filter].short]] : [];
+    for (const [k] of grade) counts[k] = all.filter(x => x.grade === k).length;
+    E.filters.innerHTML = [['all', 'All'], ['clean', 'Clean'], ['flagged', 'Flagged'], ['failed', 'Failed'], ...grade].filter(([k]) => counts[k])
       .map(([k, label]) => `<button data-filter="${k}" aria-pressed="${S.filter === k}">${label} <small>${counts[k]}</small></button>`).join('');
     const rows = this.pool().sort((a, b) => S.folder === 'wrong' ? WRONG_ORDER.indexOf(a.grade) - WRONG_ORDER.indexOf(b.grade) || b.contact - a.contact : a.dist - b.dist);
     const titles = Object.fromEntries(this.catalog.map(w => [w.id, w.title]));
@@ -540,9 +575,23 @@ class Demo {
     this.root.dataset.walk = S.walk ? '1' : '0';
     this.renderChip();
     this.renderHud();
+    this.renderGuide();
     this.renderDock();
     this.renderResult();
     this.place();
+  }
+  // The operator's steps, until the first walk plays: pick a goal, send it (Studio checks and reads it back), Go.
+  renderGuide() {
+    const S = this.S, g = this.el.guide;
+    if (S.walk) S.guided = true;
+    g.hidden = !!S.guided;
+    if (g.hidden) return;
+    const now = S.mode === 'staged' || S.mode === 'loading' ? 'go' : S.selected ? 'send' : 'pick';
+    const order = ['pick', 'send', 'go'];
+    for (const li of g.children) {
+      const k = order.indexOf(li.dataset.step), at = order.indexOf(now);
+      li.className = k < at ? 'done' : k === at ? 'now' : '';
+    }
   }
   renderDock() {
     const S = this.S, w = S.walk, E = this.el;
@@ -590,6 +639,7 @@ class Demo {
       // The plan body's root is the planner's only while it walks; standing, the node sets it to the robot's pose.
       body: !ref ? (S.layers.body ? '—' : 'hidden') : run && !w.est_missing?.includes(k) ? `${fmt(Math.hypot(ref[0] - w.est[k * 2] / 1000, ref[1] - w.est[k * 2 + 1] / 1000), 2)} m` : 'not walking',
       planner: plan && run ? `#${w.planNumber(S.t)} · ${RULES[plan.rule]?.label ?? plan.rule.replaceAll('_', ' ')}` : deferred && !stood ? 'stand deferred' : '—',
+      event: (() => { let last = null; for (const e of w.events) { if (e.t > S.t + 1e-9) break; if (!QUIET.has(e.type)) last = e; } return last ? `${fmt(last.t, 1)} s · ${last.msg}` : '—'; })(),
     };
     // The rows are built once; only their values change (their titles and kinds stay readable).
     if (!E.hud.firstChild) {
@@ -648,7 +698,7 @@ class Demo {
     box.innerHTML = `<p class="r-title" id="demo-result-title">${escape(g.label)}</p><p class="r-text" id="demo-result-text">${escape(lines.join(' '))}</p>
       <div class="facts">${facts.map(([a, b]) => `<div><span>${a}</span><b>${escape(String(b))}</b></div>`).join('')}</div>
       <details class="r-more"><summary>How it is graded</summary><p>Green: arrived cleanly. Amber: arrived with contact over 100 N, or ended more than 0.6 m from the goal by truth (node.py's radius is 0.4 m, by its estimate; it can also move away after arriving). Red: E-stop or fall. Recorded on CPU MuJoCo at ${fmt(w.rtf, 2)}× real time; seed ${S.world.settings?.seed ?? 0}; planner ${S.world.settings?.planner?.candidates ?? '?'} candidates, ${S.world.settings?.planner?.ode_steps ?? '?'} ODE steps.</p></details>
-      <div class="r-actions"><button class="btn" data-act="replay">Replay</button><button class="btn primary" data-act="new">New goal</button><button class="btn ghost" data-act="wrong">Walks that went wrong</button></div>`;
+      <div class="r-actions"><button class="btn" data-act="replay">Replay</button><button class="btn primary" data-act="new">New goal</button><button class="btn ghost" data-act="compare">Plan vs body</button><button class="btn ghost" data-act="link">Copy link</button><button class="btn ghost" data-act="wrong">Went wrong</button></div>`;
   }
   // DOM chips pinned to the scene: the hint above the robot, the goal checks above the goal's pin.
   place() {
@@ -656,8 +706,12 @@ class Demo {
     if (!S.world) return;
     const W = this.root.clientWidth, H = this.root.clientHeight, R = this.root.getBoundingClientRect();
     const bottomOf = n => (n && n.getClientRects().length ? n.getBoundingClientRect().bottom - R.top : 0);
-    const minY = Math.max(bottomOf(this.root.querySelector('.chrome.top-left')), bottomOf(this.root.querySelector('.chrome.top-right'))) + 10;
-    const maxY = H - (E.dock.offsetHeight || 50) - 24;
+    const tr = bottomOf(this.root.querySelector('.chrome.top-right'));
+    const minY = Math.max(bottomOf(this.root.querySelector('.chrome.top-left')), tr) + 10;
+    // The readout hangs under whatever the top-right chrome holds (the phase, Open full screen, Stop).
+    if (!E.hud.hidden && !this.root.classList.contains('narrow')) E.hud.style.top = `${Math.round(tr + 8)}px`;
+    else E.hud.style.top = '';
+    const maxY = H - (E.dock.offsetHeight || 50) - 24 - (E.guide.hidden || this.root.classList.contains('narrow') ? 0 : E.guide.offsetHeight + 10);
     const put = (node, xyz, dy, flip) => {
       const p = v.project(...xyz);
       if (!p || p[0] < -40 || p[0] > W + 40 || p[1] < -40 || p[1] > H + 40) { node.style.visibility = 'hidden'; return; }
@@ -713,7 +767,7 @@ function bar(list) {
   return `<span class="mini-bar" aria-hidden="true"><i class="ok" style="width:${c.clean / n * 100}%"></i><i class="warn" style="width:${c.flagged / n * 100}%"></i><i class="bad" style="width:${c.failed / n * 100}%"></i></span>`;
 }
 
-function template({ embedded, home }) {
+function template({ embedded, home, stop }) {
   const layers = LAYERS.map(l => `<button data-layer="${l.id}" aria-pressed="true" ${l.id === 'world' ? 'data-state="ghost"' : ''} title="${escape(`${l.why} (${l.key.toUpperCase()})`)}"><i style="--dot:${l.dot}"></i>${escape(l.label)}${l.id === 'world' ? ' <small>ghost</small>' : ''}</button>`).join('');
   return `
   <div class="stage-canvas" data-el="canvas" role="application" aria-label="3D view of the room and the robot. Click the floor to pick a goal; the room menu and Pick one for me work from the keyboard."></div>
@@ -724,8 +778,10 @@ function template({ embedded, home }) {
   <div class="chrome top-right">
     <span class="phase" data-el="phase">WAIT</span>
     ${embedded ? '<a class="pill" data-el="full" target="_blank" rel="noopener" aria-label="Open full screen"><span class="t">Open full screen</span> ↗</a>' : ''}
+    ${stop ? '<button class="pill" data-el="stop" title="Stop the demo and free its memory">Stop</button>' : ''}
   </div>
   <div class="hud" data-el="hud" hidden></div>
+  <ol class="guide" data-el="guide" aria-label="The operator's three steps"><li data-step="pick"><b>1</b> Pick a goal</li><li data-step="send"><b>2</b> Send it</li><li data-step="go"><b>3</b> Go</li></ol>
   <div class="hint" data-el="hint"><b>${matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click'} the floor.</b> It has to find its own way.</div>
   <div class="goal-chip" data-el="chip" hidden role="group" aria-label="Goal checks"></div>
   <div class="splash" data-el="splash" aria-hidden="true"><b></b><span></span></div>

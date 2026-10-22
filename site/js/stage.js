@@ -24,14 +24,27 @@ function card(root) {
 }
 
 // load: () => import('./demo.js').then(m => m.mountDemo) (or another mount function); options go to it.
-export async function boot(root, options = {}, load = () => import('./demo.js').then(m => m.mountDemo)) {
+// With onStopped, the stage gets a Stop button: it tears the module down (its WebGL context, listeners and
+// observers) and puts the stage back as it was, poster included; then onStopped runs.
+export async function boot(root, options = {}, load = () => import('./demo.js').then(m => m.mountDemo), { onStopped = null } = {}) {
+  const before = { nodes: [...root.childNodes], attributes: [...root.attributes].map(a => [a.name, a.value]) };
+  let instance = null;
+  const stop = () => {
+    instance?.destroy?.();
+    instance = null;
+    root.replaceChildren(...before.nodes);
+    for (const a of [...root.attributes]) root.removeAttribute(a.name);
+    for (const [name, value] of before.attributes) root.setAttribute(name, value);
+    onStopped?.();
+  };
   const ui = card(root);
   if (!webgl()) { ui.fail('This browser does not provide WebGL, which the 3D view needs.'); return null; }
   ui.progress(0.08, 'Loading three.js');
   try {
     const mount = await load();
     ui.progress(0.3, 'Loading the robot');
-    return await mount(root, { ...options, progress: ui.progress });
+    instance = await mount(root, { ...options, progress: ui.progress, ...(onStopped ? { onStop: stop } : {}) });
+    return instance;
   } catch (error) {
     console.error(error);
     ui.fail(`${String(error.message).replace(/\.?$/, '.')}`);

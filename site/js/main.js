@@ -11,14 +11,31 @@ let demoStart = null;
 function startDemo({ scroll = true } = {}) {
   if (scroll) $('demo-stage').scrollIntoView({ behavior: smooth(), block: 'start' });
   if (demoStart) return demoStart;
-  const stage = $('demo-stage');
-  stage.querySelector('.poster').hidden = true;
-  demoStart = boot(stage, { embedded: true, hashPrefix: 'try/', fullHref: 'demo/' }).then(d => { window.studioDemo = d; return d; });
+  const stage = $('demo-stage'), poster = stage.querySelector('.poster');
+  poster.hidden = true;
+  demoStart = boot(stage, { embedded: true, hashPrefix: 'try/', fullHref: 'demo/' }, undefined, {
+    // Stop: back to the poster, nothing left running; a later Start (or #try link) boots it again.
+    onStopped: () => {
+      demoStart = null; window.studioDemo = null; poster.hidden = false;
+      if (location.hash.startsWith('#try/')) history.replaceState(null, '', '#try');
+      poster.querySelector('.start')?.focus({ preventScroll: true });
+    },
+  }).then(d => { window.studioDemo = d; return d; });
   return demoStart;
 }
 for (const b of document.querySelectorAll('[data-start]')) b.addEventListener('click', () => startDemo());
 if (location.hash.startsWith('#try/')) startDemo({ scroll: false });
 window.addEventListener('hashchange', () => { if (location.hash.startsWith('#try/') && !demoStart) startDemo(); });
+// #closer/<room>/<goal>: that walk in the split view (the demo's "Plan vs body").
+const closerLink = () => {
+  const m = location.hash.match(/^#closer\/([a-z]+)\/(g\d\d-\d\d)$/);
+  if (!m) return;
+  $('closer').scrollIntoView({ behavior: smooth(), block: 'start' });
+  closer().then(s => s.showWalk(m[1], m[2]));
+};
+window.addEventListener('hashchange', closerLink);
+// The outcome table's cells open the room menu on that room and grade.
+document.addEventListener('site:pick', e => startDemo().then(d => d?.openPicker(e.detail.folder, e.detail.grade)));
 
 // ----- numbers, from the same files the demo plays
 const sum = (list, f) => list.reduce((n, x) => n + (f(x) ?? 0), 0);
@@ -48,7 +65,21 @@ async function stats() {
 // ----- take a closer look (its poster's button works before the section has been built)
 let closerSection = null;
 const closer = () => (closerSection ??= import('./closer-section.js').then(m => m.initCloserSection({ chips: $('closer-chips'), stage: $('closer-stage'), caption: $('closer-caption') })));
+closerLink();  // a #closer/<room>/<goal> link that opened the page
 $('closer-stage').querySelector('[data-closer-start]').addEventListener('click', () => closer().then(s => s.start()), { once: true });
+
+// ----- small tools
+document.querySelector('.menu')?.addEventListener('click', e => { if (e.target.closest('a')) e.currentTarget.open = false; });
+$('faq-all')?.addEventListener('click', e => {
+  const all = [...document.querySelectorAll('#faq-list details')], open = !all.every(d => d.open);
+  for (const d of all) d.open = open;
+  e.currentTarget.textContent = open ? 'Collapse all' : 'Expand all';
+});
+for (const b of document.querySelectorAll('[data-copy]')) b.addEventListener('click', async () => {
+  const text = b.parentNode.querySelector('code').textContent;
+  try { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; } catch { b.textContent = 'Select and copy'; }
+  setTimeout(() => { b.textContent = 'Copy'; }, 2000);
+});
 
 // ----- the tour's chapters (the video itself loads only when played)
 async function chapters() {
@@ -87,6 +118,7 @@ const lazy = (sectionId, start) => {
 stats().catch(() => {});
 lazy('highlights', chapters);
 lazy('closer', closer);
+lazy('atlas', async () => (await import('./atlas.js')).initAtlas($('atlas-chart')));
 lazy('how', async () => (await import('./pipeline.js')).initPipeline($('pipeline'), $('pipeline-detail')));
 lazy('robot-day', async () => (await import('./robotday.js')).initRobotDay($('day')));
 lazy('findings', async () => (await import('./findings.js')).initFindings($('findings-cards'), $('outcome-table')));

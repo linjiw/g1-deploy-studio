@@ -48,7 +48,7 @@
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; color: var(--s-ink); font-size: 13px; text-decoration: none; }
 .pill:hover { text-decoration: none; border-color: var(--s-line-2); }
 .hud { position: absolute; z-index: 3; top: calc(max(14px, env(safe-area-inset-top)) + 44px); right: max(14px, env(safe-area-inset-right)); width: 236px; border-radius: 14px; padding: 8px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
-.stage.embedded .hud { top: calc(14px + 86px); }
+
 .hud div { min-width: 0; }
 .hud .wide { grid-column: 1 / -1; }
 .hud span { display: block; color: var(--s-ink-3); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; }
@@ -265,3 +265,14 @@
 .stage.closer.narrow .split-facts { grid-template-columns: 1fr 1fr; }
 .stage.closer.narrow .split-labels span { font-size: 11.5px; padding: 4px 9px; }
 .stage.closer.narrow .split-labels span small { display: none; }
+
+/* ----- the operator's three steps, above the dock until the first walk plays */
+.guide { position: absolute; z-index: 3; left: 50%; transform: translateX(-50%); bottom: calc(max(14px, env(safe-area-inset-bottom)) + var(--dock-h) + 12px); display: flex; gap: 4px; margin: 0; padding: 4px; list-style: none; border-radius: 999px; background: var(--s-glass); border: 1px solid var(--s-line); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); pointer-events: none; }
+.guide li { display: flex; align-items: center; gap: 7px; padding: 5px 12px 5px 6px; border-radius: 999px; font-size: 13px; color: var(--s-ink-3); white-space: nowrap; transition: background .2s, color .2s; }
+.guide li b { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: rgba(255, 255, 255, .1); font-size: 11px; }
+.guide li.now { color: var(--s-ink); background: rgba(255, 255, 255, .1); }
+.guide li.now b { background: var(--s-accent); color: #fff; }
+.guide li.done { color: var(--s-ink-2); }
+.guide li.done b { background: var(--ok); color: #05261a; }
+.stage.narrow .guide { bottom: auto; top: auto; display: none; }
+.stage[data-mode="done"] .guide, .stage[data-mode="playing"] .guide { display: none; }

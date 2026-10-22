@@ -213,6 +213,8 @@ table.outcomes { width: 100%; border-collapse: collapse; font-size: .9rem; font-
 .outcomes td.zero { color: #b7bec7; }
 .outcomes tfoot td { font-weight: 700; border-bottom: 0; }
 .outcomes td.hotcell { color: var(--warn); font-weight: 650; } .outcomes td.badcell { color: var(--bad); font-weight: 650; }
+.outcomes button.cell { font: inherit; color: inherit; background: none; border: 0; padding: 2px 6px; margin: -2px -6px; border-radius: 6px; cursor: pointer; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
+.outcomes button.cell:hover { background: var(--accent-soft); }
 
 /* ----- faq */
 .faq-grid { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 28px; align-items: start; }
@@ -267,3 +269,45 @@ h1.wide { max-width: 22ch; font-size: clamp(2.2rem, 5.4vw, 4rem); }
 .ladder .status.done { background: #e3f4ea; color: var(--ok); } .ladder .status.active { background: var(--accent-soft); color: var(--accent); }
 #local { border-top: 3px dashed #c98a1e; }
 .trackers th:nth-child(2) { text-align: left; }
+
+/* ----- every walk, one dot (atlas.js) */
+.atlas { max-width: 1200px; margin: 0 auto; padding: 16px 18px 18px; }
+.atlas-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-bottom: 8px; }
+.atlas-bar .chips { margin: 0; }
+.atlas-bar .chips button { height: 32px; padding: 0 13px; font-size: .86rem; }
+.atlas-plot { width: 100%; }
+.atlas-plot svg { display: block; width: 100%; height: auto; border-radius: 10px; }
+.atlas-plot svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.atlas .grid { stroke: var(--line); stroke-width: 1; }
+.atlas .grid.v { stroke-dasharray: 2 4; }
+.atlas .tick { fill: var(--ink-3); font: 12px var(--mono); }
+.atlas .axis { fill: var(--ink-3); font: 12.5px var(--sans); }
+.atlas .rule { stroke: #b4bcc6; stroke-width: 1.2; stroke-dasharray: 6 4; }
+.atlas .rule-label { fill: var(--ink-3); font: 12px var(--sans); }
+.atlas .dot { stroke: #fff; stroke-width: 1; cursor: pointer; opacity: .85; }
+.atlas .dot.ok { fill: #2fae6a; } .atlas .dot.warn { fill: #e2a03a; opacity: .95; } .atlas .dot.bad { fill: #d64545; opacity: 1; }
+.atlas .focus-ring { fill: none; stroke: var(--ink); stroke-width: 2; pointer-events: none; }
+.atlas-read { min-height: 76px; margin-top: 8px; padding: 10px 14px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); font-size: .92rem; }
+.atlas-read p { margin: 0 0 2px; }
+.atlas-read .watch { font-weight: 620; font-size: .9rem; }
+.atlas-legend { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.atlas-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-left: 8px; }
+.atlas-legend i:first-child { margin-left: 0; }
+.atlas-legend i.ok { background: #2fae6a; } .atlas-legend i.warn { background: #e2a03a; } .atlas-legend i.bad { background: #d64545; }
+.atlas-legend i.sq { border-radius: 1px; transform: rotate(45deg); }
+.sr-only { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ----- small tools: the phone menu, an instruction above a tool, a copy button */
+.menu { display: none; position: relative; margin-left: auto; }
+.menu summary { list-style: none; cursor: pointer; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line-2); font-size: .88rem; font-weight: 600; color: var(--ink-2); }
+.menu summary::-webkit-details-marker { display: none; }
+.menu nav { position: absolute; right: 0; top: calc(100% + 8px); display: grid; min-width: 200px; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+.menu nav a { padding: 8px 12px; border-radius: 8px; color: var(--ink-2); }
+.menu nav a:hover { background: var(--surface-2); text-decoration: none; }
+@media (max-width: 1120px) { .menu { display: block; } .menu + .gh { margin-left: 8px; } }
+.tool-hint { max-width: 860px; margin: 0 auto 12px; text-align: center; color: var(--ink-2); font-size: .95rem; }
+.code { position: relative; }
+.code .copy { position: absolute; top: 8px; right: 8px; padding: 4px 10px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .2); background: rgba(255, 255, 255, .08); color: #e6edf3; font-size: .78rem; cursor: pointer; }
+.code .copy:hover { background: rgba(255, 255, 255, .16); }
+.faq details p b:first-child { color: var(--ink); }
+@media (max-width: 480px) { .top { gap: 10px; padding-left: 14px; padding-right: 14px; } .gh { padding: 6px 11px; } .menu summary { padding: 6px 10px; } .brand { font-size: .95rem; } }

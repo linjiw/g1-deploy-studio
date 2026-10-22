@@ -77,9 +77,18 @@ export async function initFindings(container, table) {
 // Every walk, by room and grade (worlds.json grades: the same rule as the demo's colours).
 function outcomeTable(table, catalog) {
   const keys = Object.keys(GRADES).filter(k => catalog.some(w => w.grades?.[k]));
-  const cell = (n, k) => `<td class="${!n ? 'zero' : k === 'clean' ? '' : ['estop', 'fell'].includes(k) ? 'badcell' : 'hotcell'}">${n ?? 0}</td>`;
+  // A count opens the demo's room menu on those walks (all rooms: the Went wrong folder).
+  const cell = (n, k, folder) => {
+    const cls = !n ? 'zero' : k === 'clean' ? '' : ['estop', 'fell'].includes(k) ? 'badcell' : 'hotcell';
+    const open = n && folder && !(folder === 'wrong' && k === 'clean');
+    return `<td class="${cls}">${open ? `<button class="cell" data-folder="${folder}" data-grade="${k}" title="Open these walks in the demo">${n}</button>` : n ?? 0}</td>`;
+  };
   const total = k => catalog.reduce((n, w) => n + (w.grades?.[k] ?? 0), 0);
   table.insertAdjacentHTML('beforeend', `<thead><tr><th>Room</th>${keys.map(k => `<th><i style="background:${GRADES[k].css}"></i>${escape(GRADES[k].short)}</th>`).join('')}<th>Walks</th></tr></thead>
-    <tbody>${catalog.map(w => `<tr><td>${escape(w.title)}</td>${keys.map(k => cell(w.grades?.[k], k)).join('')}<td>${w.walks}</td></tr>`).join('')}</tbody>
-    <tfoot><tr><td>All rooms</td>${keys.map(k => cell(total(k), k)).join('')}<td>${catalog.reduce((n, w) => n + w.walks, 0)}</td></tr></tfoot>`);
+    <tbody>${catalog.map(w => `<tr><td>${escape(w.title)}</td>${keys.map(k => cell(w.grades?.[k], k, w.id)).join('')}<td>${w.walks}</td></tr>`).join('')}</tbody>
+    <tfoot><tr><td>All rooms</td>${keys.map(k => cell(total(k), k, 'wrong')).join('')}<td>${catalog.reduce((n, w) => n + w.walks, 0)}</td></tr></tfoot>`);
+  table.addEventListener('click', e => {
+    const b = e.target.closest('button.cell');
+    if (b) document.dispatchEvent(new CustomEvent('site:pick', { detail: { folder: b.dataset.folder, grade: b.dataset.grade } }));
+  });
 }

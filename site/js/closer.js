@@ -25,15 +25,16 @@ const SIDES = {
   estimate: [['Simulator truth', 'where the robot is'], ['Its estimate', 'where it thinks it is']],
 };
 
-export async function mountCloser(root, { scenarios, progress = () => {}, onChange = () => {} } = {}) {
-  const c = new Closer(root, scenarios, progress, onChange);
+export async function mountCloser(root, { scenarios, progress = () => {}, onChange = () => {}, onStop = null } = {}) {
+  const c = new Closer(root, scenarios, progress, onChange, onStop);
   await c.init();
   return c;
 }
 
 class Closer {
-  constructor(root, scenarios, progress, onChange) {
-    Object.assign(this, { root, scenarios, progress, onChange });
+  constructor(root, scenarios, progress, onChange, onStop) {
+    Object.assign(this, { root, scenarios, progress, onChange, onStop });
+    this.abort = new AbortController();
     // Side by side needs room: narrow stages start overlaid.
     this.S = { scenario: null, walk: null, world: null, t: 0, playing: false, last: null, speed: 1, overlay: false, clip: [0, 0], token: 0 };
     root.classList.add('closer');
@@ -50,11 +51,13 @@ class Closer {
         <span class="time mono" data-el="frame">frame —</span>
         <button class="dk small" data-el="speed" title="Playback speed">1×</button>
         <div class="seg" role="group" aria-label="View"><button data-view="split" aria-pressed="true">Side by side</button><button data-view="overlay" aria-pressed="false">Overlay</button></div>
+        ${onStop ? '<button class="dk small" data-el="stop" title="Stop the comparison and free its memory">Stop</button>' : ''}
       </div>`);
     this.el = {};
     for (const n of root.querySelectorAll('[data-el]')) this.el[n.dataset.el] = n;
-    new ResizeObserver(() => root.classList.toggle('narrow', root.clientWidth < 640)).observe(root);
-    new ResizeObserver(() => root.style.setProperty('--dock-h', `${root.querySelector('.dock').offsetHeight}px`)).observe(root.querySelector('.dock'));
+    this.observers = [new ResizeObserver(() => root.classList.toggle('narrow', root.clientWidth < 640)),
+                      new ResizeObserver(() => root.style.setProperty('--dock-h', `${root.querySelector('.dock').offsetHeight}px`))];
+    this.observers[0].observe(root); this.observers[1].observe(root.querySelector('.dock'));
     const v = this.viewer = new Viewer(this.el.canvas);
     v.controls.minDistance = 1.4; v.controls.maxDistance = 14;
     v.onFrame = now => this.frame(now);
@@ -83,7 +86,8 @@ class Closer {
     this.root.addEventListener('keydown', e => {
       if (e.key === ' ' && !e.target.closest('button, input')) { e.preventDefault(); this.toggle(); }
       if (e.key === ',' || e.key === '.') this.step(e.key === '.' ? 1 : -1);
-    });
+    }, { signal: this.abort.signal });
+    E.stop?.addEventListener('click', () => this.onStop?.());
   }
 
   async load(sc) {
@@ -96,7 +100,8 @@ class Closer {
     // Walls as glass: the bodies are the subject, and a wall must not hide them.
     v.setWorld(world); v.setBoxesStyle('ghost');
     const a = Math.max(0, Math.min(sc.at ?? 0, walk.duration - 1));
-    S.clip = [a, sc.clip_s === null ? walk.duration : Math.min(walk.duration, a + (sc.clip_s ?? CLIP_S))];
+    // A walk opened from the demo plays whole; the picked scenarios loop around their moment.
+    S.clip = [a, sc.clip_s === null || sc.id === 'walk' ? walk.duration : Math.min(walk.duration, a + (sc.clip_s ?? CLIP_S))];
     // A still camera where the scenario is about something moving away (a deferred stand); else it follows.
     this.still = sc.view === 'overlay-fixed';
     this.root.dataset.mode = sc.mode;
@@ -158,6 +163,7 @@ class Closer {
     }
     if (!quiet && S.walk) { this.aim(); this.apply(); }
   }
+  destroy() { this.abort.abort(); for (const o of this.observers) o.disconnect(); this.viewer.dispose(); }
   // How far the left half's body is from the robot, so the left camera sits the same way on it.
   delta(out) {
     const S = this.S, ref = S.walk.refPose(S.t, this.r), p = S.walk.pose(S.t, this.q);

@@ -59,10 +59,10 @@ export class Viewer {
     this.views = null;       // split screen: [{ x, w, before(), after() }], x and w in fractions of the width
     this.robot = null; this.ghosts = {};
     this.follow = false;
-    new ResizeObserver(() => this.resize()).observe(container);
+    (this._resizer = new ResizeObserver(() => this.resize())).observe(container);
     this.resize();
     this._pickSetup(onPick, onHover);
-    new IntersectionObserver(entries => { this.visible = entries[0].isIntersecting; if (this.visible) this.start(); }, { threshold: 0.01 }).observe(container);
+    (this._seer = new IntersectionObserver(entries => { this.visible = entries[0].isIntersecting; if (this.visible) this.start(); }, { threshold: 0.01 })).observe(container);
     this.start();
   }
 
@@ -427,6 +427,8 @@ export class Viewer {
   }
   dispose() {
     this.disposed = true;
+    this._resizer.disconnect(); this._seer.disconnect(); this.controls.dispose();
+    this.scene.traverse(o => { o.geometry?.dispose(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m.map?.dispose(); m.dispose(); }); });
     this.renderer.dispose();
     this.renderer.forceContextLoss?.();
     this.renderer.domElement.remove();
