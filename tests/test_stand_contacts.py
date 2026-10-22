@@ -27,7 +27,7 @@ class PlanTests(unittest.TestCase):
             self.assertEqual({k: v for k, v in req[0].items() if k not in ('stand_mode', 'id')},
                              {k: v for k, v in req[1].items() if k not in ('stand_mode', 'id')})
         stops = [s['leg_timeout_s'] for s in specs if s['world'] == 'narrow-stop' and s['stand_mode'] == 'default']
-        self.assertEqual(stops, [4.5, 5.5, 6.5, 7.5])
+        self.assertEqual(stops, [2.4, 2.8, 3.2, 3.5])
         deploy = specs[0]['request']
         self.assertEqual((deploy['planner'], deploy['latency'], deploy['odometry'], deploy['map_mode']),
                          ({'candidates': 16, 'ode_steps': 10}, {'ms': 160, 'anchor': 'predict'}, 'lio', 'keep'))
@@ -59,6 +59,15 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(hard['default']['stand_episodes'], 0)
         self.assertEqual(sc.pairing(rows), {'pairs': 2, 'identical_before_first_stand': 1})
         self.assertIn('| narrow | hold_upper |', sc.table_text(sc.summarize(rows)))
+
+    def test_clearance_table(self):
+        def c(start, stand):
+            return {'arm_at_stand_start_m': start, 'stand': {'arm': stand}}
+        rows = [dict(self.row('default', 0, []), clearance=c(0.30, 0.10)), dict(self.row('default', 1, []), clearance=c(0.2, 0.2)),
+                dict(self.row('hold_upper', 0, []), clearance=c(0.30, 0.25)), self.row('hold_upper', 1, [])]
+        text = sc.clearance_table(rows)
+        self.assertIn('| narrow | default | 2 | 0.250 | 0.150 / 0.100 | 1 |', text)
+        self.assertIn('| narrow | hold_upper | 1 | 0.300 | 0.250 / 0.250 | 1 |', text)
 
 
 if __name__ == '__main__':

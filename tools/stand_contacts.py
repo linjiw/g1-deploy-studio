@@ -19,6 +19,7 @@ import argparse
 import concurrent.futures as cf
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -36,6 +37,9 @@ from studio.policy_worker import REFERENCE_PYTHON, REFERENCE_ROOT  # noqa: E402
 PROFILES = {
     'deploy': {'planner': {'candidates': 16, 'ode_steps': 10}, 'latency': {'ms': 160, 'anchor': 'predict'},
                'odometry': 'lio', 'actuators': 'g1-current', 'map_mode': 'keep'},
+    # As 'deploy', with node.py's own latency rule and the bundle planner's measured timing (Navigate's deploy preset).
+    'deploy-node': {'planner': {'candidates': 16, 'ode_steps': 10}, 'latency': {'mode': 'node', 'preset': 'bundle-fused'},
+                    'odometry': 'lio', 'actuators': 'g1-current', 'map_mode': 'keep'},
     'quick': {'planner': {'candidates': 2, 'ode_steps': 4}, 'latency': {'ms': 0, 'anchor': 'measured'},
               'odometry': 'truth', 'actuators': 'g1-current', 'map_mode': 'keep'},
 }
@@ -71,10 +75,11 @@ def worlds(narrow_width_m):
         'narrow': {'map': lambda: narrow_world(narrow_width_m), 'start_xy': [0.0, 0.0], 'start_yaw_rad': 0.0,
                    'goals': [[2.0, 0.0], [2.6, 0.18], [3.1, -0.18], [2.3, 0.0]]},
         # A stop inside the passage while walking through it: the goal is past the exit and the walk timeout (Studio's
-        # stand-in for the operator's Stand, deterministic per seed) ends the walk mid-passage (x 1.2-3.6 m is reached
-        # about 2.5-7.5 s after Go at the deploy budget).
+        # stand-in for the operator's Stand, deterministic per seed) ends the walk mid-passage. At the deploy profile
+        # the pelvis is inside (x 1.3-3.5 m) from about 2.0 to 3.6-3.9 s after Go and arrives at 4.0-4.8 s
+        # (measured 2026-10-22; 4.5 s and later timeouts mostly arrived instead).
         'narrow-stop': {'map': lambda: narrow_world(narrow_width_m), 'start_xy': [0.0, 0.0], 'start_yaw_rad': 0.0,
-                        'goals': [[4.3, 0.0]] * 4, 'leg_timeouts_s': [4.5, 5.5, 6.5, 7.5]},
+                        'goals': [[4.3, 0.0]] * 4, 'leg_timeouts_s': [2.4, 2.8, 3.2, 3.5]},
     }
 
 
@@ -229,6 +234,76 @@ def read_session(path):
             'plan_latency_s': report.get('plan_latency_s'), 'latency_model': meta.get('latency_model', {}).get('mode', 'fixed')}
 
 
+def clearance(out):
+    """Post-hoc, on the deploy interpreter (mujoco + the source scene): the smallest distance from each robot body group
+    to the obstacles, before the first stand and during it, from every recorded pose (mj_geomDistance on the source
+    collision model, the one the simulation ran). Writes clearance.json beside each walk's row.json. No simulation."""
+    import mujoco
+    import numpy as np
+    sys.path.insert(0, str(REFERENCE_ROOT))
+    from sim.scene import SceneIndex, build_model
+    from studio.nav_worker import BODY_GROUPS, body_group
+    models = {}
+    for row_path in sorted(Path(out).glob('*/*/w*/row.json')):
+        session_path = row_path.parent / 'run' / 'session.json'
+        if not session_path.is_file():
+            continue
+        session = json.loads(session_path.read_text())
+        boxes = session['environment']['boxes']
+        key = json.dumps(boxes, sort_keys=True)
+        if key not in models:
+            m = build_model([dict(b) for b in boxes])
+            index = SceneIndex(m)
+            robot = [g for g in range(m.ngeom) if index.robot_geom[g] and (m.geom_contype[g] or m.geom_conaffinity[g])]
+            mesh = lambda g: (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_MESH, int(m.geom_dataid[g])) or '') \
+                if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH else ''
+            groups = {g: body_group(m.body(m.geom_bodyid[g]).name, mesh(g)) for g in robot}
+            models[key] = (m, mujoco.MjData(m), groups, [int(o) for o in index.obstacles])
+        m, d, groups, obstacles = models[key]
+        stands = [e['time'] for e in session['events'] if e['type'] == 'stand']
+        t_stand = stands[0] if stands else math.inf
+        result = {w: {g: None for g in BODY_GROUPS} for w in ('walking', 'stand')}
+        arm_at_stand = None
+        for frame in session['frames']:
+            d.qpos[:] = frame['qpos']
+            mujoco.mj_kinematics(m, d)
+            window = 'stand' if frame['time'] >= t_stand - 1e-9 else 'walking'
+            best = {}
+            for g, group in groups.items():
+                for o in obstacles:
+                    dist = float(mujoco.mj_geomDistance(m, d, g, o, 1.0, None))
+                    best[group] = min(best.get(group, math.inf), dist)
+            for group, dist in best.items():
+                prev = result[window][group]
+                result[window][group] = dist if prev is None else min(prev, dist)
+            if window == 'stand' and arm_at_stand is None:
+                arm_at_stand = best.get('arm')
+        result['arm_at_stand_start_m'] = arm_at_stand
+        result['basis'] = 'min over recorded poses of mj_geomDistance(robot collision geom, obstacle), capped at 1 m'
+        (row_path.parent / 'clearance.json').write_text(json.dumps(result, indent=1))
+        print(f"{row_path.parent}: stand arm {result['stand']['arm']}, at stand start {arm_at_stand}", flush=True)
+
+
+def clearance_table(rows):
+    """Per (world, mode): the arm's clearance when the stand starts and its minimum during the stand (m)."""
+    import statistics
+    table = {}
+    for row in rows:
+        c = row.get('clearance')
+        if not c or c['stand']['arm'] is None or c.get('arm_at_stand_start_m') is None:
+            continue
+        t = table.setdefault((row['world'], row['stand_mode']), {'start': [], 'stand': [], 'closer': 0})
+        t['start'].append(c['arm_at_stand_start_m'])
+        t['stand'].append(c['stand']['arm'])
+        t['closer'] += c['stand']['arm'] < c['arm_at_stand_start_m'] - 0.01
+    lines = ['| world | stand mode | walks | arm clearance at stand start, median | arm clearance during the stand, median / min | '
+             'walks where the stand brought an arm > 1 cm closer |', '|' + '---|' * 6]
+    for (world, mode), t in sorted(table.items(), key=lambda kv: (kv[0][0], STAND_MODES.index(kv[0][1]))):
+        lines.append(f"| {world} | {mode} | {len(t['stand'])} | {statistics.median(t['start']):.3f} | "
+                     f"{statistics.median(t['stand']):.3f} / {min(t['stand']):.3f} | {t['closer']} |")
+    return '\n'.join(lines)
+
+
 def summarize(rows, threshold_n=0.0):
     """Per (world, stand mode): goals, walks with contact, and contact episodes by stand / walking and body group."""
     table = {}
@@ -316,6 +391,8 @@ def main(argv=None):
     ap.add_argument('--walk-wall-s', type=float, default=1800.0)
     ap.add_argument('--threshold-n', type=float, default=0.0, help='count contact episodes whose peak exceeds this')
     ap.add_argument('--summarize-only', action='store_true', help='re-read the finished walks under --out')
+    ap.add_argument('--clearance', action='store_true',
+                    help='post-hoc body-to-obstacle clearance of the finished walks (run with the deploy interpreter)')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args(argv)
     if not 1 <= args.workers <= 2:
@@ -329,8 +406,14 @@ def main(argv=None):
         return 0
     args.out.mkdir(parents=True, exist_ok=True)
     rows = []
+    if args.clearance:
+        clearance(args.out)
+        return 0
     if args.summarize_only:
         rows = [json.loads(p.read_text()) for p in sorted(args.out.glob('*/*/w*/row.json'))]
+        for row, p in zip(rows, sorted(args.out.glob('*/*/w*/row.json'))):
+            if (p.parent / 'clearance.json').is_file():
+                row['clearance'] = json.loads((p.parent / 'clearance.json').read_text())
     else:
         with (args.out / 'results.jsonl').open('a') as log, cf.ThreadPoolExecutor(args.workers) as pool:
             futures = {pool.submit(run_walk, s, args.out, args.min_mem_gb, args.walk_wall_s): s for s in specs}
@@ -350,8 +433,12 @@ def main(argv=None):
     result = {'schema_version': 1, 'created_unix_s': time.time(), 'profile': args.profile, 'narrow_width_m': args.narrow_width,
               'threshold_n': args.threshold_n, 'summary': summary, 'pairing': pairing(rows),
               'at_100n': summarize(rows, 100.0)}
+    if any(r.get('clearance') for r in rows):
+        result['clearance'] = clearance_table(rows)
     (args.out / 'summary.json').write_text(json.dumps(result, indent=1))
     print(table_text(summary))
+    if result.get('clearance'):
+        print(f"\n{result['clearance']}")
     print(f"\nat > 100 N:\n{table_text(result['at_100n'])}")
     print(f"\npairing: {result['pairing']}")
     return 0

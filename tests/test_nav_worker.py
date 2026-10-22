@@ -439,8 +439,12 @@ class NavWorkerIntegrationTests(unittest.TestCase):
         archive = subprocess.run(['git', '-C', str(ROOT), 'archive', 'cbc7fcb', 'studio'], capture_output=True, check=True).stdout
         subprocess.run(['tar', '-x', '-C', str(base)], input=archive, check=True)
         req = request(map=PILLAR, seed=2, initial_goal=[1.5, 0.3], latency={'ms': 160, 'anchor': 'predict'})
-        old = self.walk_and_end(Session(Path(self.tmp.name) / 'old', req, root=base))
-        new = self.walk_and_end(Session(Path(self.tmp.name) / 'new', req))
+        sessions = [Session(Path(self.tmp.name) / 'old', req, root=base)]
+        self.addCleanup(sessions[0].close)
+        old = self.walk_and_end(sessions[0])
+        sessions.append(Session(Path(self.tmp.name) / 'new', req))
+        self.addCleanup(sessions[1].close)
+        new = self.walk_and_end(sessions[1])
         self.assertEqual(len(new['frames']), len(old['frames']))
         self.assertEqual([f['qpos'] for f in new['frames']], [f['qpos'] for f in old['frames']])
         self.assertEqual([f['command']['joints'] for f in new['frames']], [f['command']['joints'] for f in old['frames']])
