@@ -13,9 +13,11 @@ A local cockpit for rehearsing Unitree G1 navigation policies before deployment.
 
 Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the same timeline.
 
+![Studio replaying a WX-RF rehearsal through an offset doorway: the executed robot, its pink SONIC reference, the amber planned futures, the timeline lanes and the inspector](docs/img/studio-replay.jpg)
+
 **No motor commands, ever.** Studio has no DDS participant and no motor-command path: it never publishes `rt/lowcmd`, hand commands or ZMQ `pose`. With the real robot (Navigate's robot link, on the deploy PC, loopback only) it may send the planner node's control socket a goal, only while the robot stands and only after the goal passed its checks, or a stand request, and read the node's status. It never sends Go or quit; the operator starts every walk with `g` on the node console and keeps the remote and the physical E-stop. A simulation result is not hardware readiness, and the robot link has been tested against a protocol fixture only. **Nothing in this repository has run on a robot.**
 
-**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md). The narrated 10-minute tour is on the [site](https://linjiw.github.io/g1-deploy-studio/#tour).
+**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md). The narrated 10-minute tour is on the [site](https://linjiw.github.io/g1-deploy-studio/#tour) (recorded before the white redesign).
 
 **What you need.** This repository is Studio: the gateway, the browser app, the simulated robot and robot link adapters, their tests and the site. It contains no robot model, meshes, weights or recordings. Replay works on your own recordings. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack from local checkouts (`g1-student-deploy` with the frozen Flow student bundle and the SONIC release policy, and Flow for the WX profiles; paths in `studio/workbench.py` and `config/references.json`), which are not part of this repository.
 
@@ -31,6 +33,8 @@ tools/studio_service.sh status        # served commit + unit state
 Open **http://127.0.0.1:8790/**. From another computer, use an SSH tunnel: `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open `http://localhost:8790/`. See [service and access](docs/SERVICE.md).
 
 **Stage:** choose **Stage** in the top bar, or open [the rehearsal stage](http://127.0.0.1:8790/?workspace=rehearse&focus=1), for one run full screen: the robot, its reference and plan, and the room. It has floating layer pills, one dock and a **Setup** sheet for the existing policy and arena controls. It labels the displayed recording's policy apart from the next run's. See [Stage](docs/STAGE.md).
+
+![Stage: the same run full screen, with what is shown and where its map came from, the facts at the cursor and one dock](docs/img/studio-stage.jpg)
 
 First-time setup on a new machine:
 

@@ -87,7 +87,6 @@ try {
     const policies = await page.evaluate(() => window.__studio.rehearse.catalog.policies);
     const adopted = policies.find(p => p.matches_adopted && p.available);
     POLICY ??= adopted?.id ?? s.selectedPolicy;
-    OTHER = policies.find(p => p.available && p.id !== POLICY)?.id ?? null;
     const selected = policies.find(p => p.id === s.selectedPolicy);
     assert.ok(selected?.available, `The preselected policy must be available: ${s.selectedPolicy}`);
     if (adopted) assert.equal(s.selectedPolicy, adopted.id, 'Rehearse preselects the adopted policy when it is built.');
@@ -149,7 +148,6 @@ try {
     await check('reuse the named recording without starting another worker', async () => {
       const job = await get(`/api/jobs?id=${encodeURIComponent(existingJob)}&light=1`);
       assert.equal(job.status, 'completed'); POLICY = job.scenario.policy_id;
-      OTHER = (await page.evaluate(() => window.__studio.rehearse.catalog.policies)).find(p => p.available && p.id !== POLICY)?.id ?? null;
       await page.click('#focus-exit');
       await page.click('#workspace-replay');
       await page.selectOption('#session-picker', existingJob);
@@ -228,6 +226,9 @@ try {
     return { seekTime: seekState.time, cameras, screenshot: await shot('05-replay-controls') };
   });
 
+  // The next run's policy must differ from both the displayed recording's and the one already selected.
+  const current = (await state()).selectedPolicy;
+  OTHER = (await page.evaluate(() => window.__studio.rehearse.catalog.policies)).find(p => p.available && p.id !== POLICY && p.id !== current)?.id ?? null;
   if (OTHER) await check('choosing another policy for the next run keeps the displayed recording identified', async () => {
     const before = await state();
     await openSetup();

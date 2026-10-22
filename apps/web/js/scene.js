@@ -312,7 +312,7 @@ export async function loadSessionScene(session, id, isCurrent) {
   const worldAvailable = session.frames.some(hasPose) || session.frames.some(hasRoot);
   const names = session.joint_names ?? [];
   const [main, ref] = worldAvailable && spec
-    ? await Promise.all([buildRobot(spec, names), buildRobot(spec, names, { opacity: 0.34 })]) : [null, null];
+    ? await Promise.all([buildRobot(spec, names), buildRobot(spec, names, { opacity: 0.26 })]) : [null, null];
   if (!isCurrent()) return null;
   clearSessionScene();
   view.session = session; view.model = spec; view.robot = main; view.ghost = ref;
