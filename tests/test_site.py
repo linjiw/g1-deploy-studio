@@ -216,14 +216,17 @@ class LocalMaterialTests(unittest.TestCase):
                               env={**os.environ, **(env or {})}, timeout=120)
 
     def test_ci_builds_refuse_local_material(self):
-        if not (self.ROOT / 'node_modules' / 'three' / 'build' / 'three.module.min.js').is_file():
-            self.skipTest('three.js is not installed (npm ci)')
         with tempfile.TemporaryDirectory() as tmp:
             data, out, local = Path(tmp, 'data'), Path(tmp, 'out'), Path(tmp, 'next-local.json')
             data.mkdir(); (data / 'worlds.json').write_text('{"worlds": []}'); local.write_text('{"sections": []}')
+            # Refused before anything is copied, so this holds whatever node_modules holds.
             r = self.run_script('build.sh', str(out), str(data), env={'CI': 'true', 'NEXT_LOCAL': str(local)})
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('local builds only', r.stderr)
+            self.assertFalse(out.exists())
+            modules = self.ROOT / 'node_modules'
+            if not ((modules / 'three' / 'build' / 'three.module.min.js').is_file() and (modules / '@fontsource-variable' / 'inter').is_dir()):
+                self.skipTest('the public-build half needs npm ci (three.js and Inter)')
             r = self.run_script('build.sh', str(out), str(data), env={'CI': '', 'NEXT_LOCAL': ''})
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(json.loads((out / 'data' / 'next-local.json').read_text()), {})

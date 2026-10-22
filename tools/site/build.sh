@@ -9,6 +9,8 @@ OUT=${1:?out dir}
 DATA=${2:?site-data dir}
 MEDIA=${3:-}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+# Local-only material is refused in CI before anything is built (docs/SITE.md).
+if [ -n "${NEXT_LOCAL:-}" ] && [ -n "${CI:-}" ]; then echo "NEXT_LOCAL is for local builds only" >&2; exit 1; fi
 THREE="$ROOT/node_modules/three"
 [ -f "$THREE/build/three.module.min.js" ] || { echo "three.js missing: run npm ci" >&2; exit 1; }
 [ -f "$DATA/worlds.json" ] || { echo "$DATA has no worlds.json: run tools/site/export.py" >&2; exit 1; }
@@ -31,7 +33,6 @@ cp "$INTER/LICENSE" "$OUT/vendor/fonts/Inter-LICENSE.txt"
 (cd "$DATA" && tar --exclude='robot-meshes.txt' --exclude='*.tmp' --exclude='next-local.json' -cf - .) | tar -xf - -C "$OUT/data"
 if [ -n "$MEDIA" ] && [ -d "$MEDIA" ]; then cp -r "$MEDIA/." "$OUT/media/"; fi
 if [ -n "${NEXT_LOCAL:-}" ]; then
-  [ -z "${CI:-}" ] || { echo "NEXT_LOCAL is for local builds only" >&2; exit 1; }
   python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$NEXT_LOCAL"
   cp "$NEXT_LOCAL" "$OUT/data/next-local.json"
   echo "next-local: $NEXT_LOCAL (local build: do not publish $OUT)"
