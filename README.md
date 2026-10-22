@@ -55,7 +55,7 @@ Every value carries an evidence chip: MEASURED, SIM-TRUTH, ESTIMATED, COMMANDED,
 
 | Profile | Planner | Notes |
 |---|---|---|
-| `flow-wxd-rf-5658a6d-s0` | **Flow WXD, retrieval-free** (WX + the DP2 duck keys): the block `flow/research/BEST_MODEL.md` names as adopted since 2026-10-20. Pinned at Flow `5658a6d`, config `closed_loop_dp2_xdg.json` arm `XGD-g-s0` (the guard config's arm uses clips), teacher `sk1_s0`, WM-v2 execution check. Built locally with `tools/build_policy_bundle.py --block WXD` | Same adapter and caveats as WX-RF; privileged. Not yet run in Studio beyond the bundle check |
+| `flow-wxd-rf-5658a6d-s0` | **Flow WXD, retrieval-free** (WX + the DP2 duck keys): the block `flow/research/BEST_MODEL.md` names as adopted since 2026-10-20. Pinned at Flow `5658a6d`, config `closed_loop_dp2_xdg.json` arm `XGD-g-s0` (the guard config's arm uses clips), teacher `sk1_s0`, WM-v2 execution check. Built locally with `tools/build_policy_bundle.py --block WXD` | Same adapter and caveats as WX-RF; privileged. Studio smoke (2026-10-22, K8/ODE6, CPU, no latency): ducked under a 1.05 m beam (pelvis 0.65 m), no contact, timed out at the 6 s cap |
 | `flow-wx-rf-23326aa-s0` | **Flow WX, retrieval-free**: adopted 2026-10-16, superseded by WXD on 2026-10-20. Pinned at Flow `23326aa`, config `closed_loop_wxr0_c3.json` (sha `1ffc4069…`), teacher `sk1_s0`, WM-v2 execution check | Flow's own closed-loop callback on MuJoCo. Privileged: plans from the exact boxes, not LiDAR. Default budget K8/ODE6 (evaluated 16/10) |
 | `flow-bundle-20261008` | Frozen g1-student-deploy bundle: student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1 | LiDAR-driven sensor route through `sim.lockstep`; the only profile Navigate and the robot run |
 
