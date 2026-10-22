@@ -13,8 +13,9 @@ body.flow-focus { display: block; overflow: hidden; }
 .flow-focus .viewport-shell { height: 100%; width: 100%; min-height: 0; flex: 1; }
 .flow-focus .shell > .tool-panel, .flow-focus .shell > .inspector { display: none !important; }
 .flow-focus .loading-overlay { z-index: 5; }
-.flow-focus #error-banner { position: fixed; top: auto; bottom: 150px; left: 50%; max-width: min(560px, calc(100vw - 32px)); z-index: 120; }
-.flow-focus #render-rate { top: auto; bottom: 150px; }
+/* Above the dock (and above the facts strip on phones): --focus-footer-height is measured by focus.js. */
+.flow-focus #error-banner { position: fixed; top: auto; bottom: calc(var(--focus-footer-height, 110px) + 28px); left: 50%; max-width: min(560px, calc(100vw - 32px)); z-index: 120; }
+.flow-focus #render-rate { top: auto; bottom: calc(var(--focus-footer-height, 110px) + 28px); }
 
 #focus-root { --gap: max(16px, env(safe-area-inset-left, 0px)); position: fixed; inset: 0; z-index: 20; pointer-events: none; color: var(--text); font-family: var(--font); }
 #focus-root button, #focus-root input, #focus-root .focus-glass { pointer-events: auto; }
@@ -58,11 +59,11 @@ body.flow-focus { display: block; overflow: hidden; }
 .focus-top-right { position: absolute; top: max(16px, env(safe-area-inset-top, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 #focus-root .focus-exit { border-radius: 999px; padding: 0 14px 0 10px; border-color: var(--glass-line); }
 #focus-root .focus-exit:hover:not(:disabled) { background: rgba(255, 255, 255, .96); border-color: var(--border-strong); }
-.focus-facts { display: grid; grid-template-columns: repeat(3, auto); gap: 4px 18px; padding: 9px 14px; border-radius: 14px; }
+.focus-facts { display: grid; grid-template-columns: repeat(4, auto); gap: 4px 18px; padding: 9px 14px; border-radius: 14px; }
 .focus-facts > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .focus-facts span { color: var(--dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; white-space: nowrap; }
 .focus-facts strong { font: 600 14px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-#focus-root[data-preview="true"] .focus-facts strong { font: 500 12px var(--font); color: var(--faint); }
+#focus-root[data-preview="true"] .focus-facts strong { font: 500 12px var(--font); color: var(--dim); }
 
 /* ----- bottom: hint and the one dock */
 .focus-bottom { position: absolute; bottom: max(16px, env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); text-align: center; }
@@ -109,6 +110,8 @@ body.flow-focus { display: block; overflow: hidden; }
   .focus-source { font-size: 12px; }
   .focus-facts { position: fixed; left: var(--gap); right: var(--gap); bottom: calc(var(--focus-footer-height, 150px) + max(12px, env(safe-area-inset-bottom, 0px)) + 8px); justify-content: space-around; text-align: center; padding: 7px 10px; }
   .focus-facts > div { align-items: center; }
+  .flow-focus #error-banner, .flow-focus #render-rate { bottom: calc(var(--focus-footer-height, 150px) + 80px); }
+  #focus-root .focus-notice { max-height: 18vh; }
   .focus-bottom { bottom: max(12px, env(safe-area-inset-bottom, 0px)); width: calc(100vw - 24px); max-width: none; }
   .focus-hint { margin-bottom: 8px; font-size: 11.5px; min-height: 17px; }
   .focus-dock { flex-wrap: wrap; justify-content: center; row-gap: 2px; padding: 6px 4px; }
@@ -117,7 +120,10 @@ body.flow-focus { display: block; overflow: hidden; }
   #focus-root .focus-dock .focus-play { min-width: 68px; }
 }
 @media (max-width: 420px) {
-  .focus-title small { display: none; }
+  .focus-local-view, .focus-brand { display: none; }
+  .focus-title { max-width: calc(100% - 100px); }
+  .focus-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; }
+  .flow-focus #error-banner, .flow-focus #render-rate { bottom: calc(var(--focus-footer-height, 150px) + 116px); }
   #focus-root .focus-layers button { padding: 0 9px; font-size: 12px; gap: 5px; }
   .focus-source { grid-template-columns: 56px minmax(0, 1fr); font-size: 11.5px; }
   .focus-facts strong { font-size: 12.5px; }
@@ -132,11 +138,18 @@ body.flow-focus { display: block; overflow: hidden; }
   .flow-focus .policy-card { overflow-wrap: anywhere; }
   .flow-focus .inspector-content { padding: 10px; }
 }
-@media (max-height: 620px) and (min-width: 761px) {
-  .focus-heading { padding: 9px 12px; }
-  .focus-source { display: none; }
-  .focus-hint { display: none; }
+/* Short screens (for example 1280 × 600): keep what is shown and where its map came from, just tighter. */
+@media (max-height: 640px) and (min-width: 761px) {
+  .focus-top-left, .focus-top-right { gap: 6px; }
+  .focus-heading { padding: 8px 12px; }
+  .focus-mode { margin-bottom: 2px; }
+  #focus-scene-name { font-size: 13.5px; margin-bottom: 4px; }
+  .focus-outcome { margin-bottom: 6px; padding: 2px 9px; }
+  .focus-source { font-size: 12px; gap: 1px 10px; }
+  .focus-hint { margin-bottom: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   #focus-root *, .flow-focus .tool-panel *, .flow-focus .inspector * { transition: none !important; animation: none !important; }
 }
+/* Medium widths: the four facts in two rows, so they never reach the provenance card. */
+@media (max-width: 1100px) and (min-width: 761px) { .focus-facts { grid-template-columns: repeat(2, auto); } }

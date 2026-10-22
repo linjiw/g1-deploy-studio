@@ -12,7 +12,6 @@ const CAMERA_LABEL = { orbit: 'Orbit', follow: 'Follow', top: 'Top', scene: 'Fit
 function policyName(p) {
   if (!p) return 'Policy unavailable';
   if (p.research_block) return `Flow ${p.research_block}${/retrieval-free/i.test(p.variant ?? '') ? '-RF' : ''}`;
-  if (p.id === 'flow-bundle-20261008') return 'Flow S2 · frozen deploy bundle';
   return p.short_label ?? p.label ?? p.id ?? 'Policy unavailable';
 }
 
@@ -36,7 +35,7 @@ export function focusPresentation(state, rh, preview = false) {
   return { empty, live, waiting, active, displayed, selected: selected ? `${policyName(selected)}${selected.matches_adopted ? ' · adopted' : ''}` : 'Choose in Setup',
     mode, source, canReplay: !empty && !live && !state.loading && !!state.session?.frames?.length,
     title: empty ? rh.map?.label ?? 'Choose an arena in Setup' : meta.title ?? state.sessionId ?? 'Recorded session',
-    identity: profile?.identity_sha256 ?? profile?.config_sha256 ?? null,
+    identity: profile?.identity_sha256 ?? profile?.config_sha256 ?? null, realRobot,
     outcome: empty || live ? null : meta.test_result?.outcome ?? null };
 }
 
@@ -57,7 +56,7 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
   root.id = 'focus-root'; root.hidden = true;
   root.innerHTML = `
     <div class="focus-top-left">
-      <div class="focus-title focus-glass"><span class="focus-mark">G1</span><span><strong>Deploy Studio · Stage</strong><small class="focus-boundary">Local view <span>·</span> No motor commands</small></span></div>
+      <div class="focus-title focus-glass"><span class="focus-mark">G1</span><span><strong><span class="focus-brand">Deploy Studio · </span>Stage</strong><small class="focus-boundary"><span class="focus-local-view">Local view · </span>No motor commands</small></span></div>
       <div class="focus-layers focus-glass" role="group" aria-label="Scene layers">${LAYERS.map(([key, label]) => `<button id="focus-layer-${key}" data-focus-layer="${key}" aria-pressed="true" style="--dot: ${LAYER_DOT[key]}"><i></i>${label}</button>`).join('')}</div>
       <div class="focus-heading focus-glass" tabindex="-1" aria-label="What the stage shows">
         <p id="focus-mode" class="focus-mode" role="status"></p>
@@ -70,9 +69,10 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
     <div class="focus-top-right">
       <button id="focus-exit" class="focus-exit focus-glass">${icons.exit}<span>Back to Studio</span></button>
       <div class="focus-facts focus-glass" aria-label="Data at the displayed simulation time">
-        <div><span>Sim time</span><strong id="focus-time">Unavailable</strong></div>
+        <div><span id="focus-time-label">Sim time</span><strong id="focus-time">Unavailable</strong></div>
         <div><span>Goal distance</span><strong id="focus-distance">Unavailable</strong></div>
         <div><span>Obstacle contact</span><strong id="focus-contact">Unavailable</strong></div>
+        <div title="Joint RMSE between the SONIC reference and the executed body at the cursor"><span>Tracking RMSE</span><strong id="focus-tracking">Unavailable</strong></div>
       </div>
     </div>
     <div class="focus-bottom"><p id="focus-hint" class="focus-hint">Drag to orbit · scroll to zoom</p>
@@ -91,7 +91,7 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
   // Controls wrap on narrow screens (and during cancellation). Keep the facts
   // above the actual footer height instead of assuming a fixed dock height.
   const footerObserver = new ResizeObserver(([entry]) => {
-    root.style.setProperty('--focus-footer-height', `${entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height}px`);
+    document.body.style.setProperty('--focus-footer-height', `${entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height}px`);
   });
   footerObserver.observe(root.querySelector('.focus-bottom'));
   const inspector = document.querySelector('.inspector');
@@ -115,8 +115,10 @@ export function initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, ca
     root.dataset.preview = String(p.empty); root.dataset.live = String(p.live);
     const goal = frame?.navigation ? frame.navigation.goal_xy : meta.goal_xy;
     const distance = !p.empty && Array.isArray(goal) && Array.isArray(frame?.position) ? Math.hypot(frame.position[0] - goal[0], frame.position[1] - goal[1]) : null;
-    const contact = !p.empty && state.frame ? sampleHealth(state).contact_force_n : null;
+    const health = !p.empty && state.frame ? sampleHealth(state) : null, contact = health?.contact_force_n ?? null, tracking = health?.tracking_rmse_rad ?? null;
+    text('focus-time-label', p.realRobot ? 'Recording time' : 'Sim time');
     text('focus-time', !p.empty && finite(state.time) ? `${state.time.toFixed(2)} s` : 'Unavailable');
+    text('focus-tracking', finite(tracking) ? `${tracking.toFixed(3)} rad` : 'Unavailable');
     text('focus-distance', finite(distance) ? `${distance.toFixed(2)} m` : 'Unavailable');
     text('focus-contact', finite(contact) ? `${contact.toFixed(1)} N` : 'Unavailable');
     $('focus-play').disabled = !p.canReplay; $('focus-restart').disabled = !p.canReplay;

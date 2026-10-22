@@ -29,6 +29,7 @@ page.on('requestfailed', r => { if (!/ERR_ABORTED/.test(r.failure()?.errorText ?
 const save = () => writeFile(path.join(evidence, existingJob ? 'stage-recheck.json' : 'stage.json'), JSON.stringify(report, null, 2));
 const shot = async name => { const file = path.join(evidence, `${name}.png`); await page.screenshot({ path: file }); return file; };
 const get = async endpoint => { const r = await context.request.get(`${base}${endpoint}`); assert.ok(r.ok(), `${endpoint}: HTTP ${r.status()}`); return r.json(); };
+const skip = async (name, reason) => { report.checks.push({ name, status: 'SKIP', reason }); console.log(`SKIP ${name}: ${reason}`); await save(); };
 const check = async (name, fn) => {
   current = name; const start = Date.now();
   try { const details = await fn(); report.checks.push({ name, status: 'PASS', ms: Date.now() - start, details }); console.log(`PASS ${name}`); }
@@ -168,7 +169,8 @@ try {
     assert.equal(job.scenario.policy_id, POLICY); if (!existingJob) assert.ok(job.scenario.duration_s <= 6);
     await waitReplay(report.jobId);
     const s = await state();
-    if (s.profile) { assert.equal(s.profile.id, POLICY); assert.ok(s.profile.identity_sha256 || s.profile.config_sha256, 'A pinned policy identity hash is required.'); }
+    assert.ok(s.profile, 'The recording must carry its policy profile (runs from an older gateway may not; recheck a newer one).');
+    assert.equal(s.profile.id, POLICY); assert.ok(s.profile.identity_sha256 || s.profile.config_sha256, 'A pinned policy identity hash is required.');
     assert.ok(/replay/i.test(s.labels['focus-mode']), `Completed stage mode: ${s.labels['focus-mode']}`);
     if (PRIVILEGED) assert.ok(/privileged/i.test(s.labels['focus-provenance']));
     const execution = await page.evaluate(() => {
@@ -179,6 +181,7 @@ try {
     assert.ok(execution.frames > 5 && execution.lastTime > execution.firstTime, `Actual execution samples: ${JSON.stringify(execution)}`);
     assert.ok(execution.last.some((v, i) => Math.abs(v - execution.first[i]) > 1e-5), 'Actual joint/root states must evolve, not duplicate a frozen pose.');
     assert.ok(execution.adapter, `The recording names its adapter: ${JSON.stringify(execution)}`);
+    if (s.profile.research_block) assert.ok(/flow_policy_worker/.test(execution.adapter), `A Flow research profile runs through Flow's own callback, got ${execution.adapter}`);
     return { jobId: report.jobId, state: s, execution, scene: await assertScene(), screenshot: await shot('04-completed-replay') };
   });
 
@@ -229,7 +232,8 @@ try {
   // The next run's policy must differ from both the displayed recording's and the one already selected.
   const current = (await state()).selectedPolicy;
   OTHER = (await page.evaluate(() => window.__studio.rehearse.catalog.policies)).find(p => p.available && p.id !== POLICY && p.id !== current)?.id ?? null;
-  if (OTHER) await check('choosing another policy for the next run keeps the displayed recording identified', async () => {
+  if (!OTHER) await skip('choosing another policy for the next run keeps the displayed recording identified', 'no second available policy on this gateway');
+  else await check('choosing another policy for the next run keeps the displayed recording identified', async () => {
     const before = await state();
     await openSetup();
     await page.check(`input[name=policy][value="${OTHER}"]`);
@@ -253,6 +257,23 @@ try {
     assert.equal(await page.locator('#focus-inspector').isVisible(), false);
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'focus-inspect');
     assert.ok(await page.locator('#focus-root').isVisible());
+  });
+
+  await check('a short desktop screen (1280 × 600) keeps what is shown and where its map came from', async () => {
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.waitForTimeout(250);
+    for (const sel of ['#focus-displayed-policy', '#focus-provenance', '#focus-selected-policy', '#focus-hint']) assert.ok(await page.locator(sel).isVisible(), `${sel} is visible`);
+    const boxes = {};
+    for (const sel of ['.focus-heading', '.focus-facts', '#focus-exit', '.focus-dock', '#focus-hint']) {
+      const b = await page.locator(sel).boundingBox(); assert.ok(b && b.y >= -1 && b.y + b.height <= 601 && b.x >= -1 && b.x + b.width <= 1281, `${sel} fits: ${JSON.stringify(b)}`); boxes[sel] = b;
+    }
+    const e = Object.entries(boxes);
+    for (let i = 0; i < e.length; i++) for (let j = i + 1; j < e.length; j++) {
+      const [an, a] = e[i], [bn, b] = e[j];
+      const ox = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x), oy = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+      assert.ok(ox <= 1 || oy <= 1, `${an} overlaps ${bn}`);
+    }
+    return { boxes, screenshot: await shot('07-short-1280x600') };
   });
 
   for (const width of [390, 320]) await check(`mobile ${width}px stage controls fit and setup scrolls`, async () => {
@@ -302,7 +323,8 @@ try {
   console.error(error.stack);
 } finally {
   report.finished = new Date().toISOString();
-  report.ok = report.checks.length > 0 && report.checks.every(c => c.status === 'PASS') && !report.errors.length && !report.requests.length;
+  report.ok = report.checks.some(c => c.status === 'PASS') && report.checks.every(c => c.status !== 'FAIL') && !report.errors.length && !report.requests.length;
+  report.skipped = report.checks.filter(c => c.status === 'SKIP').map(c => c.name);
   await save();
   await browser.close();
 }

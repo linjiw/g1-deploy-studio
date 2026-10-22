@@ -12,7 +12,7 @@ Click **Stage** in the top bar, or open a view link with `focus=1`, for example 
   - **Showing**: the policy that produced the displayed recording;
   - **Map**: where the planner's map came from (for example "Privileged scene boxes · simulator truth");
   - **Next run**: the policy selected for the next rehearsal. It is not the displayed one.
-- **Top right**: *Back to Studio*, plus the simulated time, goal distance and obstacle contact at the cursor. A value that the recording does not carry reads **Unavailable**, never zero.
+- **Top right**: *Back to Studio*, plus the simulated time, goal distance, obstacle contact and tracking RMSE at the cursor. A value that the recording does not carry reads **Unavailable**, never zero.
 - **The dock**:
   - **Setup** opens the existing Rehearse form as a sheet (policy, arena and preset, criterion, latency, actuator limits, budget), and **Run preset** starts one bounded owned CPU rehearsal.
   - **Restart**, **Play** and the scrubber control the recording only. They never pause a live worker; **Cancel run** uses the owned-worker cancellation.
@@ -25,12 +25,12 @@ Changing the arena or preset in Setup shows a labelled **arena preview**. Its fa
 ## What the layers mean
 
 - **Robot**: the executed body (simulator state in a rehearsal; the recorded state in a replay).
-- **Reference** (pink): the pose SONIC is asked to track now. It is drawn behind the robot, so it shows only where it differs from the executed body. A reference is a command, not a prediction that the tracker will reach it.
+- **Reference** (pink): the pose SONIC is asked to track now. It is drawn just behind the robot, so it shows where it differs from the executed body by more than a small, view-dependent depth tolerance (about a centimetre at orbit distance, a few centimetres from far away); when the two coincide, only the pink reference line shows. **Tracking RMSE** at top right gives the difference as a number. A reference is a command, not a prediction that the tracker will reach it.
 - **Planned** (amber): the planner's intended future, at +0.4 s and +0.9 s.
 - **Path**: the recorded path (grey) and the part travelled so far (teal).
 - **Room**: the configured collision boxes. For a privileged profile (WX-RF, WXD) these are the exact boxes the planner used; they are not a LiDAR observation.
 
-Missing channels stay missing. Coordinate frames are a Studio layer (off by default); the stage leaves them out.
+Missing channels stay missing. Coordinate frames are a Studio layer, off by default; if you switch them on in Studio they stay on in the stage.
 
 ## What we took from SuperMimic, and what we left
 

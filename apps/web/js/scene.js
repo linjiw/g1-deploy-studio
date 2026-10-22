@@ -75,6 +75,7 @@ function setPoints(layer, points) {
 }
 
 // Labels read as quiet white pills with a dot of the marker's colour (the site's goal chip), in sentence case.
+// A red marker (an unverified or rejected goal) gets a red pill and red text, so its warning reads at a glance.
 // Marker names stay upper case: tools find markers by name ('GOAL', 'START').
 const caption = text => text.toLowerCase().replace(/^./, c => c.toUpperCase()).replace(/\blio\b/gi, 'LIO');
 function label(text, color) {
@@ -85,15 +86,15 @@ function label(text, color) {
   const textWidth = Math.ceil(probe.measureText(shown).width), pill = textWidth + 60;
   const width = Math.max(128, Math.ceil((pill + 16) / 32) * 32);
   canvas.width = width; canvas.height = 64;
-  const ctx = canvas.getContext('2d'), x = (width - pill) / 2;
+  const ctx = canvas.getContext('2d'), x = (width - pill) / 2, warn = color === C.red;
   ctx.shadowColor = 'rgba(16, 24, 40, 0.2)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 2;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.95)'; ctx.beginPath(); ctx.roundRect(x, 10, pill, 44, 22); ctx.fill();
-  ctx.shadowColor = 'transparent'; ctx.strokeStyle = 'rgba(16, 22, 28, 0.12)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = warn ? 'rgba(253, 238, 238, 0.97)' : 'rgba(255, 255, 255, 0.95)'; ctx.beginPath(); ctx.roundRect(x, 10, pill, 44, 22); ctx.fill();
+  ctx.shadowColor = 'transparent'; ctx.strokeStyle = warn ? 'rgba(194, 52, 52, 0.45)' : 'rgba(16, 22, 28, 0.12)'; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`; ctx.beginPath(); ctx.arc(x + 23, 32, 7, 0, Math.PI * 2); ctx.fill();
-  ctx.font = font; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = UI.ink; ctx.fillText(shown, x + 39, 33);
+  ctx.font = font; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = warn ? UI.badText : UI.ink; ctx.fillText(shown, x + 39, 33);
   const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, sizeAttenuation: false }));
-  sprite.scale.set(0.088 * width / 256, 0.022, 1);
+  sprite.scale.set(0.11 * width / 256, 0.0275, 1);
   sprite.renderOrder = 10;
   return sprite;
 }
@@ -244,10 +245,11 @@ async function geometry(spec) {
 
 async function buildRobot(spec, jointNames, ghost = null) {
   const joints = [];
-  // Ghosts are pushed back in depth: where the reference coincides with the executed body the robot wins, so the
-  // ghost shows only where the two differ (and the robot keeps its own colour).
+  // Ghosts are pushed back in depth by a hair: where the reference coincides with the executed body the robot wins,
+  // so the ghost shows where the two differ (by more than the depth tolerance, about a centimetre at orbit distance)
+  // and the robot keeps its own colour.
   const ghostMaterial = ghost ? new THREE.MeshStandardMaterial({ color: ghost.color ?? C.ghost, transparent: true, opacity: ghost.opacity, roughness: 0.6, metalness: 0, depthWrite: false,
-    emissive: ghost.color ?? C.ghost, emissiveIntensity: 0.3, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8 }) : null;
+    emissive: ghost.color ?? C.ghost, emissiveIntensity: 0.3, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }) : null;
   async function body(node) {
     const group = new THREE.Group(); group.name = node.name;
     const restPosition = new THREE.Vector3(...node.position), restQuaternion = quat(node.quaternion_wxyz);
