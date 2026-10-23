@@ -15,6 +15,7 @@ Start with **[STATUS.md](STATUS.md)**: one page with what works, the current res
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Studio's place in the SONIC pipeline and its integration contract |
 | [ROADMAP.md](ROADMAP.md) | Next steps toward a read-only physical G1 |
 | [NAVIGATE.md](NAVIGATE.md) | **Navigate**: goals on the robot's own map with the simulated or the real robot; goal checks, scan to twin; the session contract |
+| [DEPLOY_FIDELITY.md](DEPLOY_FIDELITY.md) | How close the simulated robot is to node.py: stand modes and their measured contacts, node.py's latency rule, the deploy preset, the remaining gaps |
 | [REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md) | Design: seeing the robot's perception, building maps from it, putting goals on them and watching real runs |
 | [STAGE.md](STAGE.md) | Stage: one run full screen, its layers and provenance, what it took from SuperMimic and Codex, and its browser test |
 | [SITE.md](SITE.md) | The public site: recorded walks of the real stack, how they are made, hosted and kept light |

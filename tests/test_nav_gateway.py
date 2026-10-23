@@ -80,5 +80,45 @@ class NavGatewayTests(unittest.TestCase):
                 self.w.nav_command(job['id'], {'cmd': cmd})
 
 
+class NavDeploySettingsTests(unittest.TestCase):
+    """Navigate's "Use deploy settings" preset (apps/web/js/navigate.js) resolves to the robot's deploy configuration."""
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def js_object(self, name):
+        import re
+        text = (self.ROOT / 'apps/web/js/navigate.js').read_text()
+        body = re.search(r'const %s = \{(.*?)\};' % name, text, re.S).group(1)
+        return text, body
+
+    def test_preset_maps_to_valid_gateway_options(self):
+        import re
+        from studio import nav_worker
+        from studio.workbench import NAV_ODOMETRY, NAV_PLANNER
+        _, body = self.js_object('DEPLOY_SETTINGS')
+        preset = dict(re.findall(r"(\w+): '([\w-]+)'", body))
+        self.assertEqual(preset, {'planner': 'deployed', 'latency': 'node', 'actuators': 'g1-current', 'odometry': 'lio',
+                                  'map_mode': 'keep'})
+        self.assertEqual({k: NAV_PLANNER['deployed'][k] for k in ('candidates', 'ode_steps')}, {'candidates': 16, 'ode_steps': 10})
+        self.assertIn(preset['odometry'], NAV_ODOMETRY)
+        _, latency = self.js_object('LATENCY')
+        node = re.search(r"\n  node: \{.*?value: \{ mode: '(\w+)', preset: '([\w-]+)' \}", latency)
+        self.assertEqual(node.groups(), ('node', 'bundle-fused'))
+        clean = Workbench._nav_latency({'mode': 'node', 'preset': 'bundle-fused'}, {'loader': 'deploy-bundle'})
+        self.assertEqual(clean, nav_worker.validate_nav_latency({'mode': 'node', 'preset': 'bundle-fused'}))
+        self.assertEqual(clean['distribution'], {'kind': 'lognormal', 'p50_s': 0.119, 'p95_s': 0.167})
+
+    def test_gateway_latency_and_stand_mode(self):
+        from studio import nav_worker
+        profile = {'loader': 'deploy-bundle'}
+        self.assertEqual(Workbench._nav_latency({'ms': 160, 'anchor': 'predict'}, profile), {'ms': 160, 'anchor': 'predict'})
+        self.assertEqual(Workbench._nav_latency(None, profile), {'ms': 0, 'anchor': 'measured'})
+        self.assertEqual(Workbench._nav_latency({'mode': 'node', 'distribution': {'kind': 'fixed', 's': 0.2}}, profile)['preset'], 'custom')
+        with self.assertRaises(ValueError):
+            Workbench._nav_latency({'mode': 'node', 'preset': 'nope'}, profile)
+        self.assertEqual(nav_worker.validate_stand_mode('hold_upper'), 'hold_upper')
+        with self.assertRaises(ValueError):
+            nav_worker.validate_stand_mode('arms_up')
+
+
 if __name__ == '__main__':
     unittest.main()

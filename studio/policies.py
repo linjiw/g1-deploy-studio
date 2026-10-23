@@ -23,6 +23,12 @@ DEPLOY_ROOT = Path('/home/linjiw/code/g1-student-deploy')
 FLOW_ROOT = Path('/home/linjiw/flow')
 BEST_MODEL = FLOW_ROOT / 'research/BEST_MODEL.md'
 DEFAULT_POLICY = 'flow-bundle-20261008'
+# The deploy bundle's planner is student-s2-kcsc (frozen 2026-10-08), not Flow's current LiDAR student, which no
+# deployable bundle carries yet: say so wherever the bundle is named.
+BUNDLE_LABEL = "student-s2-kcsc (2026-10-08 bundle), not Flow's current LiDAR student"
+# Pinned Flow bundles under POLICY_ROOT: flow-wx-rf-* (WX, retrieval-free) and any other block built by
+# tools/build_policy_bundle.py --block (flow-<block>-rf-*); the id pattern is studio.policy_bundle.BUNDLE_ID.
+BUNDLE_GLOB = 'flow-*'
 STUDIO = Path(__file__).resolve().parent
 # Studio code that executes the policy is part of its identity (a changed adapter = a different run).
 WORKER_SOURCES = {'deploy-bundle': ['policy_worker.py', 'pipeline.py', 'replay.py', 'actuators.py'],
@@ -127,8 +133,9 @@ def _bundle_profile():
         student_config = {}
     return {
         'id': 'flow-bundle-20261008',
-        'label': 'Flow student s2-kcsc · frozen deploy bundle',
-        'short_label': 'Flow bundle 2026-10-08',
+        'label': BUNDLE_LABEL,
+        'short_label': 'Bundle s2-kcsc 2026-10-08',
+        'student': {'id': 'student-s2-kcsc_s0', 'frozen': '2026-10-08', 'deployable_current_student': False},
         'family': 'flow', 'research_block': None,
         'research_lineage': 'closed-loop-v2-main planner snapshot + student-s2-kcsc_s0 (pre-dates SKX2/WX)',
         'loader': 'deploy-bundle',
@@ -151,15 +158,16 @@ def _bundle_profile():
         'default_planner': {'candidates': 4, 'ode_steps': 6},
         'limitations': [
             'Frozen 2026-10-08 planner snapshot; not the Flow research adopted block.',
+            "Planner student-s2-kcsc_s0, not Flow's current LiDAR student (no deployable bundle carries it yet).",
             'Includes Studio-authorized g1-student-deploy route adapters (codex/near-goal-route).',
         ],
     }
 
 
 def _wx_profiles():
-    from studio.policy_bundle import POLICY_ROOT, load_manifest, verify
+    from studio.policy_bundle import BUNDLE_ID, POLICY_ROOT, load_manifest, verify
     rows = []
-    for root in sorted(POLICY_ROOT.glob('flow-wx-rf-*')):
+    for root in sorted(p for p in POLICY_ROOT.glob(BUNDLE_GLOB) if BUNDLE_ID.fullmatch(p.name)):
         try:
             rows.append(_wx_profile(root, load_manifest, verify))
         except Exception as error:  # one incomplete bundle must not hide the others
@@ -174,7 +182,8 @@ def _wx_profile(root, load_manifest, verify):
     quick = verify(root, deep=False)  # sizes/presence; full hashes run inside the worker
     teacher = next((a['path'] for a in manifest['artifacts'] if a['role'] == 'flow teacher checkpoint'), '')
     return {
-        'id': manifest['id'], 'label': manifest['label'], 'short_label': f"WX-RF {manifest['flow']['commit'][:7]}",
+        'id': manifest['id'], 'label': manifest['label'],
+        'short_label': manifest.get('short_label') or f"WX-RF {manifest['flow']['commit'][:7]}",
         'family': 'flow', 'research_block': manifest['research_block'], 'variant': manifest['variant'],
         'revision': manifest['flow']['commit'], 'adopted_commit': manifest['flow']['adopted_commit'],
         'pin_basis': manifest['flow']['pin_basis'], 'config_path': manifest['flow']['config_path'],
@@ -263,6 +272,9 @@ def catalog(research=None):
                    missing=ident['missing'])
         block = profile.get('research_block')
         row['matches_adopted'] = bool(block and research.get('adopted_block') == block)
+        # A bundle labelled "adopted block" when it was built stays so on disk; say what Flow adopts now.
+        if block and research.get('adopted_block') and not row['matches_adopted'] and 'adopted block' in str(row.get('label')):
+            row['label'] = row['label'].replace('adopted block', f"previously adopted (Flow now adopts {research['adopted_block']})")
         rows.append(row)
     # The UI preselects the available profile of the adopted research block; otherwise the bundle.
     adopted = next((r['id'] for r in rows if r['matches_adopted'] and r['available']), None)

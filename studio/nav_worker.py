@@ -2,7 +2,8 @@
 
 It behaves like g1-student-deploy's ``g1deploy/node.py`` on the robot, with MuJoCo + SONIC ONNX in place of
 the robot and its MID-360. The robot stands and waits for a goal, pre-scans, walks with the frozen Flow
-student, arrives and settles to a stand, and keeps one perception memory for the whole session.
+student of the deploy bundle (student-s2-kcsc, the 2026-10-08 bundle student), arrives and settles to a
+stand, and keeps one perception memory for the whole session.
 Phases follow node.py: WAIT -> PRESCAN -> RUN -> ARRIVED | STOPPED, plus BOOT and ENDED.
 
 Planning in RUN is the source lockstep loop (``sim/lockstep.py`` run_episode): the same history, memory,
@@ -31,6 +32,8 @@ from studio.policy_worker import (REFERENCE_ROOT, TorqueTracker, _atomic, _hash,
                                   clean_map, contact_interval, validate_latency, validate_planner)
 
 DT = 0.02
+# The deploy bundle's planner (studio/policies.py BUNDLE_LABEL): never call it Flow's current student.
+BUNDLE_LABEL = "student-s2-kcsc (2026-10-08 bundle), not Flow's current LiDAR student"
 ODOMETRY = {
     'truth': {'label': 'Simulator truth', 'noise': None},
     # g1-student-deploy jobs/g4r.sh LIO and jobs/g4b.sh ODOM configurations (flow StateEstimate).
@@ -50,7 +53,164 @@ SNAPSHOT_PERIOD_S = 0.5
 LAYER_POINTS = 1500
 LIDAR_POINTS = 800             # per recorded snapshot (raw and filtered); the map layers keep LAYER_POINTS
 DEFER_LIMIT_S = 20.0           # Studio's bound on a deferred stand in simulation (node.py keeps deferring)
+# Stand chunk variants (docs/DEPLOY_FIDELITY.md). 'default' is node.py stand() exactly: all 29 joints blend to SONIC's
+# default pose (arms out: shoulder roll +-0.2, elbow 0.6). 'hold_upper' (opt-in, for measurement): only the legs
+# settle; waist and arms keep the measured pose.
+STAND_MODES = ('default', 'hold_upper')
+UPPER_MJ = 12                  # MuJoCo joints 12..28 are waist (12-14) and arms (15-28); 0..11 are the legs
+BODY_GROUPS = ('arm', 'leg', 'torso', 'head')
+MAX_CONTACT_EPISODES = 100     # per walk; later episodes are counted, not listed
 _TERM = {'flag': False}        # SIGTERM from the gateway (cancel or a limit): end now and keep the recording
+
+
+def stand_chunk(np, q, default_mj, mode='default', settle_s=SETTLE_S, hold_s=HOLD_S):
+    """node.py StudentNode.stand's settle-to-stand chunk from the measured qpos ``q`` (36): joints -> SONIC default
+    pose over ``settle_s`` (smoothstep), pelvis pose held, upright at the measured yaw, then ``hold_s`` of standing.
+
+    mode 'default' is node.py's chunk, unchanged; 'hold_upper' keeps the waist and arms (MuJoCo joints 12..28) exactly
+    at the measured pose for the whole chunk while the legs settle as before."""
+    if mode not in STAND_MODES:
+        raise ValueError(f'stand mode must be one of {list(STAND_MODES)}')
+    q = np.asarray(q, dtype=np.float64)
+    n_settle, n = int(settle_s / DT), int((settle_s + hold_s) / DT)
+    a = np.clip(np.arange(1, n + 1) / n_settle, 0.0, 1.0)[:, None]
+    a = a * a * (3 - 2 * a)
+    frames = np.repeat(q[None], n, 0)
+    frames[:, 7:] = (1 - a) * q[7:] + a * default_mj
+    if mode == 'hold_upper':
+        frames[:, 7 + UPPER_MJ:] = q[7 + UPPER_MJ:]  # exactly the measured pose, zero reference velocity
+    w, x, y, z = q[3:7]
+    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+    rot = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+    return {'qpos': frames, 'rotation': np.repeat(rot[None], n, 0), 'stand': True,
+            'joint_velocity': np.vstack([np.zeros((1, 29)), np.diff(frames[:, 7:], axis=0) / DT])}
+
+
+def body_group(body_name, mesh_name=''):
+    """Body group of a robot collision geom: arm, leg, torso or head (the head mesh rides on torso_link)."""
+    name = f'{body_name} {mesh_name}'.lower()
+    if 'head' in name:
+        return 'head'
+    if any(k in name for k in ('shoulder', 'elbow', 'wrist', 'hand')):
+        return 'arm'
+    if any(k in name for k in ('hip', 'knee', 'ankle', 'foot')):
+        return 'leg'
+    return 'torso'
+
+
+def summarize_contacts(episodes, threshold_n=0.0):
+    """Contact episodes of one walk (or many) split by whether a stand chunk was in force at first contact, counted
+    by the body group that carried the largest force at first contact."""
+    out = {'episodes': 0, 'peak_n': 0.0}
+    for key in ('stand', 'walking'):
+        out[key] = {'episodes': 0, 'by_group': {g: 0 for g in BODY_GROUPS}, 'peak_n': 0.0}
+    for ep in episodes:
+        if ep['peak_n'] <= threshold_n:
+            continue
+        part = out['stand' if ep.get('stand') else 'walking']
+        out['episodes'] += 1
+        part['episodes'] += 1
+        if ep.get('first_group') in part['by_group']:
+            part['by_group'][ep['first_group']] += 1
+        part['peak_n'] = max(part['peak_n'], ep['peak_n'])
+        out['peak_n'] = max(out['peak_n'], ep['peak_n'])
+    out['threshold_n'] = threshold_n
+    return out
+
+
+# ---------------------------------------------------------------- latency mode 'node' (opt-in)
+# node.py's planning loop (g1deploy/node.py StudentNode.request / collect): one planner in flight; a plan's latency is
+# whatever the planner took; lead = ceil(q90 of the last 8 latencies / 20 ms) + 1 from a 0.3 s first guess; a plan that
+# lands after its anchor tick is streamed mid-window; plans failing sane() or not newer than the last streamed anchor
+# are dropped; reference joint velocities are clipped. The three rules below are copied from node.py (the tests check
+# them against its source text); sane() and the argparse defaults are imported from node.py at run time.
+NODE_LATENCY_GUESS_S = 0.3      # node.py --latency-guess-s
+NODE_LATENCY_WINDOW = 8         # node.py collect(): np.quantile(self.latencies[-8:], 0.9)
+NODE_LATENCY_QUANTILE = 0.9
+Z95 = 1.6448536269514722        # standard normal 95 % quantile (lognormal fit from p50 / p95)
+LATENCY_PRESETS = {
+    'bundle-fused': {'kind': 'lognormal', 'p50_s': 0.119, 'p95_s': 0.167,
+                     'label': 'Bundle planner on the deploy PC (fused, fp32): p50 0.119 s, p95 0.167 s',
+                     'source': 'g1-student-deploy docs/PLANNER_SPEED.md: 37 recorded states, interleaved, loaded RTX 5080'},
+}
+
+
+def node_lead_ticks(latency_est_s):
+    """node.py request(): ``lead = 0 if first else int(math.ceil(self.latency_est / DT)) + 1``."""
+    return int(math.ceil(latency_est_s / DT)) + 1
+
+
+def node_latency_estimate(np, latencies):
+    """node.py collect(): ``self.latency_est = float(np.quantile(self.latencies[-8:], 0.9))``."""
+    return float(np.quantile(latencies[-NODE_LATENCY_WINDOW:], NODE_LATENCY_QUANTILE))
+
+
+def landing_tick(request_tick, latency_s):
+    """node.py polls its planner once per 20 ms tick, after the tick that made the request: a plan computed in
+    ``latency_s`` is collected at the first tick at or after request + latency, never in the request's own tick."""
+    return request_tick + max(1, int(math.ceil(latency_s / DT - 1e-9)))
+
+
+def nominal_latency_s(dist):
+    """One representative number (for displays that read a single latency): p50, the first-pool time or the fixed value."""
+    return float(dist[{'fixed': 's', 'lognormal': 'p50_s', 'pools': 'first_s'}[dist['kind']]])
+
+
+def _distribution(value):
+    if not isinstance(value, dict):
+        raise ValueError('latency.distribution must be an object')
+    kind = value.get('kind')
+    if kind == 'fixed':
+        return {'kind': 'fixed', 's': _number(value.get('s'), 'latency.distribution.s', 0.0, 2.0)}
+    if kind == 'lognormal':
+        p50 = _number(value.get('p50_s'), 'latency.distribution.p50_s', 0.005, 2.0)
+        return {'kind': 'lognormal', 'p50_s': p50, 'p95_s': _number(value.get('p95_s'), 'latency.distribution.p95_s', p50, 3.0)}
+    if kind == 'pools':
+        return {'kind': 'pools', 'first_s': _number(value.get('first_s'), 'latency.distribution.first_s', 0.005, 2.0),
+                'retry_s': _number(value.get('retry_s', 0.0), 'latency.distribution.retry_s', 0.0, 2.0),
+                'fallback_s': _number(value.get('fallback_s'), 'latency.distribution.fallback_s', 0.005, 5.0)}
+    raise ValueError("latency.distribution.kind must be 'fixed', 'lognormal' or 'pools'")
+
+
+def validate_nav_latency(value):
+    """Navigate's planner latency. ``{ms, anchor}`` (or nothing): the fixed lockstep model, validated as before.
+    ``{mode: 'node', preset | distribution, guess_s}``: node.py's rule with a latency drawn for every plan."""
+    if not (isinstance(value, dict) and value.get('mode') == 'node'):
+        return validate_latency(value)
+    unknown = sorted(set(value) - {'mode', 'preset', 'distribution', 'guess_s'})
+    if unknown:
+        raise ValueError(f'latency: unknown keys {unknown}')
+    preset = value.get('preset', 'custom' if 'distribution' in value else 'bundle-fused')
+    if preset == 'custom':
+        dist = _distribution(value.get('distribution'))
+    elif preset in LATENCY_PRESETS:
+        if value.get('distribution') is not None:
+            raise ValueError('latency: give a preset or a distribution, not both')
+        dist = {k: v for k, v in LATENCY_PRESETS[preset].items() if k not in ('label', 'source')}
+    else:
+        raise ValueError(f"latency.preset must be one of {sorted(LATENCY_PRESETS) + ['custom']}")
+    return {'mode': 'node', 'preset': preset, 'distribution': dist,
+            'guess_s': _number(value.get('guess_s', NODE_LATENCY_GUESS_S), 'latency.guess_s', 0.02, 2.0)}
+
+
+class LatencyDraw:
+    """The simulated planner latency of each plan in node mode, from its own random stream (the planner's is untouched)."""
+
+    def __init__(self, np, dist, seed):
+        self.dist, self.rng = dist, np.random.default_rng([seed, 17])
+
+    def __call__(self, planner, plan):
+        d = self.dist
+        if d['kind'] == 'fixed':
+            return float(d['s']), 'fixed'
+        if d['kind'] == 'lognormal':
+            sigma = (math.log(d['p95_s']) - math.log(d['p50_s'])) / Z95
+            return float(d['p50_s'] * math.exp(sigma * self.rng.standard_normal())), 'lognormal draw'
+        # 'pools': the latency follows the work this replan did (first pool, fallback pools, a check retry).
+        fallback = sum(kind != 'commit' for _, _, kind in (getattr(planner, 'last_pools', None) or [])) > 1
+        retry = int((plan.get('exec_check') or {}).get('tries', 1)) > 1
+        latency = float(d['fallback_s'] if fallback else d['first_s']) + (float(d['retry_s']) if retry else 0.0)
+        return latency, ('fallback pools' if fallback else 'first pool') + (' + check retry' if retry else '')
 
 
 def validate_request(request):
@@ -71,7 +231,7 @@ def validate_request(request):
             'start_xy': _xy(request.get('start_xy', [0, 0]), 'start_xy'),
             'start_yaw_rad': _number(request.get('start_yaw_rad', 0), 'start_yaw_rad', -math.pi, math.pi),
             'seed': seed, 'planner': validate_planner(request.get('planner', {})),
-            'latency': validate_latency(request.get('latency')),
+            'latency': validate_nav_latency(request.get('latency')),
             'actuators': _actuators.validate(request.get('actuators', 'g1-current')),
             'odometry': odometry,
             'goal_radius_m': _number(request.get('goal_radius_m', 0.4), 'goal_radius_m', 0.2, 1.0),
@@ -84,6 +244,7 @@ def validate_request(request):
             'initial_goal': None if initial_goal is None else _xy(initial_goal, 'initial_goal'),
             'map_mode': _map_mode(request.get('map_mode', 'keep')),
             'record_grids': _flag(request.get('record_grids', False), 'record_grids'),
+            'stand_mode': validate_stand_mode(request.get('stand_mode', 'default')),
             'policy': {'id': 'flow-bundle-20261008', 'loader': 'deploy-bundle',
                        'identity_sha256': str((request.get('policy') or {}).get('identity_sha256') or '')[:64] or None}}
 
@@ -91,6 +252,12 @@ def validate_request(request):
 def _map_mode(value):
     if value not in MAP_MODES:
         raise ValueError(f'map_mode must be one of {list(MAP_MODES)}')
+    return value
+
+
+def validate_stand_mode(value):
+    if value not in STAND_MODES:
+        raise ValueError(f'stand_mode must be one of {list(STAND_MODES)}')
     return value
 
 
@@ -192,8 +359,15 @@ def _run(req, output, inbox, started):
     source_prescan = float(variant.get('sensor_prescan_s', 0.0))
     limits = np.asarray([j['range_rad'] for j in json.loads((bundle.ROOT / 'config/sonic_model_contract.json').read_text())['joints']
                          if j['type'] != 'free'])
-    lat_ticks = int(round(req['latency']['ms'] / 1000 / DT))
-    anchor_mode = req['latency']['anchor']
+    node_mode = req['latency'].get('mode') == 'node'
+    lat_ticks = 0 if node_mode else int(round(req['latency']['ms'] / 1000 / DT))
+    anchor_mode = 'predict' if node_mode else req['latency']['anchor']
+    if node_mode:  # node.py's own sane() and defaults (max speed, pelvis band, joint-velocity clip)
+        from types import SimpleNamespace
+        from g1deploy import node as deploy_node
+        node_args = deploy_node.parse(['--goal', '0', '0'])
+        node_sane = lambda plan, _self=SimpleNamespace(args=node_args): deploy_node.StudentNode.sane(_self, plan)
+        draw_latency = LatencyDraw(np, req['latency']['distribution'], seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     planner = cached_planner(flow, pcfg, 'eager', 'fp32')
@@ -226,6 +400,30 @@ def _run(req, output, inbox, started):
     cloud_memory.CloudMemory = ObservedMemory
 
     sim = Physics([dict(b) for b in req['map']['boxes']], bundle.sonic_onnx())
+    # Contact attribution (read-only): the source's max robot-obstacle normal force per substep is returned unchanged;
+    # when it is positive, the same contacts are also split by robot body group for the walk record.
+    import mujoco
+    geom_group = [body_group(sim.model.body(sim.model.geom_bodyid[g]).name,
+                             (mujoco.mj_id2name(sim.model, mujoco.mjtObj.mjOBJ_MESH, int(sim.model.geom_dataid[g])) or '')
+                             if sim.model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH else '')
+                  if sim.index.robot_geom[g] else None for g in range(sim.model.ngeom)]
+    original_contact_force = episode.obstacle_contact_force
+
+    def observed_contact_force(model, data, index):
+        best = original_contact_force(model, data, index)
+        if best > 0:
+            obst, f6, groups = set(index.obstacles.tolist()), np.zeros(6), current['contact_groups']
+            for i in range(data.ncon):
+                c = data.contact[i]
+                g1, g2 = int(c.geom1), int(c.geom2)
+                robot = g2 if g1 in obst and index.robot_geom[g2] else g1 if g2 in obst and index.robot_geom[g1] else None
+                if robot is not None:
+                    mujoco.mj_contactForce(model, data, i, f6)
+                    group = geom_group[robot]
+                    groups[group] = max(groups.get(group, 0.0), abs(float(f6[0])))
+        return best
+    episode.obstacle_contact_force = observed_contact_force
+    current['contact_groups'] = {}
     receipt = _actuators.apply(sim.model, contract.MJ_JOINTS, req['actuators'])
     torque['tracker'] = TorqueTracker(np, sim.model, contract.MJ_JOINTS, contract.EFFORT_MJ)
     original_policy = sim.tracker.policy
@@ -265,19 +463,30 @@ def _run(req, output, inbox, started):
         win = c[a0:a1, b0:b1]
         return bool(np.any(np.isfinite(win) & (win < below_m)))
 
-    def stand_plan(q, tick):  # node.py StudentNode.stand: joints -> SONIC default pose, pelvis yaw kept, then hold
+    def stand_plan(q, tick, mode='default'):  # node.py StudentNode.stand (module-level stand_chunk), then hold
         q = np.asarray(q, dtype=np.float64)
-        n_settle, n = int(SETTLE_S / DT), int((SETTLE_S + HOLD_S) / DT)
-        a = np.clip(np.arange(1, n + 1) / n_settle, 0.0, 1.0)[:, None]
-        a = a * a * (3 - 2 * a)
-        frames = np.repeat(q[None], n, 0)
-        frames[:, 7:] = (1 - a) * q[7:] + a * contract.DEFAULT_MJ
-        w, x, y, z = q[3:7]
-        yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-        rot = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
-        plan = {'qpos': frames, 'rotation': np.repeat(rot[None], n, 0), 'stand': True,
-                'joint_velocity': np.vstack([np.zeros((1, 29)), np.diff(frames[:, 7:], axis=0) / DT])}
-        return (plan, tick, q, np.zeros(29))
+        return (stand_chunk(np, q, contract.DEFAULT_MJ, mode), tick, q, np.zeros(29))
+
+    def node_latency_model():
+        dist = req['latency']['distribution']
+        preset = LATENCY_PRESETS.get(req['latency']['preset'], {})
+        return {'mode': 'node', 'anchor': 'predict', 'preset': req['latency']['preset'], 'distribution': dist,
+                'label': preset.get('label'), 'distribution_source': preset.get('source'),
+                'ms': int(round(nominal_latency_s(dist) * 1000)),
+                'ms_basis': 'nominal latency of the distribution (p50, first-pool time or fixed value), for displays that '
+                            'read one number; every plan draws its own',
+                'guess_s': req['latency']['guess_s'],
+                'lead_rule': 'node.py: lead = ceil(q90 of the last 8 plan latencies / 20 ms) + 1 ticks, first guess '
+                             f"{req['latency']['guess_s']:g} s; the session's first plan has lead 0 and starts when it lands",
+                'landing_rule': 'a plan requested at tick t lands at t + ceil(latency / 20 ms) (at least t + 1)',
+                'late_plans': 'a plan landing after its anchor tick is tracked from the landing tick, part-played (node.py streams '
+                              'it mid-window); an early plan takes over at its anchor tick',
+                'drops': {'sane': f"node.py sane(): non-finite, pelvis z outside [{node_args.min_pelvis_z:g}, 1.0] m, mean speed "
+                                  f"> {node_args.max_speed:g} m/s", 'stale': 'anchor tick not newer than the last streamed plan'},
+                'max_joint_vel_rad_s': node_args.max_joint_vel, 'inflight': 1,
+                'not_modelled': ['planner queueing beyond one in flight', 'ZMQ/DDS transport and runner window effects',
+                                 'node.py building a fresh goal function per plan (Studio keeps one per walk)'],
+                'source': 'g1deploy/node.py StudentNode.request / collect / sane'}
 
     # ---------------------------------------------------------------- session state
     checkout = _git_provenance(REFERENCE_ROOT)
@@ -292,14 +501,18 @@ def _run(req, output, inbox, started):
                 'frame_id': 'world', 'quaternion_convention': 'wxyz', 'units': {'position': 'm', 'joint': 'rad', 'time': 's'},
                 'start_xy': req['start_xy'], 'start_yaw_rad': req['start_yaw_rad'], 'goal_xy': None,
                 'map_id': req['map']['id'], 'map_label': req['map']['label'],
-                'policy_profile': {'id': req['policy']['id'], 'label': 'Flow student s2-kcsc · frozen deploy bundle',
+                'policy_profile': {'id': req['policy']['id'], 'label': BUNDLE_LABEL,
                                    'identity_sha256': req['policy'].get('identity_sha256'), 'loader': 'deploy-bundle',
-                                   'revision': 'bundle 2026-10-08'},
+                                   'revision': 'bundle 2026-10-08', 'student': 'student-s2-kcsc_s0',
+                                   'deployable_current_student': False},
                 'planner_configuration': dict(req['planner'], device='cpu', implementation='eager', route_source='sensor',
-                                              lidar='mjray', start='stand', latency_s=req['latency']['ms'] / 1000,
-                                              anchor_mode=anchor_mode, inflight=1, task_boxes_to_planner=False),
-                'fidelity': 'L2' if lat_ticks else 'L1',
-                'latency_model': {'ms': req['latency']['ms'], 'anchor': anchor_mode,
+                                              lidar='mjray', start='stand',
+                                              latency_s=None if node_mode else req['latency']['ms'] / 1000,
+                                              anchor_mode=anchor_mode, inflight=1, task_boxes_to_planner=False,
+                                              **({'latency_mode': 'node', 'prev_plan_to_planner': False} if node_mode else {})),
+                'fidelity': 'L2' if lat_ticks or node_mode else 'L1',
+                'latency_model': node_latency_model() if node_mode else {
+                                  'ms': req['latency']['ms'], 'anchor': anchor_mode,
                                   'basis': 'source lockstep: a replan requested at tick t drives SONIC from t + latency. The '
                                            "session's first plan is computed before the robot moves (run_episode); later walks "
                                            'start from the stand and pay the latency on their first plan too, as node.py does'},
@@ -308,6 +521,12 @@ def _run(req, output, inbox, started):
                              'as each evaluated rehearsal starts'},
                 'node_rules': {'goal_radius_m': req['goal_radius_m'], 'prescan_s': req['prescan_s'],
                                'tilt_estop_rad': TILT_ESTOP_RAD, 'stand': f'{SETTLE_S:g} s settle + {HOLD_S:g} s hold',
+                               'stand_mode': req['stand_mode'],
+                               'stand_mode_basis': ('node.py stand(): all 29 joints to the SONIC default pose'
+                                                    if req['stand_mode'] == 'default' else
+                                                    'NOT node.py: legs settle, waist and arms (MuJoCo 12-28) held at the '
+                                                    'measured pose (Studio opt-in, for measurement)'),
+                               'takeover_stand': 'default (the remote D-up stand is not node.py stand())',
                                'stand_deferral': 'near a remembered ceiling below 1.35 m within 0.8 m (node.py)',
                                'source': 'g1deploy/node.py'},
                 'actuators': receipt, 'hardware_validated': False, 'command_path_enabled': False, 'fixture': False,
@@ -322,12 +541,17 @@ def _run(req, output, inbox, started):
                     'Simulated time pauses while the robot waits for the operator; the real robot keeps scanning meanwhile.']}
     S = {'phase': 'BOOT', 'tick': 0, 'paused': True, 'goal': None, 'staged': None, 'leg': None, 'legs': [],
          'commands': [], 'events': [], 'last_seq': 0, 'active': stand_plan(start_q, 0), 'pending': [],
+         # The boot chunk is the runner's own standing start (node.py streams nothing before its first plan): default.
+         'stand_reason': 'boot', 'stand_mode': 'default', 'contact_open': None, 'session_contacts': [],
          'last_request': -10**9, 'route': None, 'goal_fn': None, 'pending_stand': None, 'stand_tick': None,
          'fallen': False, 'ending': False, 'end_reason': None, 'last_command_wall': time.monotonic(),
          'map_seq': 0, 'map_written': -math.inf, 'map_dirty': True, 'last_write': -math.inf, 'check': None,
          'executing': None, 'motion_ticks': 0, 'snapshot_time': -math.inf, 'perception': None,
          'q': start_q.copy(),  # the planner's latest pose estimate (float64, as node.py's state)
-         'deferred_since': None}
+         'deferred_since': None,
+         # node mode: node.py's own planning state (active = its self.active, the latest accepted plan or stand chunk)
+         'node': {'active': None, 'latencies': [], 'est': req['latency'].get('guess_s'), 'inflight': None,
+                  'last_streamed_anchor': -10**9, 'queued': [], 'dropped': 0, 'stale': 0, 'clipped': 0} if node_mode else None}
     frames, perceptions, plans = [], [], []
     grids = []  # record_grids: the full memory as display codes at every recorded snapshot (tools/site)
     executing_starts = []  # (start tick, plan row index) per plan that drove SONIC
@@ -336,9 +560,11 @@ def _run(req, output, inbox, started):
         S['events'].append({'time': S['tick'] * DT, 'type': kind, 'message': message, 'source': 'nav_worker', **fields})
 
     def leg_dict(leg):
-        return {k: leg.get(k) for k in ('index', 'goal_xy', 'staged_at_s', 'go_at_s', 'start_xy', 'end_s', 'outcome',
-                                        'duration_s', 'path_m', 'final_dist_m', 'final_dist_true_m', 'distance_basis',
-                                        'max_contact_n', 'plans', 'reason')}
+        out = {k: leg.get(k) for k in ('index', 'goal_xy', 'staged_at_s', 'go_at_s', 'start_xy', 'end_s', 'outcome',
+                                       'duration_s', 'path_m', 'final_dist_m', 'final_dist_true_m', 'distance_basis',
+                                       'max_contact_n', 'plans', 'reason', 'contacts', 'contacts_unlisted')}
+        out['contact_summary'] = summarize_contacts(leg.get('contacts') or [])
+        return out
 
     def can():
         standing = S['paused'] and S['phase'] in ('WAIT', 'ARRIVED', 'STOPPED') and not S['fallen'] and not S['ending']
@@ -449,6 +675,7 @@ def _run(req, output, inbox, started):
         event('command', f"{cmd.get('cmd')} {status}" + (f': {reason}' if reason else ''), seq=cmd.get('seq'), status=status)
 
     def stand(reason, force=False):  # node.py stand(), including the ceiling deferral (force: the remote's D-up)
+        mode = 'default' if reason == 'takeover' else req['stand_mode']
         q = np.asarray(S['q'], dtype=np.float64)
         if not force and ceiling_near(q[:2]):
             if S['pending_stand'] is None:
@@ -456,12 +683,17 @@ def _run(req, output, inbox, started):
                 S['deferred_since'] = S['tick']
             S['pending_stand'] = reason
             S['pending'] = []
+            if node_mode:  # node.py: in-flight results discarded, no new plans; streamed ones play out
+                S['node'].update(inflight=None, last_streamed_anchor=S['tick'] + 10**6)
             return False
         S['pending_stand'] = S['deferred_since'] = None
         S['pending'] = []
-        S['active'] = stand_plan(q, S['tick'])
+        S['active'] = stand_plan(q, S['tick'], mode)
+        if node_mode:  # the stand chunk is streamed from now: it replaces whatever was queued in the runner
+            S['node'].update(inflight=None, queued=[], active=S['active'], last_streamed_anchor=S['tick'] + 10**6)
         S['stand_tick'] = S['tick']
-        event('stand', f'stand ({reason})', reason=reason)
+        S['stand_reason'], S['stand_mode'] = reason, mode
+        event('stand', f'stand ({reason})', reason=reason, stand_mode=mode)
         return True
 
     def clear_memory():
@@ -486,7 +718,8 @@ def _run(req, output, inbox, started):
         q = np.asarray(S['q'], dtype=np.float64)
         S['leg'] = {'index': len(S['legs']) + 1, 'goal_xy': goal['xy'], 'staged_at_s': goal['staged_at_s'],
                     'go_at_s': S['tick'] * DT, 'start_xy': _r(np, q[:2]), 'outcome': None, 'path_m': 0.0, 'max_contact_n': 0.0,
-                    'plans': 0, 'start_tick': S['tick'], 'arrived_tick': None}
+                    'plans': 0, 'start_tick': S['tick'], 'arrived_tick': None, 'contacts': [], 'contacts_unlisted': 0}
+        S['contact_open'] = None
         metadata['goal_xy'] = goal['xy']
         event('goal', f"walk {len(S['legs']) + 1} to ({goal['xy'][0]:.2f}, {goal['xy'][1]:.2f})", goal_xy=goal['xy'])
 
@@ -545,6 +778,8 @@ def _run(req, output, inbox, started):
             if not can()['go']:
                 return reply(cmd, 'rejected', 'Stage a goal first; Go works only while the robot stands')
             start_leg()
+            if node_mode:  # node.py 'go' from a stand: drop jobs, accept plans anchored from now
+                S['node'].update(inflight=None, last_streamed_anchor=S['tick'])
             if req['map_mode'] == 'fresh':
                 clear_memory()
             S['phase'], S['paused'] = 'PRESCAN', False
@@ -591,28 +826,106 @@ def _run(req, output, inbox, started):
         guide = sm.memory_boxes(memory, grow_overhead_m=pcfg.guide_grow_overhead_m) \
             if pcfg.guide_w > 0 and pcfg.guide_source == 'sensor' else None
         active = S['active']
-        predictive = anchor_mode == 'predict' and lat_ticks > 0 and not immediate
-        plan_hist = predicted_history(history, active, tick, lat_ticks, planner.history + 2) if predictive else history
-        anchor_at = tick + lat_ticks if predictive else tick
-        prev = None if first or active[0].get('stand') else (active[0], anchor_at - active[1])
+        if node_mode:  # node.py request(): lead 0 only while it has no plan at all, else from its latency estimate
+            nd = S['node']
+            node_first = nd['active'] is None
+            lead = 0 if node_first else node_lead_ticks(nd['est'])
+            plan_hist = history if lead == 0 else predicted_history(history, nd['active'], tick, lead, len(history))
+            anchor_at, prev = tick + lead, None  # node.py's planner workers are never given the previous plan
+        else:
+            predictive = anchor_mode == 'predict' and lat_ticks > 0 and not immediate
+            plan_hist = predicted_history(history, active, tick, lat_ticks, planner.history + 2) if predictive else history
+            anchor_at = tick + lat_ticks if predictive else tick
+            prev = None if first or active[0].get('stand') else (active[0], anchor_at - active[1])
         tp = time.perf_counter()
         goal_fn.arrival_anchor = q.copy()
         plan = planner.plan(np.asarray(plan_hist), [], goal_fn, map_fn, clearance_fn, prev=prev, guide_boxes=guide)
         latency = time.perf_counter() - tp
         anchor = (plan, anchor_at, np.asarray(plan_hist[-1], dtype=np.float64).copy(), flow.feed.finite_difference_dq(plan_hist))
         S['last_request'] = tick
+        if node_mode:  # the simulated deploy latency replaces this host's CPU compute time
+            compute, (latency, basis) = latency, draw_latency(planner, plan)
         row = {'tick': tick, 'walk': leg['index'], 'waypoint_xy': np.asarray(wp).tolist(), 'route_remaining_m': float(remaining),
                'rule': plan['rule'], 'chosen_clearance_m': float(plan['chosen_clearance_m']), 'latency_s': latency,
                'plan_xy': _r(np, plan['qpos'][:, :2], 3), 'plan_root_z': _r(np, plan['qpos'][:, 2], 3)}
+        if node_mode:
+            row.update(compute_s=compute, latency_basis=basis, lead_ticks=lead, anchor_tick=anchor_at,
+                       land_tick=landing_tick(tick, latency))
+            nd['inflight'] = {'land': row['land_tick'], 'latency_s': latency, 'first': node_first, 'row': len(plans),
+                              'entry': anchor}
         plans.append(row)
         leg['plans'] += 1
         event('replan', plan['rule'], latency_ms=latency * 1000)
-        if lat_ticks == 0 or immediate:
+        if node_mode:
+            pass  # nothing drives SONIC until node_collect() takes the plan at its landing tick
+        elif lat_ticks == 0 or immediate:
             S['active'] = anchor
             S['executing'] = (len(plans) - 1, tick)
             executing_starts.append((tick, len(plans) - 1))
         else:
             S['pending'].append((tick + lat_ticks, len(plans) - 1) + anchor)
+
+    def track_contact(force_n, groups, t, standing, chunk_age_ticks, leg):
+        """Contact episodes (maximal runs of ticks with any robot-obstacle force), attributed at first contact to the
+        body group carrying the largest force and to whether a stand chunk was in force."""
+        ep = S['contact_open']
+        if force_n <= 0:
+            S['contact_open'] = None
+            return
+        if ep is None:
+            ep = {'start_s': t, 'end_s': t + DT, 'peak_n': force_n, 'groups': dict(groups),
+                  'first_group': max(groups, key=groups.get) if groups else None, 'phase': S['phase'],
+                  'stand': standing, 'stand_reason': S['stand_reason'] if standing else None,
+                  'stand_mode': S['stand_mode'] if standing else None,
+                  'stand_age_s': chunk_age_ticks * DT if standing else None}
+            S['contact_open'] = ep
+            if leg is None:
+                if len(S['session_contacts']) < MAX_CONTACT_EPISODES:
+                    S['session_contacts'].append(ep)
+            elif len(leg['contacts']) < MAX_CONTACT_EPISODES:
+                leg['contacts'].append(ep)
+            else:
+                leg['contacts_unlisted'] += 1
+            return
+        ep['end_s'], ep['peak_n'] = t + DT, max(ep['peak_n'], force_n)
+        for g, f in groups.items():
+            ep['groups'][g] = max(ep['groups'].get(g, 0.0), f)
+
+    def node_collect(tick):
+        """node.py collect() at the tick the in-flight plan lands, then the runner taking up streamed plans."""
+        nd = S['node']
+        job = nd['inflight']
+        if job is not None and tick >= job['land']:
+            nd['inflight'] = None
+            plan, anchor_tick, anchor_q, anchor_dq = job['entry']
+            if job['first']:
+                anchor_tick = tick  # computed while standing still: start it when it lands (node.py)
+            nd['latencies'].append(job['latency_s'])
+            nd['est'] = node_latency_estimate(np, nd['latencies'])
+            reason = node_sane(plan)
+            row = plans[job['row']]
+            row.update(landed_tick=tick, anchor_tick=anchor_tick, late_ticks=tick - anchor_tick)
+            if reason or anchor_tick <= nd['last_streamed_anchor']:
+                row['dropped'] = reason or 'stale'
+                nd['dropped' if reason else 'stale'] += 1
+                event('plan_dropped', f"plan dropped: {reason or 'stale'}", reason=reason or 'stale', anchor_tick=anchor_tick)
+            else:
+                peak = float(np.abs(plan['joint_velocity']).max())
+                if peak > node_args.max_joint_vel:
+                    plan = dict(plan, joint_velocity=np.clip(plan['joint_velocity'], -node_args.max_joint_vel,
+                                                             node_args.max_joint_vel))
+                    row['dq_clipped_from_rad_s'] = peak
+                    nd['clipped'] += 1
+                    event('dq_clipped', f'reference joint velocity {peak:.1f} rad/s clipped to {node_args.max_joint_vel:g}',
+                          max_rad_s=peak)
+                entry = (plan, anchor_tick, anchor_q, anchor_dq)
+                nd['active'], nd['last_streamed_anchor'] = entry, anchor_tick
+                nd['queued'].append((max(anchor_tick, tick), job['row'], entry))
+        while nd['queued'] and nd['queued'][0][0] <= tick:
+            _, index, entry = nd['queued'].pop(0)
+            S['active'] = entry
+            S['executing'] = (index, tick)
+            executing_starts.append((tick, index))
 
     def finish_settle():
         """After a stand: once settled, pause and close the walk."""
@@ -698,6 +1011,8 @@ def _run(req, output, inbox, started):
         if estimate.cfg:
             memory.pose_error = tuple(estimate.err)
         memory.step(tick * DT, true_q[:3], true_q[3:7])
+        if node_mode:
+            node_collect(tick)
         while S['pending'] and tick >= S['pending'][0][0]:
             ready = S['pending'].pop(0)
             S['active'] = ready[2:]
@@ -753,7 +1068,8 @@ def _run(req, output, inbox, started):
                 S['phase'] = 'STOPPED'
                 leg['stop_reason'] = f"walk timeout {req['leg_timeout_s']:.0f} s"
                 stand('timeout')
-            elif S['pending_stand'] is None and not S['pending'] and (leg.get('first_plan_pending') or tick - S['last_request'] >= replan):
+            elif S['pending_stand'] is None and not S['pending'] and not (node_mode and S['node']['inflight'] is not None) \
+                    and (leg.get('first_plan_pending') or tick - S['last_request'] >= replan):
                 request_plan(q, tick)
         if S['pending_stand'] is not None:
             stand(S['pending_stand'])
@@ -761,9 +1077,12 @@ def _run(req, output, inbox, started):
         tgt, _ = flow.feed.target(plan, anchor_q, anchor_dq, tick - anchor_tick, q, limits)
         t = tick * DT
         tic = time.perf_counter()
+        current['contact_groups'] = {}
         pos, quat, force, target = sim.step(tgt[:, :29], tgt[:, 29:58], tgt[:, 58:64])
         torque['tracker'].end_tick()
         interval = contact_interval(force, t, t + DT)
+        groups = {g: round(f, 1) for g, f in current['contact_groups'].items() if f > 0}
+        track_contact(interval['max_force_n'], groups, t, bool(plan.get('stand')), tick - anchor_tick, leg)
         post = sim.measure()
         reference = decode_reference(tgt, true_q)
         reference.pop('raw', None)
@@ -809,7 +1128,9 @@ def _run(req, output, inbox, started):
                  'joint_velocity_rad_s': _r(np, meas['dq'], 3),
                  'post_action': {'time': t + DT, 'qpos': _r(np, post['qpos'], 5),
                                  'root_linear_velocity_w': _r(np, post['root_linear_velocity_w']),
-                                 'contact': {k: interval[k] for k in ('start_s', 'end_s', 'max_force_n')},
+                                 'contact': dict({k: interval[k] for k in ('start_s', 'end_s', 'max_force_n')},
+                                                 **({'groups': groups, 'stand_in_force': bool(plan.get('stand'))}
+                                                    if groups else {})),
                                  'classification': 'simulator-ground-truth'},
                  'navigation': {'phase': S['phase'], 'walk': leg['index'] if leg else None,
                                 'goal_xy': goal['xy'] if goal else None},
@@ -854,11 +1175,27 @@ def _run(req, output, inbox, started):
                                   'p95': float(np.quantile([p['latency_s'] for p in plans], 0.95))} if plans else None),
               'worker_real_time_factor': (S['motion_ticks'] * DT) / S['motion_wall'] if S['motion_wall'] else None,
               'torque': torque['tracker'].summary(contract.EFFORT_MJ), 'actuators': receipt,
-              'elapsed_s': S['tick'] * DT}
+              'elapsed_s': S['tick'] * DT, 'stand_mode': req['stand_mode'],
+              'contacts': dict(summarize_contacts([ep for leg in S['legs'] for ep in leg['contacts']] + S['session_contacts']),
+                               unlisted=sum(leg['contacts_unlisted'] for leg in S['legs']),
+                               outside_walks=S['session_contacts'],
+                               basis='episodes of any robot-obstacle force; stand = a stand chunk in force at first contact')}
     metadata.update(duration_s=max(DT, frames[-1]['time']), executed_sim_duration_s=S['tick'] * DT,
                     source_samples=len(frames), mode='replay', recording_complete=True, test_result=report,
                     navigation={'legs': legs, 'end_reason': S['end_reason'], 'goal_radius_m': req['goal_radius_m']})
-    metadata['latency_model']['executing_plan_starts'] = executing_starts if lat_ticks else None
+    metadata['latency_model']['executing_plan_starts'] = executing_starts if lat_ticks or node_mode else None
+    if node_mode:
+        nd, landed = S['node'], [p for p in plans if 'landed_tick' in p]
+        report['plan_compute_s'] = ({'p50': float(np.median([p['compute_s'] for p in plans])),
+                                     'p95': float(np.quantile([p['compute_s'] for p in plans], 0.95))} if plans else None)
+        report['node_latency'] = metadata['latency_model']['realized'] = {
+            'plans': len(plans), 'landed': len(landed), 'dropped_sane': nd['dropped'], 'dropped_stale': nd['stale'],
+            'dq_clipped': nd['clipped'], 'late_plans': sum(p['late_ticks'] > 0 for p in landed),
+            'lead_ticks': ({'min': min(p['lead_ticks'] for p in plans), 'p50': float(np.median([p['lead_ticks'] for p in plans])),
+                            'max': max(p['lead_ticks'] for p in plans)} if plans else None),
+            'fallback_share': (float(np.mean([p['latency_basis'].startswith('fallback') for p in plans]))
+                               if plans and req['latency']['distribution']['kind'] == 'pools' else None),
+            'latency_estimate_final_s': nd['est']}
     metadata['provenance']['artifacts'].append(_hash(final_map)) if final_map.is_file() else None
     session = {'schema_version': 1, 'metadata': metadata, 'joint_names': list(contract.MJ_JOINTS), 'frames': frames,
                'events': S['events'], 'plans': plans,

@@ -13,7 +13,8 @@ import re
 
 POLICY_ROOT = Path.home() / 'research-data/g1-deploy-studio/policies'
 ARTIFACT_LINKS = ['artifacts/native-reference-v1-final/geometry.json', 'artifacts/clean-reference-v2/receipt.json']
-BUNDLE_ID = re.compile(r'flow-wx-rf-[0-9a-f]{7}-s[0-2]')
+# flow-<block>-rf-<commit7>-s<seed>, e.g. flow-wx-rf-23326aa-s0 (tools/build_policy_bundle.py).
+BUNDLE_ID = re.compile(r'flow-[a-z0-9]{1,16}-rf-[0-9a-f]{7}-s[0-2]')
 
 
 def sha256(path):

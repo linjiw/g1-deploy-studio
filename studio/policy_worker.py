@@ -22,6 +22,8 @@ REFERENCE_ROOT = Path('/home/linjiw/code/g1-student-deploy')
 REFERENCE_PYTHON = REFERENCE_ROOT / '.venv/bin/python'
 BACKEND_ID = 'flow-sonic-mujoco-cpu'
 MAX_DURATION_S = 10.0
+# The deploy bundle's planner (studio/policies.py BUNDLE_LABEL): never call it Flow's current student.
+BUNDLE_LABEL = "student-s2-kcsc (2026-10-08 bundle), not Flow's current LiDAR student"
 MAX_BOXES = 128
 MAX_SENSOR_POINTS = 1500
 # Success criteria. "arrive_hold" is Studio's deployment-style arrival (stop and
@@ -358,7 +360,7 @@ def execute(request, output):
                                             ('goal_radius_m', 'goal_speed_m_s', 'goal_hold_s',
                                              'fall_height_m', 'fall_tilt_rad', 'obstacle_contact_threshold_n')},
                                             criterion=req['criterion'], label=CRITERIA[req['criterion']]['label']),
-                    'policy_profile': {'id': req['policy']['id'], 'label': 'Flow student s2-kcsc · frozen deploy bundle',
+                    'policy_profile': {'id': req['policy']['id'], 'label': BUNDLE_LABEL,
                                        'research_block': None, 'identity_sha256': req['policy'].get('identity_sha256'),
                                        'revision': 'bundle 2026-10-08', 'loader': 'deploy-bundle'},
                     'units': {'position': 'm', 'joint': 'rad', 'time': 's'},
