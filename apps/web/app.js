@@ -93,7 +93,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     $('layer-navigation').disabled = !m.goal_xy && !m.start_xy;
     $('layer-perception').checked = !!session.perception?.available && new URLSearchParams(location.search).get('map') === '1';
     syncLayers();
-    $('scene-unavailable').hidden = hasState; $('no-recordings').hidden = true;
+    $('scene-unavailable').hidden = hasState; $('no-recordings').hidden = true; $('source-badge').hidden = false;
     updateModeBadge(); updatePolicyChip(); updateRecordingWarning();
     $('privileged-badge').hidden = !m.privileged_map;
     $('robot-view-label').textContent = robotViewLabel();
@@ -629,6 +629,12 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
   if (previous === 'arena' && name !== 'arena' && arena.preview3d) { arena.preview3d = false; scene.setArenaPreview(null); }
   if (name !== 'rehearse') setPreviewing(false);
   if (previous === 'navigate' && name !== 'navigate') { scene.view.onPick = null; scene.setNavOverlay(null); scene.setNavMap(null); navAttach.mapKey = null; navLayers(false); resetNavPreview(); }
+  if (previous === 'navigate' && name !== 'navigate' && !state.session) {
+    // No recording to fall back to (a new machine): the preview's title, caption and badge must not stay behind.
+    scene.setArenaPreview(null); setPreviewing(false); restoreTitle();
+    $('navigation-caption').textContent = ''; $('source-badge').hidden = true;
+  }
+  if (name === 'navigate' && !state.session) $('source-badge').hidden = false;
   if (name === 'navigate' && previous !== 'navigate') resetNavPreview();
   if (name !== 'rehearse' && name !== 'arena' && !rh.attached && scene.view.arenaGroup.visible) {
     scene.setArenaPreview(null);
