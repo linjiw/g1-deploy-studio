@@ -1,0 +1,27 @@
+# Studio's unit and integration tests on a clean machine: no deploy stack, no Flow, no robot, no recordings.
+# Tests that need them skip; everything else must pass. This is the "replay" level of docs/INSTALL.md.
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Studio (tools/install.sh; it ends with tools/doctor.py --for replay)
+        run: tools/install.sh
+      - run: .venv/bin/python -m unittest discover -s tests
+      - name: Doctor (read-only report; replay must be ready)
+        run: .venv/bin/python tools/doctor.py --quick --for replay
