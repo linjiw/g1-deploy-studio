@@ -23,7 +23,7 @@ Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the
 
 ## Open it
 
-The gateway runs as a durable user service on loopback:
+On the development machine the gateway runs as a durable user service on loopback (on a new machine, install it first: [below](#install-on-another-machine) and [docs/INSTALL.md](docs/INSTALL.md)):
 
 ```bash
 cd g1-deploy-studio
@@ -36,7 +36,9 @@ Open **http://127.0.0.1:8790/**. The layout adapts from a big screen down to a t
 
 ![Stage: the same run full screen, with what is shown and where its map came from, the facts at the cursor and one dock](docs/img/studio-stage.jpg)
 
-**Install on another machine** ([docs/INSTALL.md](docs/INSTALL.md)):
+### Install on another machine
+
+Full guide: [docs/INSTALL.md](docs/INSTALL.md).
 
 ```bash
 git clone https://github.com/linjiw/g1-deploy-studio ~/code/g1-deploy-studio && cd ~/code/g1-deploy-studio
@@ -74,7 +76,7 @@ Details, caveats and how to add a policy: [docs/POLICIES.md](docs/POLICIES.md). 
 ## Verify
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v       # unit + integration (no policy runtime needed)
+.venv/bin/python -m unittest discover -s tests -v       # unit + integration; without the deploy stack its tests skip
 python3 tools/check_references.py                        # read-only reference drift check
 .venv/bin/python tools/doctor.py                         # read-only machine readiness (docs/INSTALL.md)
 .venv/bin/python tools/build_policy_bundle.py --verify-only

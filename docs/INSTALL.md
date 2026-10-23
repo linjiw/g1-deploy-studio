@@ -17,12 +17,12 @@ There are three levels. Each needs the ones before it.
 
 | Level | What works | Steps |
 |---|---|---|
-| **Replay** | Opening recordings, Arena, Runs, System, the browser app | 1 |
+| **Replay** | The browser app: Arena, Runs, System, and the recordings this machine has (a new machine has none until its first Navigate session or rehearsal, or until `config/local.json` lists some) | 1 |
 | **Simulation** | Navigate's simulated robot and Rehearse, with the deploy policy on the CPU | 1–3 |
 | **Robot link** | The deploy PC next to the robot: the SONIC runner and `config/robot_link.json` | 1–5 |
 
 **Target:** Ubuntu 22.04 on x86_64.
-- **Replay:** Python 3.10+, Node.js 18+ (`npm`) and `git`.
+- **Replay:** Python 3.10+ with its venv module, Node.js 18+ (`npm`) and `git`. On a stock Ubuntu 22.04, run `sudo apt install python3-venv git`. Its apt Node.js is too old, so use [nvm](https://github.com/nvm-sh/nvm) or NodeSource. The installer stops with that advice when either is missing.
 - **Simulation:** also the [GitHub CLI](https://cli.github.com) logged in, and [uv](https://docs.astral.sh/uv/) for the deploy venv (Python 3.11).
 - **Disk:** about 10 GB (the deploy venv with CUDA torch is about 7 GB).
 - **Memory:** a simulation session uses about 2.5 GB.
@@ -57,11 +57,15 @@ This does three things:
 
 `cyclonedds` builds against the C library that the runner's `setup.sh` installs (step 4). Until that exists it is skipped, and only the robot needs it.
 
-**Without network on the target:**
+**Without network for the bundle:**
 1. Copy the two assets from the release page (or from `~/research-data/g1-deploy-studio/deploy-assets/deploy-2026-10-23/` on the machine that packed them).
 2. Run `.venv/bin/python tools/deploy_bundle.py fetch --from DIR`. The checks are the same.
 
-A file that exists and differs is refused, never overwritten. `tools/deploy_bundle.py verify` rechecks the bundle at any time.
+This covers the bundle only. Two other pieces still need network or a copy:
+- the deploy repo clone (or a copy of the checkout at the tag);
+- the Python packages of both venvs.
+
+`fetch` never overwrites a file that exists and differs. It refuses before downloading, and names the file; move it out of `bundle/` and fetch again. A complete bundle downloads nothing. `.venv/bin/python tools/deploy_bundle.py verify` rechecks every file at any time.
 
 The TensorRT engines (`*.trt`) are not in the bundle. The runner builds them for the local GPU on its first start: about 30 s for the policy and about 7 min for SONIC's planner.
 
@@ -72,6 +76,8 @@ tools/install.sh --runner        # clones lucid-g1-deploy at the pinned commit; 
 cd ~/lucid-sonic/lucid-g1-deploy && bash setup.sh && source env.sh && bash build.sh   # in a real terminal: setup.sh asks for sudo
 cd ~/code/g1-deploy-studio && tools/install.sh --deploy                              # now adds cyclonedds to the deploy venv
 ```
+
+Until the runner is built, `doctor --for robot` reports it ✗ with the build command. `install.sh` shows that verdict but still exits 0: building the runner is the one step it leaves to you.
 
 ## 5. The robot link (deploy PC only)
 
@@ -84,7 +90,7 @@ Studio runs on the deploy PC beside `node.py`, the SONIC runner and the LIO brid
 ## 6. Check
 
 ```bash
-.venv/bin/python tools/doctor.py               # exit 0 when Simulation is ready
+.venv/bin/python tools/doctor.py               # exit 0 when Simulation is ready (tools/doctor.py also works: it reruns under .venv)
 .venv/bin/python tools/doctor.py --for robot   # the deploy PC
 ```
 
@@ -104,14 +110,14 @@ What it checks:
 ```bash
 .venv/bin/python -m unittest discover -s tests                     # unit + integration; skips what this machine lacks
 .venv/bin/python -m studio.server --port 8790                      # or once: tools/studio_service.sh install (systemd --user)
-STUDIO_URL=http://127.0.0.1:8790 npm run test:browser              # read-only browser acceptance (needs Chromium)
 ```
 
-Open http://127.0.0.1:8790/, or from another computer through `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`. The gateway listens on loopback only.
+Open http://127.0.0.1:8790/, or from another computer through `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`. The gateway listens on loopback only. A new machine opens on Navigate with "No recordings yet" until it has one.
 
-1. **Simulated robot.** Open Navigate, pick a world, then Start session, a goal on the map, Send, Go. Studio runs the deploy policy and node.py's state machine in MuJoCo and records the session. Advanced settings set the planner budget, latency, odometry and hardware revision ([NAVIGATE.md](NAVIGATE.md)).
-2. **Robot link without a robot.** `tools/fake_node.py` is a loopback protocol fixture, not a robot. It speaks the deploy PC's wire formats and can inject a readback error, a frame offset or a deferred stand. Point a scratch copy of `config/robot_link.json` at its endpoints with `STUDIO_ROBOT_LINK=<file>`, then Connect in Navigate (Real robot).
-3. **The robot.** Follow the deploy repo's hardware ladder. Studio's part is steps 4–5 above and [NAVIGATE.md](NAVIGATE.md).
+1. **Simulated robot.** Open Navigate, pick a world, then Start session, a goal on the map, Send, Go. Studio runs the deploy policy and node.py's state machine in MuJoCo and records the session. **Use deploy settings** sets the planner budget, latency rule, odometry and stand behaviour to node.py's on the robot ([DEPLOY_FIDELITY.md](DEPLOY_FIDELITY.md)); Advanced settings change each one ([NAVIGATE.md](NAVIGATE.md)). End session: the recording opens in Replay.
+2. **Browser acceptance**, once a recording exists: `STUDIO_URL=http://127.0.0.1:8790 npm run test:browser` (read-only; it needs Chrome at `/opt/google/chrome/chrome` or `CHROME_PATH`). It replays the newest recording. The checks that need the original machine's three demonstration recordings are listed as skipped, never as passed.
+3. **Robot link without a robot.** `tools/fake_node.py` is a loopback protocol fixture, not a robot. It speaks the deploy PC's wire formats and can inject a readback error, a frame offset or a deferred stand. Point a scratch copy of `config/robot_link.json` at its endpoints with `STUDIO_ROBOT_LINK=<file>`, then Connect in Navigate (Real robot).
+4. **The robot.** Follow the deploy repo's hardware ladder. Studio's part is steps 4–5 above and [NAVIGATE.md](NAVIGATE.md).
 
 ## Configuration
 
@@ -154,10 +160,10 @@ When a new deploy state is chosen, follow these steps on the machine that holds 
    ```
 
 4. **Update `config/deploy.json`:** set `deploy_stack.tag` and `deploy_stack.commit`, and copy the `bundle` fields from the pack's `assets.json`.
-5. **Check and commit:** run `tools/doctor.py` and the tests, then commit Studio.
+5. **Check and commit:** run `.venv/bin/python tools/doctor.py` and the tests, then commit Studio.
 
 On every other machine:
 1. `git pull` in Studio;
 2. `git -C ~/code/g1-student-deploy fetch --tags && git -C ~/code/g1-student-deploy checkout --detach deploy-YYYY-MM-DD`;
 3. `.venv/bin/python tools/deploy_bundle.py fetch`;
-4. `tools/doctor.py`.
+4. `.venv/bin/python tools/doctor.py`.

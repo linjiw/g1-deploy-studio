@@ -249,6 +249,9 @@ body.stage-2d .vp-toolbar, body.stage-2d .vp-hud, body.stage-2d .viewport-meta, 
 .loader { width: 32px; height: 32px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--text); animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .scene-unavailable { position: absolute; inset: 25% 12%; display: grid; place-content: center; text-align: center; color: var(--muted); z-index: 3; }
+.no-recordings { justify-items: center; gap: 4px; }
+.no-recordings p { max-width: 46ch; margin: 0 0 10px; }
+body:not(.ws-replay) #no-recordings { display: none; }  /* Navigate and Rehearse show their own preview */
 .sensor-dock { display: flex; gap: 10px; padding: 10px; overflow-x: auto; border-top: 1px solid var(--border); background: var(--panel-2); max-height: 250px; }
 .sensor-dock .sensor-card { flex: 0 0 300px; }
 /* Narrow stages: fewer words on the canvas. */

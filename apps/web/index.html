@@ -99,6 +99,7 @@
           <div class="viewport-meta"><span id="pose-caption">Pose unavailable</span><span id="reference-caption"></span></div>
           <div id="recording-warning" class="recording-warning" role="status" hidden></div>
           <div id="loading-overlay" class="loading-overlay"><div class="loader"></div><span>Decoding recorded robot state…</span></div>
+          <div id="no-recordings" class="scene-unavailable no-recordings" hidden><h3>No recordings on this machine yet</h3><p>Start a session in Navigate or a run in Rehearse: its recording opens here and joins the run picker. Recordings from another machine are listed in config/local.json (docs/INSTALL.md).</p><button type="button" id="no-recordings-open" class="go-action">Open Navigate</button></div>
           <div id="scene-unavailable" class="scene-unavailable" hidden><h3>World pose was not captured</h3><p>This transport recording contains real reference values and receiver observations. Inspect Intent, Joints and Graph for available data. No root pose is inferred from reference joints.</p></div>
         </div>
         <div id="sensor-dock" class="sensor-dock" aria-label="Pinned sensor views" hidden></div>

@@ -253,14 +253,25 @@ def get_profile(policy_id):
     return table[policy_id]
 
 
+def portable(path):
+    """A path named by its root ('<deploy_root>/bundle/...', '<studio>/studio/...'), so the same files hash to the same
+    identity on any machine; paths under no known root stay as they are."""
+    text = str(path)
+    roots = [('studio', str(STUDIO.parent))] + [(key, str(paths.get(key))) for key in paths.ROOTS]
+    for name, root in sorted(roots, key=lambda r: -len(r[1])):
+        if text == root or text.startswith(root + '/'):
+            return f'<{name}>' + text[len(root):]
+    return text
+
+
 def identity(profile):
-    """Resolved, hashable identity pinned into each scenario/run."""
+    """Resolved, hashable identity pinned into each scenario/run (machine-independent: see portable())."""
     artifacts = [file_identity(p) for p in profile.get('artifacts', [])]
     missing = list(dict.fromkeys([a['path'] for a in artifacts if not a['available']] + list(profile.get('missing', []))))
     repos = [git_identity(r) for r in profile.get('repositories', [])]
     pinned = hashlib.sha256(json.dumps({'id': profile['id'],
-                                        'artifacts': [(a['path'], a['sha256']) for a in artifacts],
-                                        'repositories': [(r['path'], r['head'], r['dirty']) for r in repos],
+                                        'artifacts': [(portable(a['path']), a['sha256']) for a in artifacts],
+                                        'repositories': [(portable(r['path']), r['head'], r['dirty']) for r in repos],
                                         'config_sha256': profile.get('config_sha256')},
                                        sort_keys=True).encode()).hexdigest()
     return {'policy_id': profile['id'], 'artifacts': artifacts, 'repositories': repos,

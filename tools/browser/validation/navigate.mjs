@@ -38,7 +38,7 @@ const standing = s => s.nav?.paused && ['WAIT', 'ARRIVED', 'STOPPED'].includes(s
 // A world with one pillar ahead and a wall to the left: something to walk around and to refuse.
 const token = (await api(page, '/api/workbench')).body?.csrf_token;
 await page.goto(`${BASE}/`);
-await page.waitForFunction(() => window.__studio?.state?.session && document.querySelector('#loading-overlay').hidden, null, { timeout: 120000 });
+await page.waitForFunction(() => window.__studio?.state?.ready && document.querySelector('#loading-overlay').hidden, null, { timeout: 120000 });
 const arena = await page.evaluate(async () => {
   const wb = await (await fetch('/api/workbench')).json();
   const r = await fetch('/api/arenas', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Studio-Token': wb.csrf_token },

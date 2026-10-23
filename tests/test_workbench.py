@@ -66,7 +66,10 @@ class PreparationTests(unittest.TestCase):
     def test_single_owned_job_limit_and_persistent_maps(self):
         scenario = self.workbench.save_scenario(self.request)['scenario']
         self.workbench.jobs['test'] = {'status':'running'}
-        with patch.object(self.workbench, 'capabilities', return_value={'available': True}):
+        from studio import policies
+        real_identity = policies.identity
+        available = patch('studio.policies.identity', side_effect=lambda profile: dict(real_identity(profile), available=True, missing=[]))
+        with patch.object(self.workbench, 'capabilities', return_value={'available': True}), available:
             with self.assertRaisesRegex(ValueError, 'already active'):
                 self.workbench.start_job(scenario['id'])
         m = self.workbench.import_map({'kind':'boxes','label':'my map','frame_id':'world','boxes':[]})

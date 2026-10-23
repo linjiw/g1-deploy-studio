@@ -236,6 +236,17 @@ def fetch(deploy_root, config, source=None, download_dir=None):
                 'problems': [f'{bundle}/MANIFEST.json is {manifest_sha[:12]}…, the pin is {pin["manifest_sha256"][:12]}…: '
                              f'the checkout is not at {config["deploy_stack"]["tag"]}']}
     files = manifest['files']
+    # Before any download: a file that exists with other bytes is refused, and a complete bundle needs nothing.
+    present = {rel: _existing(bundle / rel, entry) for rel, entry in files.items()}
+    differing = sorted(rel for rel, state in present.items() if state == 'differs')
+    if differing:
+        return {'action': 'fetch', 'verified': False, 'written': 0, 'differing': differing,
+                'problems': [f'{bundle / rel} exists and differs from the manifest; move it away first' for rel in differing]}
+    if all(state == 'identical' for state in present.values()):
+        report = verify_bundle(bundle, deep=False)  # every file was just hashed by _existing
+        report.update(deep=True, summary=f"{len(files)} files verified (SHA-256) against MANIFEST.json; nothing to download")
+        return {'action': 'fetch', 'source': 'nothing to download: every file already matches the manifest', 'written': 0,
+                'identical': len(files), **report}
     with tempfile.TemporaryDirectory(prefix='g1-deploy-bundle-', dir=download_dir) as tmp:
         src = Path(source) if source else Path(tmp)
         if not source:
@@ -294,11 +305,7 @@ def fetch(deploy_root, config, source=None, download_dir=None):
                     else:
                         seen.add(rel)
                         plan.append((asset, rel, member.name))
-        states = {}
-        for _, rel, _ in plan if not problems else []:
-            states[rel] = _existing(bundle / rel, files[rel])
-            if states[rel] == 'differs':
-                problems.append(f'{bundle / rel} exists and differs from the manifest; move it away first')
+        states = {rel: present[rel] for _, rel, _ in plan}
         if problems:
             return {'action': 'fetch', 'verified': False, 'written': 0, 'problems': problems}
         # 3. Write what is absent; skip what is already identical.

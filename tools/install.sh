@@ -41,11 +41,17 @@ cd "$REPO"
 say "Studio ($REPO)"
 have python3 || { echo "python3 is required (3.10 or newer)" >&2; exit 1; }
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || { echo "Python 3.10 or newer is required" >&2; exit 1; }
-if [[ -x .venv/bin/python ]]; then echo "  .venv present"; else run python3 -m venv .venv; fi
+if [[ -x .venv/bin/python ]]; then echo "  .venv present"
+else
+  python3 -c 'import ensurepip, venv' 2>/dev/null || { echo "  ! Python's venv module is missing: sudo apt install python3-venv (Ubuntu), then rerun" >&2; exit 1; }
+  run python3 -m venv .venv
+fi
 run .venv/bin/python -m pip install --quiet --disable-pip-version-check -r requirements.txt
 if [[ -e node_modules ]]; then
   echo "  node_modules present (npm ci skipped)"
 elif have npm; then
+  node -e 'process.exit(Number(process.versions.node.split(".")[0]) < 18)' 2>/dev/null \
+    || { echo "  ! Node.js 18 or newer is required ($(node --version 2>/dev/null || echo none)); Ubuntu 22.04's apt is older: use nvm or NodeSource" >&2; exit 1; }
   run npm ci --no-audit --no-fund
 else
   echo "  ! npm not found: install Node.js 18+ and run npm ci (three.js and Inter for the browser app)"
@@ -101,8 +107,8 @@ if ((DEPLOY)); then
   if [[ -x "$DEPLOY_ROOT/.venv/bin/python" && -d "$DDS/lib" ]] && ! "$DEPLOY_ROOT/.venv/bin/python" -c 'import cyclonedds' 2>/dev/null; then
     have uv && run env CYCLONEDDS_HOME="$DDS" uv pip install --python "$DEPLOY_ROOT/.venv/bin/python" --quiet "$(grep '^cyclonedds' "$DEPLOY_ROOT/requirements.txt" | cut -d' ' -f1)"
   fi
-  if [[ -x .venv/bin/python ]] && .venv/bin/python tools/deploy_bundle.py verify --quick >/dev/null 2>&1; then  # read-only
-    echo "  bundle present (tools/deploy_bundle.py verify for the full hashes)"
+  if [[ -x .venv/bin/python ]] && .venv/bin/python tools/deploy_bundle.py verify >/dev/null 2>&1; then  # read-only, full SHA-256
+    echo "  bundle present and verified (every file against MANIFEST.json)"
   else
     run .venv/bin/python tools/deploy_bundle.py fetch
   fi
@@ -139,6 +145,10 @@ if ((SERVICE)); then
 fi
 
 LEVEL=replay; ((DEPLOY)) && LEVEL=sim; ((RUNNER || LINK)) && LEVEL=robot
+# The exit status covers what this script installs itself: replay, or simulation with --deploy. The robot level also
+# needs the runner built by hand (step 4), so its verdict is shown but does not fail the install.
+GATE=replay; ((DEPLOY)) && GATE=sim
 say "Check (tools/doctor.py --for $LEVEL)"
 if ((DRY)); then echo "  $ .venv/bin/python tools/doctor.py --for $LEVEL"; exit 0; fi
-.venv/bin/python tools/doctor.py --for "$LEVEL"
+.venv/bin/python tools/doctor.py --for "$LEVEL" || true
+.venv/bin/python tools/doctor.py --quick --for "$GATE" >/dev/null || { echo "Not ready for $GATE: see the ✗ lines above." >&2; exit 1; }

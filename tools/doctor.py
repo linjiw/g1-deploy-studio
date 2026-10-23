@@ -29,6 +29,11 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+VENV_PYTHON = ROOT / '.venv/bin/python'
+# Started as `tools/doctor.py` (system python3): rerun under this checkout's .venv, which is what is being checked.
+if (VENV_PYTHON.is_file() and Path(sys.prefix).resolve() != (ROOT / '.venv').resolve()
+        and not os.environ.get('STUDIO_DOCTOR_NO_REEXEC')):
+    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
 sys.path.insert(0, str(ROOT))
 from studio import paths  # noqa: E402
 
@@ -117,12 +122,12 @@ def check_studio(r):
     r.add('replay', s, 'Data root', OK if os.access(probe, os.W_OK) else FAIL,
           f"{data} ({paths.source('data_root')}){'' if data.exists() else ', created on first use'}",
           'set paths.data_root in config/local.json to a writable directory')
+    # The browser tests launch $CHROME_PATH or /opt/google/chrome/chrome (tools/browser/*.mjs), nothing else.
     chrome = os.environ.get('CHROME_PATH') or '/opt/google/chrome/chrome'
-    browsers = Path.home() / '.cache/ms-playwright'
-    found = Path(chrome).is_file() or (browsers.is_dir() and any(browsers.glob('chromium*')))
-    r.add('replay', s, 'Chromium (browser tests)', OK if found else INFO,
-          chrome if Path(chrome).is_file() else ('Playwright Chromium' if found else 'not found: browser tests only'),
-          'npx playwright install chromium, or set CHROME_PATH')
+    other = next(iter(sorted((Path.home() / '.cache/ms-playwright').glob('chromium-*/chrome-linux/chrome'))), None)
+    r.add('replay', s, 'Chromium (browser tests)', OK if Path(chrome).is_file() else INFO,
+          chrome if Path(chrome).is_file() else f'{chrome} not found: needed by the browser tests only',
+          f'export CHROME_PATH={other}' if other else 'install Google Chrome, or npx playwright install chromium and set CHROME_PATH')
 
 
 def check_paths(r):
@@ -131,8 +136,10 @@ def check_paths(r):
         level = {'deploy_root': 'sim', 'lucid_root': 'robot', 'data_root': 'replay'}.get(row['key'], 'replay')
         status = OK if row['exists'] else (INFO if optional or row['key'] == 'data_root' else
                                            (WARN if row['key'] == 'lucid_root' else FAIL))
+        fix = {'deploy_root': 'tools/install.sh --deploy, or point paths.deploy_root (config/local.json) at an existing checkout',
+               'lucid_root': 'tools/install.sh --runner (deploy PC only), or point paths.lucid_root at an existing checkout'}
         r.add(level, 'Paths', row['key'], status, f"{row['path']} ({row['source']})",
-              f"set ${row['env']} or paths.{row['key']} in config/local.json" if not row['exists'] else '')
+              fix.get(row['key'], f"set ${row['env']} or paths.{row['key']} in config/local.json") if not row['exists'] else '')
 
 
 def check_deploy(r, pin, quick):
@@ -200,7 +207,12 @@ def check_deploy(r, pin, quick):
         r.add('sim', s, 'Bundle', OK, summary.get('summary') or f"{summary.get('files', '?')} files verified against MANIFEST.json")
     else:
         detail = summary.get('summary') or summary.get('error') or (out.stderr.strip().splitlines() or ['failed'])[-1]
-        r.add('sim', s, 'Bundle', FAIL, detail, 'tools/deploy_bundle.py fetch (docs/INSTALL.md step 3)')
+        bad = summary.get('mismatched') or []
+        if bad or summary.get('missing'):
+            detail += ': ' + ', '.join((bad + summary.get('missing', []))[:3]) + (' …' if len(bad) + len(summary.get('missing', [])) > 3 else '')
+        fix = ('move the differing files out of bundle/, then .venv/bin/python tools/deploy_bundle.py fetch' if bad
+               else '.venv/bin/python tools/deploy_bundle.py fetch (docs/INSTALL.md step 3)')
+        r.add('sim', s, 'Bundle', FAIL, detail, fix)
     if summary.get('trt_engines') is not None:
         r.add('robot', s, 'TensorRT engines', INFO, 'cached' if summary['trt_engines'] else
               'not built yet: the first runner start builds them for this GPU (policy ~30 s, planner ~7 min)')
@@ -228,9 +240,9 @@ def check_robot(r, pin):
     s = 'Robot (deploy PC)'
     lucid = paths.get('lucid_root')
     runner = lucid / 'runner/target/release/g1_deploy_onnx_ref'
+    build = f'cd {lucid} && bash setup.sh && source env.sh && bash build.sh, in a real terminal (setup.sh asks for sudo)'
     r.add('robot', s, 'SONIC runner', OK if os.access(runner, os.X_OK) else FAIL, runner if runner.is_file() else f'{runner} not built',
-          f"clone {pin.get('sonic_runner', {}).get('repo', 'linjiw/lucid-g1-deploy')}, then in a terminal: "
-          'bash setup.sh && source env.sh && bash build.sh (docs/INSTALL.md step 4)')
+          build if lucid.is_dir() else f'tools/install.sh --runner, then {build} (docs/INSTALL.md step 4)')
     head = git(lucid, 'rev-parse', 'HEAD') if lucid.is_dir() else None
     pinned = pin.get('sonic_runner', {}).get('commit')
     if head:

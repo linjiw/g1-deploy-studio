@@ -50,7 +50,7 @@ async function endAny() {
 async function connect() {
   await endAny();
   await page.goto(`${BASE}/?workspace=navigate`);
-  await page.waitForFunction(() => window.__studio?.state?.session && document.querySelector('#loading-overlay').hidden, null, { timeout: 120000 });
+  await page.waitForFunction(() => window.__studio?.state?.ready && document.querySelector('#loading-overlay').hidden, null, { timeout: 120000 });
   await page.waitForSelector('[data-robot="real"]', { timeout: 60000 });
   await page.click('[data-robot="real"]');
   await page.waitForSelector('#nav-connect', { timeout: 15000 });

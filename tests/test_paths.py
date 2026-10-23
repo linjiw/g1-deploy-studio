@@ -96,7 +96,7 @@ class NoHardcodedRootsTests(unittest.TestCase):
         offenders = [str(p.relative_to(ROOT)) for p in (ROOT / 'studio').glob('*.py')
                      if p.name != 'paths.py' and '/home/linjiw' in p.read_text()]
         offenders += [str(p.relative_to(ROOT)) for p in (ROOT / 'tools').glob('*.py') if '/home/linjiw' in p.read_text()]
-        offenders += [str(p.relative_to(ROOT)) for p in (ROOT / 'tests').glob('*.py')
+        offenders += [str(p.relative_to(ROOT)) for p in (ROOT / 'tests').rglob('*.py')
                       if p.name != 'test_paths.py' and '/home/linjiw' in p.read_text()]
         self.assertEqual(offenders, [])
 

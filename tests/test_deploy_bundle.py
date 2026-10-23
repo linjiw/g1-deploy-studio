@@ -170,6 +170,23 @@ class DeployBundleTests(unittest.TestCase):
         self.assertEqual((dst / 'bundle/config/student.json').read_bytes(), b'local edit')
         self.assertFalse((dst / 'bundle/sonic').exists())
 
+    def test_no_download_when_refused_or_already_complete(self):
+        """A differing file is refused, and a complete bundle is accepted, before gh downloads 0.87 GB."""
+        from unittest import mock
+        calls = []
+        with mock.patch.object(db.subprocess, 'run', side_effect=lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(AssertionError('downloaded'))):
+            complete = db.fetch(self.src, self.config)
+            self.assertTrue(complete['verified'], complete['problems'])
+            self.assertEqual((complete['written'], complete['identical']), (0, 4))
+            self.assertIn('nothing to download', complete['summary'])
+            dst = self.fresh('refused')
+            (dst / 'bundle/config').mkdir()
+            (dst / 'bundle/config/student.json').write_bytes(b'local edit')
+            refused = db.fetch(dst, self.config)
+            self.assertFalse(refused['verified'])
+            self.assertEqual(refused['differing'], ['config/student.json'])
+        self.assertEqual(calls, [])
+
     def test_checkout_at_another_commit_is_refused(self):
         dst = self.base / 'other-commit'
         make_root(dst, files={**FILES, 'config/student.json': b'{"student": "other"}\n'}, manifest_only=True)

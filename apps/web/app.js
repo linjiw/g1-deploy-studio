@@ -93,7 +93,7 @@ async function loadSession(id, { keepCamera = false } = {}) {
     $('layer-navigation').disabled = !m.goal_xy && !m.start_xy;
     $('layer-perception').checked = !!session.perception?.available && new URLSearchParams(location.search).get('map') === '1';
     syncLayers();
-    $('scene-unavailable').hidden = hasState;
+    $('scene-unavailable').hidden = hasState; $('no-recordings').hidden = true;
     updateModeBadge(); updatePolicyChip(); updateRecordingWarning();
     $('privileged-badge').hidden = !m.privileged_map;
     $('robot-view-label').textContent = robotViewLabel();
@@ -829,12 +829,19 @@ async function initialize() {
     get focus() { return focus; },
   };
   try {
-    const sessions = await refreshSessionList();
-    if (!sessions?.length) throw new Error('No recordings configured. See README for config/local.json.');
+    const sessions = (await refreshSessionList()) ?? [];
     const requested = view.get('session');
+    if (!sessions.some(s => s.available) && !sessions.some(s => s.id === requested)) {
+      // A new machine has nothing recorded yet. That is not an error: say where recordings come from and open
+      // Navigate (or the linked workspace) to make the first one.
+      $('loading-overlay').hidden = true; $('no-recordings').hidden = false;
+      $('session-title').textContent = 'No recordings yet';
+      await setWorkspace(view.get('workspace') || 'navigate');
+      return;
+    }
     const firstJob = [...sessions].filter(s => s.group === 'CPU rehearsals' && s.available && s.outcome)
       .sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0))[0];
-    const selected = sessions.some(s => s.id === requested) ? requested : (firstJob ?? sessions.find(s => s.available) ?? sessions[0]).id;
+    const selected = sessions.some(s => s.id === requested) ? requested : (firstJob ?? sessions.find(s => s.available)).id;
     $('session-picker').value = selected;
     if (!(await loadSession(selected))) return;
     if (requested && requested !== selected) return;
@@ -858,5 +865,7 @@ async function initialize() {
     if (view.get('play') === '1') setPlaying(true);
     if (view.get('focus') === '1') await focus.enter();
   } catch (error) { showError(error.message); $('loading-overlay').hidden = true; }
+  finally { state.ready = true; }  // tests wait for this, with or without a recording
 }
+$('no-recordings-open').addEventListener('click', () => setWorkspace('navigate'));
 initialize();

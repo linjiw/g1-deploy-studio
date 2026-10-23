@@ -451,7 +451,7 @@ class Workbench:
                     note='Actual final accumulated DDS rehearsal map. Capture time and synchronized history unavailable.',
                     provenance={'session_id': 'sonic-dds-tutorial', 'source': perception.get('source'),
                                 'session_artifacts': recorded.get('metadata', {}).get('provenance', {}).get('artifacts', [])})
-        except (KeyError, ValueError, OSError, ImportError):
+        except (LookupError, ValueError, OSError, ImportError):  # LookupError: also NoRecording on a new machine
             # Optional historic assets must not prevent the preparation tool starting.
             pass
         for path in sorted((self.root/'maps').glob('map-*.json'))[:32]:

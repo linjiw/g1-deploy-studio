@@ -228,6 +228,21 @@ class CatalogTests(CacheIsolation):
         none_adopted = self.catalog(builders, {'available': False, 'adopted_block': None})
         self.assertFalse(any(row['matches_adopted'] for row in none_adopted['policies']))
 
+    def test_identity_is_the_same_on_another_machine(self):
+        """The same files under a deploy root elsewhere give the same identity (paths are hashed by root)."""
+        import os
+        idents = []
+        for name in ('machine-a', 'machine-b'):
+            root = self.base / name / 'g1-student-deploy'
+            (root / 'bundle').mkdir(parents=True)
+            (root / 'bundle/model.pt').write_bytes(b'same model')
+            with patch.dict(os.environ, {'G1_STUDENT_DEPLOY': str(root)}):
+                self.assertEqual(policies.portable(root / 'bundle/model.pt'), '<deploy_root>/bundle/model.pt')
+                idents.append(policies.identity({'id': 'p', 'artifacts': [root / 'bundle/model.pt'], 'repositories': []}))
+        self.assertNotEqual(idents[0]['artifacts'][0]['path'], idents[1]['artifacts'][0]['path'])
+        self.assertEqual(idents[0]['identity_sha256'], idents[1]['identity_sha256'])
+        self.assertEqual(policies.portable('/elsewhere/x'), '/elsewhere/x')
+
     def test_identity_tracks_artifact_content_and_missing_files(self):
         profile = self.profile('flow-bundle-20261008', None)
         first = policies.identity(profile)

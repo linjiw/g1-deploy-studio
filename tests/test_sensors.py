@@ -274,6 +274,7 @@ class WireSensorParityTests(unittest.TestCase):
         path.write_text(json.dumps(start) + "\n" + json.dumps(envelope) + "\n")
         return path
 
+    @unittest.skipUnless((DEFAULT_DDS_SESSION / "node_memory.npz").is_file(), "designated DDS rehearsal unavailable")
     def test_actual_packer_bytes_redecoded_not_trusting_saved_payload(self):
         # Real observed map heights are used as representative cloud payload;
         # this checks transport decoding, not a claim of raw LiDAR history.
