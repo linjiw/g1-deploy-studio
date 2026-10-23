@@ -17,6 +17,8 @@ import zipfile
 
 import numpy as np
 
+from studio import paths
+
 JOINT_NAMES = (
     "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint",
     "left_ankle_pitch_joint", "left_ankle_roll_joint", "right_hip_pitch_joint", "right_hip_roll_joint",
@@ -27,8 +29,8 @@ JOINT_NAMES = (
     "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint",
     "right_wrist_pitch_joint", "right_wrist_yaw_joint",
 )
-FLOW_ROOT = Path("/home/linjiw/code/g1-student-deploy")
-LUCID_ROOT = Path("/home/linjiw/lucid-sonic/lucid-g1-deploy")
+FLOW_ROOT = paths.get("deploy_root")  # the deploy stack (historical name)
+LUCID_ROOT = paths.get("lucid_root")
 DEFAULT_SESSION = FLOW_ROOT / "runs/smoke/__start_stand_"
 DEFAULT_DDS_SESSION = FLOW_ROOT / "runs/video/A_quickstart"
 DT = 0.02

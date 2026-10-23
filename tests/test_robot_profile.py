@@ -45,8 +45,16 @@ class ProfileLoadTests(unittest.TestCase):
         tree = ast.parse(Path(rp.__file__).read_text())
         roots = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         roots |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
-        allowed = {"__future__", "ast", "json", "math", "operator", "re", "struct", "xml", "functools", "pathlib"}
+        allowed = {"__future__", "ast", "json", "math", "operator", "re", "struct", "xml", "functools", "pathlib", "studio"}
         self.assertLessEqual(roots, allowed)
+        # The one Studio import is studio.paths (machine roots for the cited files), itself stdlib only.
+        studio_names = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "studio" for a in n.names}
+        self.assertLessEqual(studio_names, {"paths"})
+        from studio import paths
+        tree = ast.parse(Path(paths.__file__).read_text())
+        roots = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        roots |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+        self.assertLessEqual(roots, {"__future__", "functools", "json", "os", "pathlib", "sys"})
 
     def test_validation_rejects_corruption(self):
         def broken(mutate):

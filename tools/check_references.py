@@ -4,10 +4,14 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from studio import paths  # noqa: E402
 
 
 def inspect_reference(entry):
-    root = Path(entry["path"])
+    root = Path(paths.relocate(entry["path"]))  # recorded path -> this machine's root
     missing = [p for p in entry["required_paths"] if not (root / p).exists()]
     head = None
     if root.is_dir():

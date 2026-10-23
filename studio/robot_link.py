@@ -56,6 +56,7 @@ import uuid
 from .protocols import (ISAAC_JOINTS, MAX_PACKET_BYTES, MJ_JOINTS, ProtocolError, decode_debug, decode_packed_topic,
                         decode_packet, decode_pose)
 from .recorder import BoundedRecorder, validate_endpoint
+from . import paths
 
 ADAPTER = "studio.robot_link.v1"
 GO_NOTE = "Start the walk with g on the node console. Studio never sends Go to the robot."
@@ -116,7 +117,7 @@ MAX_MAP_SIDE = 1201  # studio.goal_check.MAX_SIDE: the gateway's goal check load
 # the capture writer drains in parallel with the recording until FINALIZE_CAPTURE_BY_S after the stop.
 FINALIZE_JOIN_S = 1.0
 FINALIZE_CAPTURE_BY_S = 2.5
-DEPLOY_ROOT = Path(os.environ.get("G1_STUDENT_DEPLOY") or "/home/linjiw/code/g1-student-deploy")
+DEPLOY_ROOT = paths.get("deploy_root")  # $G1_STUDENT_DEPLOY, config/local.json or the default (studio/paths.py)
 DISPLAY_MODEL = DEPLOY_ROOT / "sim/assets/g1_29dof.xml"
 ISAAC_TO_MJ_INDEX = [ISAAC_JOINTS.index(name) for name in MJ_JOINTS]
 PENDING_STAND_NOTE = "inferred from node status: the node is deferring its stand (a low ceiling near the robot)"

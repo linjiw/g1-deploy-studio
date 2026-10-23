@@ -22,8 +22,11 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
-LUCID = Path('/home/linjiw/lucid-sonic/lucid-g1-deploy')
+sys.path.insert(0, str(ROOT))
+from studio import paths  # noqa: E402
+
+DEPLOY = paths.get('deploy_root')
+LUCID = paths.get('lucid_root')
 
 
 def sha(path):
@@ -89,7 +92,7 @@ def main(argv=None):
         '--dds-domain option in the runner/robot_sim/node.',
         'Use the shared GPU for TensorRT + the planner while Flow research jobs run (bounded, one rehearsal at a time).'],
         'command_sketch': ("unshare --user --map-root-user --net bash -c 'ip link set lo up && "
-                           "cd /home/linjiw/code/g1-student-deploy && .venv/bin/python sim/realtime/rehearse.py "
+                           f"cd {DEPLOY} && .venv/bin/python sim/realtime/rehearse.py "
                            "--task <task.json> --out <owned dir> & .venv/bin/python -m studio.recorder --endpoint tcp://127.0.0.1:5557 "
                            "--topic g1_debug --topic robot_config --duration <s> --output <owned dir>/g1_debug.jsonl'"),
         'not_run': 'This preflight launched nothing. The sketch is for review only.'}

@@ -19,7 +19,7 @@ Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the
 
 **Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md). The narrated 10-minute tour is on the [site](https://linjiw.github.io/g1-deploy-studio/#tour) (recorded before the white redesign).
 
-**What you need.** This repository is Studio: the gateway, the browser app, the simulated robot and robot link adapters, their tests and the site. It contains no robot model, meshes, weights or recordings. Replay works on your own recordings. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack from local checkouts (`g1-student-deploy` with the frozen Flow student bundle and the SONIC release policy, and Flow for the WX profiles; paths in `studio/workbench.py` and `config/references.json`), which are not part of this repository.
+**What you need.** This repository is Studio: the gateway, the browser app, the simulated robot and robot link adapters, their tests and the site. It contains no robot model, meshes, weights or recordings. Replay works on your own recordings. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack from local checkouts (`g1-student-deploy` with the frozen Flow student bundle and the SONIC release policy, and Flow for the WX profiles), which are not part of this repository. The deploy stack and the navigation policy are pinned in `config/deploy.json` (a private repo and its release), and every machine path comes from `studio/paths.py` (`config/local.json`, ignored).
 
 ## Open it
 
@@ -36,13 +36,18 @@ Open **http://127.0.0.1:8790/**. The layout adapts from a big screen down to a t
 
 ![Stage: the same run full screen, with what is shown and where its map came from, the facts at the cursor and one dock](docs/img/studio-stage.jpg)
 
-First-time setup on a new machine:
+**Install on another machine** ([docs/INSTALL.md](docs/INSTALL.md)):
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && npm ci
-.venv/bin/python tools/build_policy_bundle.py   # pins the adopted Flow WX-RF block (read-only to Flow)
-tools/studio_service.sh install                 # release worktree + systemd --user unit
+git clone https://github.com/linjiw/g1-deploy-studio ~/code/g1-deploy-studio && cd ~/code/g1-deploy-studio
+tools/install.sh                     # Studio: venv, packages, browser files              -> Replay
+gh auth login && tools/install.sh --deploy   # deploy stack at the pinned tag + the navigation policy bundle -> Simulation
+tools/install.sh --runner --robot-link       # deploy PC only: SONIC runner checkout, config/robot_link.json -> Robot link
+.venv/bin/python tools/doctor.py     # read-only check: what is ready, and the fix for what is not
+tools/studio_service.sh install      # optional: release worktree + systemd --user unit on 127.0.0.1:8790
 ```
+
+The privileged Flow WX-RF profile needs a local Flow checkout: `.venv/bin/python tools/build_policy_bundle.py` pins it read-only.
 
 ## Workspaces
 
@@ -71,6 +76,7 @@ Details, caveats and how to add a policy: [docs/POLICIES.md](docs/POLICIES.md). 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v       # unit + integration (no policy runtime needed)
 python3 tools/check_references.py                        # read-only reference drift check
+.venv/bin/python tools/doctor.py                         # read-only machine readiness (docs/INSTALL.md)
 .venv/bin/python tools/build_policy_bundle.py --verify-only
 STUDIO_URL=http://127.0.0.1:8790 npm run test:browser            # read-only UI acceptance (FK parity, honesty checks, mobile)
 STUDIO_URL=http://127.0.0.1:8790 npm run test:browser:forwarded  # same through a Host-preserving tunnel

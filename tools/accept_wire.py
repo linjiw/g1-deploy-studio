@@ -25,6 +25,7 @@ import mujoco
 import numpy as np
 import zmq
 
+from studio import paths
 from studio.protocols import MJ_JOINTS, decode_pose
 from studio.recorder import capture_zmq
 
@@ -50,9 +51,9 @@ def load_source(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--source-root", type=Path, default=Path("/home/linjiw/code/g1-student-deploy"))
+    parser.add_argument("--source-root", type=Path, default=paths.get("deploy_root"))
     parser.add_argument("--recording", type=Path,
-                        default=Path("/home/linjiw/code/g1-student-deploy/runs/smoke/__start_stand_/closed_loop.npz"))
+                        default=paths.get("deploy_root") / "runs/smoke/__start_stand_/closed_loop.npz")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)

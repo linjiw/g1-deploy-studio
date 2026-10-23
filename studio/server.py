@@ -18,6 +18,7 @@ import threading
 import time
 from urllib.parse import parse_qs, unquote, urlparse
 
+from studio import paths
 from studio.model import RobotModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +31,7 @@ COMPRESSIBLE = ('application/json', 'text/', 'application/javascript', 'model/st
                 'image/svg+xml')
 QUIET_PREFIXES = ('/api/sensors', '/api/jobs', '/assets/', '/vendor/', '/api/version')
 # Runs written by tools/l3_rehearsal.sh (outside Git). Discovered read-only; never launched from here.
-L3_BASE = Path.home() / 'research-data/g1-deploy-studio/l3'
+L3_BASE = paths.get('data_root') / 'l3'
 L3_RESCAN_S = 10.0
 L3_GROUP = 'Real-time rehearsals (L3)'
 INDEX_HTML = ROOT / 'apps/web/index.html'
@@ -120,9 +121,12 @@ class NoRecording(LookupError):
 class Catalog:
     def __init__(self, config=ROOT / "config/sessions.json"):
         document = json.loads(Path(config).read_text())
-        entries = document["sessions"]
+        entries = list(document["sessions"])
+        # This machine's own recordings: config/local.json "sessions" (ignored by Git) extend the default list.
+        if Path(config).resolve() == (ROOT / "config/sessions.json").resolve():
+            entries += paths.local_config().get("sessions", [])
         self.entries = {}
-        for item in entries:
+        for item in map(paths.relocate_tree, entries):  # recorded paths -> this machine's roots (studio/paths.py)
             key = item["id"]
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", key) or key in self.entries:
                 raise ValueError("Session IDs must be unique URL-safe identifiers")
@@ -662,7 +666,7 @@ def main():
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--config", type=Path, default=ROOT / "config/sessions.json")
     parser.add_argument("--data-root", type=Path, default=None,
-                        help="Workbench data root (default ~/research-data/g1-deploy-studio/workbench)")
+                        help="Workbench data root (default <data_root>/workbench; studio/paths.py)")
     args = parser.parse_args()
     catalog = Catalog(args.config)
     catalog.enable_workbench(args.data_root)

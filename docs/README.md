@@ -7,6 +7,7 @@ Start with **[STATUS.md](STATUS.md)**: one page with what works, the current res
 | Document | Read it for |
 |---|---|
 | [STATUS.md](STATUS.md) | Current state, results, open issues, decisions and their dates |
+| [INSTALL.md](INSTALL.md) | Installing Studio, the deploy stack and the pinned navigation policy on another machine; configuration; updating the pin |
 | [SERVICE.md](SERVICE.md) | Starting, releasing and reaching Studio (systemd unit, SSH tunnel) |
 | [WORKBENCH.md](WORKBENCH.md) | Arena editor, rehearsals, suites, the Runs report, data layout and API |
 | [POLICIES.md](POLICIES.md) | Policy profiles, how the Flow WX-RF block is pinned and run, latency anchoring, actuator profiles |

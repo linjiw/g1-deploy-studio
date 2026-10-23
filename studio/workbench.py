@@ -18,11 +18,12 @@ import time
 import uuid
 
 from studio import actuators as actuator_profiles
+from studio import paths
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY_ID = 'flow-bundle-20261008'
-DATA_ROOT = Path.home() / 'research-data/g1-deploy-studio/workbench'
-REFERENCE_ROOT = Path('/home/linjiw/code/g1-student-deploy')
+DATA_ROOT = paths.get('data_root') / 'workbench'
+REFERENCE_ROOT = paths.get('deploy_root')
 MAX_MAP_POINTS = 20000
 MAX_BOXES = 128
 MAX_JOBS = 512  # bounded run history (each run is ~10-30 MB on disk)

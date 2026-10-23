@@ -33,8 +33,10 @@ from studio.policy_bundle import ARTIFACT_LINKS, BUNDLE_ID, POLICY_ROOT, sha256,
 
 BLOCK = re.compile(r'[A-Za-z0-9]{1,16}')
 
-FLOW = Path('/home/linjiw/flow')
-DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
+from studio import paths  # noqa: E402
+
+FLOW = paths.get('flow_root')
+DEPLOY = paths.get('deploy_root')
 LFH = FLOW / '.bridge-deps/humanoid_lfh'
 
 # Flow BEST_MODEL.md: WX adopted 2026-10-16 (4ba73cb). That tree lacks

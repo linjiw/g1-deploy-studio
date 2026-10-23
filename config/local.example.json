@@ -1,0 +1,9 @@
+{
+ "comment": "Copy to config/local.json (ignored by Git) to change this machine's paths; every key is optional and '~' is expanded. Environment variables win over this file: G1_STUDENT_DEPLOY, LUCID_DEPLOY_ROOT, STUDIO_DATA, FLOW_ROOT (studio/paths.py). 'sessions' adds this machine's own recordings, with the same entries as config/sessions.json. docs/INSTALL.md.",
+ "paths": {
+  "deploy_root": "~/code/g1-student-deploy",
+  "lucid_root": "~/lucid-sonic/lucid-g1-deploy",
+  "data_root": "~/research-data/g1-deploy-studio"
+ },
+ "sessions": []
+}

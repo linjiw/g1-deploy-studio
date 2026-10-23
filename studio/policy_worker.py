@@ -17,9 +17,10 @@ import sys
 import time
 
 from studio import actuators as _actuators
+from studio import paths
 
-REFERENCE_ROOT = Path('/home/linjiw/code/g1-student-deploy')
-REFERENCE_PYTHON = REFERENCE_ROOT / '.venv/bin/python'
+REFERENCE_ROOT = paths.get('deploy_root')
+REFERENCE_PYTHON = paths.deploy_python()
 BACKEND_ID = 'flow-sonic-mujoco-cpu'
 MAX_DURATION_S = 10.0
 # The deploy bundle's planner (studio/policies.py BUNDLE_LABEL): never call it Flow's current student.

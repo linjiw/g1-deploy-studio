@@ -49,7 +49,10 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOY = Path(os.environ.get("G1_STUDENT_DEPLOY") or "/home/linjiw/code/g1-student-deploy")
+sys.path.insert(0, str(ROOT))
+from studio import paths  # noqa: E402
+
+DEPLOY = paths.get("deploy_root")  # $G1_STUDENT_DEPLOY, config/local.json or the default
 DT = 0.02
 BANNER = ("fake_node: PROTOCOL FIXTURE - not a robot, not g1deploy/node.py. Loopback only. "
           "Kinematic unicycle; no planner, physics, robot body or DDS.")

@@ -19,8 +19,10 @@ import subprocess
 import threading
 import time
 
-DEPLOY_ROOT = Path('/home/linjiw/code/g1-student-deploy')
-FLOW_ROOT = Path('/home/linjiw/flow')
+from studio import paths
+
+DEPLOY_ROOT = paths.get('deploy_root')
+FLOW_ROOT = paths.get('flow_root')
 BEST_MODEL = FLOW_ROOT / 'research/BEST_MODEL.md'
 DEFAULT_POLICY = 'flow-bundle-20261008'
 # The deploy bundle's planner is student-s2-kcsc (frozen 2026-10-08), not Flow's current LiDAR student, which no
@@ -29,6 +31,10 @@ BUNDLE_LABEL = "student-s2-kcsc (2026-10-08 bundle), not Flow's current LiDAR st
 # Pinned Flow bundles under POLICY_ROOT: flow-wx-rf-* (WX, retrieval-free) and any other block built by
 # tools/build_policy_bundle.py --block (flow-<block>-rf-*); the id pattern is studio.policy_bundle.BUNDLE_ID.
 BUNDLE_GLOB = 'flow-*'
+# Without these the bundle cannot run: a missing one makes the profile unavailable (others are adapters that
+# only some deploy commits carry, pinned when present).
+BUNDLE_REQUIRED = ('bundle/MANIFEST.json', 'bundle/config/student.json', 'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt',
+                   'bundle/sonic/sonic_release_g1.onnx', 'sim/lockstep.py', 'g1deploy/bundle.py')
 STUDIO = Path(__file__).resolve().parent
 # Studio code that executes the policy is part of its identity (a changed adapter = a different run).
 WORKER_SOURCES = {'deploy-bundle': ['policy_worker.py', 'pipeline.py', 'replay.py', 'actuators.py'],
@@ -151,7 +157,7 @@ def _bundle_profile():
             'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt', 'bundle/sonic/sonic_release_g1.onnx',
             'sim/lockstep.py', 'sim/episode.py', 'g1deploy/bundle.py', 'g1deploy/route_compat.py',
             'g1deploy/planner_compat.py', 'g1deploy/goal_guard.py', 'g1deploy/scoring.py', 'g1deploy/sonic.py',
-            'g1deploy/contract.py', 'sim/assets/g1_29dof.xml') if (DEPLOY_ROOT / p).exists()]
+            'g1deploy/contract.py', 'sim/assets/g1_29dof.xml') if p in BUNDLE_REQUIRED or (DEPLOY_ROOT / p).exists()]
             + [STUDIO / f for f in WORKER_SOURCES['deploy-bundle']],
         'repositories': [DEPLOY_ROOT],
         'limits': {'candidates': [1, 16], 'ode_steps': [1, 10], 'duration_s': [1, 10], 'wall_s': 180},

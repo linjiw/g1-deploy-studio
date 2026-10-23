@@ -11,7 +11,9 @@ import json
 from pathlib import Path
 import re
 
-POLICY_ROOT = Path.home() / 'research-data/g1-deploy-studio/policies'
+from studio import paths
+
+POLICY_ROOT = paths.get('data_root') / 'policies'
 ARTIFACT_LINKS = ['artifacts/native-reference-v1-final/geometry.json', 'artifacts/clean-reference-v2/receipt.json']
 # flow-<block>-rf-<commit7>-s<seed>, e.g. flow-wx-rf-23326aa-s0 (tools/build_policy_bundle.py).
 BUNDLE_ID = re.compile(r'flow-[a-z0-9]{1,16}-rf-[0-9a-f]{7}-s[0-2]')
