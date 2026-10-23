@@ -12,6 +12,7 @@ On 2026-10-19 nothing listened on 8790. The last log, `~/research-data/g1-deploy
 - serves a **committed revision** from a separate release worktree, `~/research-data/g1-deploy-studio/release`, so in-progress edits never reach the user's port (review CODE-1). The served commit is shown in the status bar and at `/api/version`;
 - restarts on failure, and bounds the gateway plus its owned CPU worker to `MemoryHigh=4G` / `MemoryMax=5G`. With `OOMPolicy=continue`, an OOM-killed worker is recorded as killed and the gateway keeps serving;
 - logs to the user journal (polling and mesh requests are not logged).
+- reads this machine's paths and robot link from the development checkout: `release` links `config/local.json` and `config/robot_link.json` (both ignored by Git) into the release worktree, and the release lives under the data root that `studio/paths.py` resolves ([INSTALL.md](INSTALL.md#configuration)).
 
 ```bash
 tools/studio_service.sh install         # once: release worktree + unit, enabled at login/boot
