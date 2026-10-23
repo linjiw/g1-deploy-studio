@@ -112,7 +112,7 @@ What it checks:
 .venv/bin/python -m studio.server --port 8790                      # or once: tools/studio_service.sh install (systemd --user)
 ```
 
-Open http://127.0.0.1:8790/, or from another computer through `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`. The gateway listens on loopback only. A new machine opens on Navigate with "No recordings yet" until it has one.
+Open http://127.0.0.1:8790/, or from another computer through `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`. The gateway listens on loopback only. A new machine opens on Navigate, and Replay says "No recordings yet" until the first session or rehearsal is recorded.
 
 1. **Simulated robot.** Open Navigate, pick a world, then Start session, a goal on the map, Send, Go. Studio runs the deploy policy and node.py's state machine in MuJoCo and records the session. **Use deploy settings** sets the planner budget, latency rule, odometry and stand behaviour to node.py's on the robot ([DEPLOY_FIDELITY.md](DEPLOY_FIDELITY.md)); Advanced settings change each one ([NAVIGATE.md](NAVIGATE.md)). End session: the recording opens in Replay.
 2. **Browser acceptance**, once a recording exists: `STUDIO_URL=http://127.0.0.1:8790 npm run test:browser` (read-only; it needs Chrome at `/opt/google/chrome/chrome` or `CHROME_PATH`). It replays the newest recording. The checks that need the original machine's three demonstration recordings are listed as skipped, never as passed.

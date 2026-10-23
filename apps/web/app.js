@@ -536,9 +536,11 @@ function setPreviewing(on) {
     $('mode-badge').textContent = 'Preview · not run'; $('mode-badge').classList.remove('sim'); $('mode-badge').title = 'Configured geometry only: no policy has run in it yet.';
     $('policy-chip').hidden = true; $('privileged-badge').hidden = true;
   } else if (was && state.session) { updateModeBadge(); updatePolicyChip(); $('privileged-badge').hidden = !state.session.metadata.privileged_map; }
+  else if (was) { $('mode-badge').textContent = 'No recording'; $('mode-badge').title = 'Nothing has been recorded on this machine yet.'; }
 }
 function restoreTitle() {
   if (state.session) { $('session-title').textContent = state.session.metadata.title ?? state.sessionId; renderFrame(true); }
+  else $('session-title').textContent = 'No recordings yet';
 }
 // Navigate before a session: the chosen world and start, configured and not yet run.
 on('navigate:preview', p => {
@@ -604,7 +606,7 @@ function setStage(kind) {
 }
 
 async function ensureCatalog() {
-  if (!state.catalog) { state.catalog = await request('/api/workbench'); setToken(state.catalog.csrf_token); }
+  if (!state.catalog) { state.catalog = await request('/api/workbench'); state.catalogAt = Date.now(); setToken(state.catalog.csrf_token); }
   return state.catalog;
 }
 // After a gateway restart the per-process POST token changes: refresh it once and retry.
@@ -649,7 +651,11 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
       if (!rh.attached) emit('rehearse:preview', previewMarkers());
     }
     if (name === 'navigate') {
+      // Worlds saved since the last read (Arena in another tab, the API) appear whenever Navigate is entered.
+      const stale = state.catalog && Date.now() - (state.catalogAt ?? 0) > 300;
+      if (stale) state.catalog = null;
       const catalog = await ensureCatalog();
+      if (stale) emit('catalog:refreshed', catalog);
       catalog.nav_options ??= await request('/api/nav/options').catch(() => null);
       if (!nav.catalog) await initNavigate(catalog); else { nav.catalog = catalog; renderNavigate(); }
       if (state.workspace !== 'navigate') return;
@@ -836,6 +842,7 @@ async function initialize() {
       // Navigate (or the linked workspace) to make the first one.
       $('loading-overlay').hidden = true; $('no-recordings').hidden = false;
       $('session-title').textContent = 'No recordings yet';
+      $('session-picker').insertAdjacentHTML('afterbegin', '<option value="" selected disabled>No recordings yet</option>');
       await setWorkspace(view.get('workspace') || 'navigate');
       return;
     }

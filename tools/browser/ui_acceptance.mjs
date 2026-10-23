@@ -41,7 +41,9 @@ async function open(id) {
   await ready(id);
 }
 const seek = t => page.evaluate(t => window.__studio.seek(t), t);
-async function parity(id, time) {
+// Lockstep and rehearsal recordings store joints at full precision; Navigate recordings round joints to 1e-4 rad
+// and qpos to 1e-5, so their FK is compared within that stored precision.
+async function parity(id, time, tolerance = 1e-6) {
   await seek(time);
   const frame = await page.evaluate(() => window.__studio.state.frameIndex);
   const oracle = await (await page.request.get(`${base}/api/kinematics?id=${id}&frame=${frame}`)).json();
@@ -60,8 +62,8 @@ async function parity(id, time) {
     for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) rot = Math.max(rot, Math.abs(m[j * 4 + i] - r[i][j]));
   }
   assert.ok(bodies > 20, `bodies compared ${bodies}`);
-  assert.ok(pos < 1e-6 && rot < 1e-6, `FK error pos ${pos} rot ${rot}`);
-  check(`browser FK matches MuJoCo (${id})`, { frame, bodies, pos, rot });
+  assert.ok(pos < tolerance && rot < tolerance, `FK error pos ${pos} rot ${rot} (tolerance ${tolerance})`);
+  check(`browser FK matches MuJoCo (${id})`, { frame, bodies, pos, rot, tolerance });
 }
 
 try {
@@ -77,7 +79,8 @@ try {
   if (primary === 'sonic-lockstep') assert.equal(nq, 36); else assert.ok([36, 50].includes(nq), `model nq ${nq}`);
   const duration = await page.evaluate(() => window.__studio.state.session.metadata.duration_s);
   assert.ok(duration >= 1.6, `${primary} lasts ${duration} s; the playback checks need 1.6 s`);
-  await parity(primary, Math.min(1.2, duration / 2));
+  const navigation = await page.evaluate(() => window.__studio.state.session.metadata.kind === 'navigation');
+  await parity(primary, Math.min(1.2, duration / 2), navigation ? 1e-3 : 1e-6);
   // Transport visible without scrolling (review UX-1).
   const play = await page.locator('#play').boundingBox();
   assert.ok(play.y + play.height <= 1000, `play button at ${play.y}`);

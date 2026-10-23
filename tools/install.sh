@@ -50,7 +50,7 @@ run .venv/bin/python -m pip install --quiet --disable-pip-version-check -r requi
 if [[ -e node_modules ]]; then
   echo "  node_modules present (npm ci skipped)"
 elif have npm; then
-  node -e 'process.exit(Number(process.versions.node.split(".")[0]) < 18)' 2>/dev/null \
+  node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' 2>/dev/null \
     || { echo "  ! Node.js 18 or newer is required ($(node --version 2>/dev/null || echo none)); Ubuntu 22.04's apt is older: use nvm or NodeSource" >&2; exit 1; }
   run npm ci --no-audit --no-fund
 else
