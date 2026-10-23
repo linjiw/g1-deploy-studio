@@ -10,9 +10,10 @@ import unittest
 
 import numpy as np
 
+from studio import paths
 from studio import latency_anchor as la
 
-SOURCE = Path('/home/linjiw/code/g1-student-deploy/g1deploy/latency.py')
+SOURCE = paths.get('deploy_root') / 'g1deploy/latency.py'
 
 
 def yaw_q(yaw, pitch=0.0):

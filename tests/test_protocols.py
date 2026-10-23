@@ -9,10 +9,11 @@ import unittest
 import msgpack
 import numpy as np
 
+from studio import paths
 from studio.protocols import (HEADER_SIZE, ISAAC_JOINTS, MJ_JOINTS, ProtocolError,
                               decode_debug, decode_packed_topic, decode_packet, decode_pose)
 
-SOURCE = Path("/home/linjiw/code/g1-student-deploy/g1deploy")
+SOURCE = paths.get('deploy_root') / "g1deploy"
 
 
 def source_serializer():

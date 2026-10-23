@@ -19,15 +19,16 @@ import unittest
 
 import numpy as np
 
+from studio import paths
 from studio.protocols import decode_packed_topic
 from studio.robot_link import (GO_NOTE, MAP_LABEL, MAX_SESSION_BYTES, NODE_COMMANDS, PENDING_STAND_NOTE, ConfigError,
                                ControlRequest, DisplayMap, RobotLink, goal_to_ahead_left, load_config)
 
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOY = Path(os.environ.get("G1_STUDENT_DEPLOY") or "/home/linjiw/code/g1-student-deploy")
+DEPLOY = paths.get('deploy_root')
 HAVE_SOURCE = (DEPLOY / "g1deploy/zmq_stream.py").is_file()
 PY = sys.executable
-ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(ROOT))
+ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(ROOT), G1_STUDENT_DEPLOY=str(DEPLOY))
 CHECKED = {"ok": True, "checks": [], "note": "test: checked by the gateway"}  # what the gateway attaches when it passes
 READY_IDS = ["node_status", "odometry", "frame", "still", "goal_verified", "goal_range", "stand"]
 
@@ -126,7 +127,7 @@ class CommandPathTests(unittest.TestCase):
         script = r'''
 import contextlib, io, json, math, os, sys, types
 sys.dont_write_bytecode = True
-sys.path.append(os.environ.get("G1_STUDENT_DEPLOY") or "/home/linjiw/code/g1-student-deploy")
+sys.path.append(os.environ["G1_STUDENT_DEPLOY"])
 import numpy as np
 from g1deploy.node import StudentNode
 from studio.robot_link import goal_to_ahead_left

@@ -7,11 +7,12 @@ import unittest
 
 import numpy as np
 
+from studio import paths
 from studio.goal_check import grid_from_arrays, load_grid
 from studio.twin import twin_from_grid, twin_quality
 from studio.workbench import point_status, validate_map, validate_presets
 
-RUNS = Path('/home/linjiw/code/g1-student-deploy/runs')
+RUNS = paths.get('deploy_root') / 'runs'
 RES = 0.05
 LO = np.array([-6.0, -6.0])
 N = 241

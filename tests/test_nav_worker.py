@@ -13,10 +13,11 @@ import tempfile
 import time
 import unittest
 
+from studio import paths
 from studio import nav_worker
 
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOY_PYTHON = Path('/home/linjiw/code/g1-student-deploy/.venv/bin/python')
+DEPLOY_PYTHON = paths.deploy_python()
 ENABLED = os.environ.get('STUDIO_INTEGRATION') == '1' and DEPLOY_PYTHON.is_file()
 FLAT = {'id': 'flat', 'label': 'Flat', 'kind': 'boxes', 'frame_id': 'world', 'boxes': []}
 PILLAR = {'id': 'pillar', 'label': 'Pillar', 'kind': 'boxes', 'frame_id': 'world',

@@ -9,9 +9,11 @@ import subprocess
 import tempfile
 import unittest
 
+from studio import paths
+
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOY_PYTHON = Path('/home/linjiw/code/g1-student-deploy/.venv/bin/python')
-BUNDLE = Path.home() / 'research-data/g1-deploy-studio/policies/flow-wx-rf-23326aa-s0'
+DEPLOY_PYTHON = paths.deploy_python()
+BUNDLE = paths.get('data_root') / 'policies/flow-wx-rf-23326aa-s0'
 ENABLED = os.environ.get('STUDIO_INTEGRATION') == '1' and DEPLOY_PYTHON.is_file() and (BUNDLE / 'manifest.json').is_file()
 
 

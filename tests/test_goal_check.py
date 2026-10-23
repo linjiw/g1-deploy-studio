@@ -15,10 +15,11 @@ import zipfile
 
 import numpy as np
 
+from studio import paths
 from studio import goal_check
 from studio.goal_check import CHECK_IDS, check_goal, grid_from_arrays, load_grid, plan_route, route_occupancy
 
-DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
+DEPLOY = paths.get('deploy_root')
 RUNS = DEPLOY / 'runs'
 ROUTE_SOURCE = DEPLOY / 'bundle/flow/src/motion2scene_flow/closed_loop/route.py'
 DEPLOY_PYTHON = DEPLOY / '.venv/bin/python'

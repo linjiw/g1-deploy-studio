@@ -2,6 +2,7 @@
 import unittest
 from pathlib import Path
 import numpy as np
+from studio import paths
 from studio.model import RobotModel
 
 
@@ -14,11 +15,11 @@ def rotation(q):
 
 class ModelParityTests(unittest.TestCase):
     def test_local_models_match_mujoco(self):
-        paths = [Path('/home/linjiw/code/g1-student-deploy/sim/assets/g1_29dof.xml'),
-                 Path('/home/linjiw/lucid-sonic/lucid-g1-deploy/sim/models/g1/scene_43dof.xml')]
-        if not all(p.exists() for p in paths):
+        models = [paths.get('deploy_root') / 'sim/assets/g1_29dof.xml',
+                 paths.get('lucid_root') / 'sim/models/g1/scene_43dof.xml']
+        if not all(p.exists() for p in models):
             self.skipTest('Local integration models not installed')
-        for path, nq in zip(paths, [36, 50]):
+        for path, nq in zip(models, [36, 50]):
             with self.subTest(path=path):
                 model = RobotModel(path, 'test')
                 self.assertEqual(model.description['nq'], nq)
