@@ -84,6 +84,7 @@ class ConsoleReplayTests(unittest.TestCase):
         m = s['metadata']
         self.assertEqual((m['recording_kind'], m['robot'], m['pose_source']), ('robot-console-session', 'real', 'node-status'))
         self.assertEqual(m['console']['guards'], 'walls')
+        self.assertEqual(m['frame_id'], 'odom')  # the robot's odometry frame, as every frame
         frames = s['frames']
         self.assertEqual(len(frames), 400)
         self.assertTrue(all(f['joints_classification'] == 'measured' and f['classification'] == 'estimated' for f in frames))

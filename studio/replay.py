@@ -586,7 +586,8 @@ def _console(path, model_path, max_frames):
     title = session.get("note") or f"{session.get('robot') or 'G1'} · {Path(path).name}"
     real = session.get("mode") in (None, "robot")  # `g1 sim` sessions use the same recorder
     metadata.update(title=f"{'Robot' if real else 'Console sim'} session · {title}"[:120], robot="real" if real else "simulated",
-                    kind="robot-session",
+                    kind="robot-session", frame_id="odom",
+                    policy_identity="the deploy PC's SONIC runner and student node (see metadata.console)",
                     model_variant="G1 29 DoF (joints from rt/lowstate)", pose_basis=pose_basis, pose_source=pose_source,
                     recording_format=meta.get("format"), recorder_meta={k: meta.get(k) for k in
                     ("clock", "iface", "domain", "lidar", "status_hz", "host", "started_unix", "stopped_unix") if k in meta},
