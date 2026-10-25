@@ -161,6 +161,32 @@ These belong to the deploy repository and its owner. Studio would only propose t
 
 Without U1–U3, Phase 0 and Phase 1 still work; Phase 2 uses the stand-only conversion and readback above.
 
+## 7a. Replaying deploy-kit robot sessions
+
+The deploy kit's console (`./g1 robot`, `./g1 sim` on branch `integration` of g1-student-deploy) records every session
+with a passive recorder, `g1deploy/recorder.py`, in format `g1deploy.recording.v1`:
+- `rec/` holds `meta.json`, `rec/<stream>/NNNNNN.npz` chunks (`lowstate` at 1 kHz, `lowcmd`, raw lidar, `zmq_odom`, ...)
+  and `node_status.jsonl`;
+- next to it sit `session.json`, `node.log` and `node_plans.json`.
+
+Studio replays these sessions read-only. Copy or link a session directory, or a robot-day directory of sessions, into
+`<data root>/robot-sessions/`. Replay lists it under **Robot sessions (deploy kit)**, with evidence level **M4 ·
+recorded real robot session**.
+
+- **Joints:** measured, from `rt/lowstate` `q`, with duplicate samples dropped.
+- **Pose:** an estimate. It comes from the LIO bridge (`rec/zmq_odom`) when recorded, else from the node's own status
+  at 5 Hz (xy, FK pelvis height and heading), interpolated. Tilt always comes from the pelvis IMU.
+  `metadata.pose_basis` says which.
+- **Timeline:** node events from `node.log`; plans from `node_plans.json`, timed from `node_up` + tick × 20 ms; the
+  node's phase and goal per frame.
+- **Map:** the node's final memory when the session dumped one (`node_memory.npz`).
+- **Not shown:** the recorded lidar (raw sensor frame), `rt/lowcmd`, ground truth and contact forces. A real robot has
+  no ground truth or contact measurement.
+
+The reader is Studio's own, numpy only (`studio/replay.py` `_console`). It follows `g1deploy/recording.py`; Studio
+imports no deploy code and opens no DDS participant to replay a session. Browser check:
+`tools/browser/validation/replay_robot_session.mjs`.
+
 ## 8. Safety rules for robot mode
 
 - Studio never writes `rt/lowcmd` or hand commands and never creates a DDS writer. The SONIC runner stays the only motor writer.

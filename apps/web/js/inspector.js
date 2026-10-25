@@ -124,6 +124,13 @@ export function fidelity(meta = {}) {
   if (meta.recording_kind === 'robot-link') return { level: 'M5', short: 'M5', label: 'M5 · live robot through the deploy PC',
     proves: 'What the deploy PC streams: the LIO pose, LiDAR, the reference SONIC tracks and the node status, timed on Studio\'s clock.',
     hides: 'Ground truth (a robot has none: the pose is the LIO estimate); motor commands, which Studio never sees or sends.' };
+  if (meta.recording_kind === 'robot-console-session') return meta.robot === 'real'
+    ? { level: 'M4', short: 'M4', label: 'M4 · recorded real robot session (deploy kit)',
+      proves: `What the robot did: joints measured on rt/lowstate (${Math.round(meta.recorded_state_rate_hz ?? 0)} Hz), the node's events and plans, on the deploy PC's clock.`,
+      hides: `Ground truth and contact forces (a robot has none). The pose is an estimate (${meta.pose_source === 'lio' ? 'LIO odometry' : "the node's own odometry status"}); the recorded LiDAR is not shown.` }
+    : { level: 'L3', short: 'L3', label: 'L3 · console simulation session (deploy kit recorder)',
+      proves: 'The console\'s real-time chain as the recorder saw it: joints on rt/lowstate, node events and plans.',
+      hides: 'Physical sensors and actuators; the pose shown is the node\'s odometry estimate, not the simulator truth.' };
   if (lockstep && latency > 0) {
     const approx = meta.fidelity === 'L2-approx', predict = approx && meta.latency_model.anchor === 'predict';
     const short = approx ? (predict ? 'L2≈ predict' : 'L2≈') : meta.latency_model.anchor === 'predict' ? 'L2 predict' : 'L2';

@@ -407,6 +407,225 @@ def _realtime(path, model_path, max_frames):
             "trajectory": [f["position"] for f in frames]}
 
 
+# ---------------------------------------------------------------- real robot: g1-student-deploy console sessions
+CONSOLE_FORMAT = "g1deploy.recording.v1"
+CONSOLE_KIND = "robot-console-session"
+CONSOLE_MAX_ROWS = 4_000_000  # 1 kHz lowstate: about 67 minutes
+
+
+def console_rec_dir(path):
+    """The rec/ directory of a deploy-kit console session (`g1 robot` / `g1 sim`), or None."""
+    path = Path(path)
+    for rec in (path / "rec", path):
+        meta = _json(rec / "meta.json", None)
+        if isinstance(meta, dict) and meta.get("format") == CONSOLE_FORMAT:
+            return rec
+    return None
+
+
+def _rec_stream(rec, name, keys):
+    """g1deploy/recording.py Session.stream, numpy only: chunks rec/<name>/NNNNNN.npz concatenated, selected keys."""
+    parts = {}
+    for chunk in sorted(p for p in (rec / name).glob("[0-9]*.npz") if ".tmp" not in p.name):
+        with np.load(chunk, allow_pickle=False) as z:
+            for k in keys:
+                if k + "_off" in z.files:
+                    blob, off = z[k], z[k + "_off"]
+                    parts.setdefault(k, []).append([blob[off[i]:off[i + 1]].tobytes() for i in range(len(off) - 1)])
+                elif k in z.files:
+                    parts.setdefault(k, []).append(z[k])
+    out = {}
+    for k, v in parts.items():
+        out[k] = sum(v, []) if isinstance(v[0], list) else np.concatenate(v)
+    return out
+
+
+def _rec_status(rec):
+    rows = []
+    path = rec / "node_status.jsonl"
+    if path.is_file():
+        for line in path.read_text(errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue  # a line cut by power loss
+            if isinstance(row, dict) and isinstance(row.get("status"), dict) and isinstance(row.get("t"), (int, float)):
+                rows.append(row)
+    return sorted(rows, key=lambda r: r["t"])
+
+
+def _rec_odom(rec):
+    """LIO bridge odometry (zmq_odom, protocol v1 topic `odom`): (t, pos (N, 3), quat (N, 4)) or None."""
+    from studio import protocols
+    data = _rec_stream(rec, "zmq_odom", ("t", "msg"))
+    t, pos, quat = [], [], []
+    for ti, msg in zip(data.get("t", []), data.get("msg", [])):
+        try:
+            _, f = protocols.decode_packed(msg, b"odom")
+        except protocols.ProtocolError:
+            continue
+        p, q = np.asarray(f.get("pos"), float).reshape(-1), np.asarray(f.get("quat_wxyz"), float).reshape(-1)
+        if p.shape == (3,) and q.shape == (4,) and abs(np.linalg.norm(q) - 1) < 1e-3:
+            t.append(float(ti)); pos.append(p); quat.append(q)
+    if len(t) < 2:
+        return None
+    order = np.argsort(t)
+    return np.asarray(t)[order], np.asarray(pos)[order], np.asarray(quat)[order]
+
+
+def _yaw(q):
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    return np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+
+def _with_yaw(q, yaw):
+    """IMU attitude q (wxyz, (N, 4)) with its heading replaced by `yaw`: Rz(yaw) * Rz(-yaw_imu) * q."""
+    d = (yaw - _yaw(q)) / 2
+    c, s_ = np.cos(d), np.sin(d)
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    return np.stack([c * w - s_ * z, c * x - s_ * y, c * y + s_ * x, c * z + s_ * w], 1)
+
+
+def _console(path, model_path, max_frames):
+    """A real lab-G1 session recorded by the deploy kit's recorder (g1deploy/recorder.py): measured joints from
+    rt/lowstate, the pose from the LIO bridge when it was recorded, else from the node's own odometry status."""
+    rec = console_rec_dir(path)
+    root = rec.parent if rec.name == "rec" else rec
+    meta = _json(rec / "meta.json", {})
+    session = _json(root / "session.json", {}) or {}
+    low = _rec_stream(rec, "lowstate", ("t", "q", "imu_quat"))
+    if low.get("t") is None or len(low["t"]) == 0:
+        raise ReplayError("Console session has no rt/lowstate samples")
+    t, q, imu = (np.asarray(low[k], dtype=np.float64) for k in ("t", "q", "imu_quat"))
+    if len(t) > CONSOLE_MAX_ROWS:
+        raise ReplayError(f"lowstate has {len(t)} rows; trim the session before replaying it")
+    if q.ndim != 2 or q.shape[1] < 29 or imu.shape != (len(t), 4):
+        raise ReplayError("lowstate q / imu_quat have unexpected shapes")
+    order = np.argsort(t, kind="stable")
+    t, q, imu = t[order], q[order, :29], imu[order]
+    keep = np.r_[True, np.diff(t) > 0]  # duplicate DDS samples (about 5% at 1 kHz) carry no new time
+    t, q, imu = t[keep], q[keep], imu[keep]
+    good = np.isfinite(q).all(1) & np.isfinite(imu).all(1) & (np.abs(np.linalg.norm(imu, axis=1) - 1) < 1e-2)
+    t, q, imu = t[good], q[good], imu[good]
+    if len(t) < 2:
+        raise ReplayError("Console session has fewer than two valid lowstate samples")
+    imu = imu / np.linalg.norm(imu, axis=1, keepdims=True)
+    origin = float(t[0])
+    idx = _sample_indices(len(t), max_frames)
+    ts = t[idx]
+    status = _rec_status(rec)
+    st_t = np.asarray([r["t"] for r in status], dtype=np.float64)
+
+    def status_at(name):
+        """Node status field per frame: the latest row at or before the frame (5 Hz, sample-and-hold)."""
+        j = np.searchsorted(st_t, ts, side="right") - 1
+        return [status[k]["status"].get(name) if k >= 0 else None for k in j]
+
+    odom = _rec_odom(rec)
+    if odom is not None and odom[0][0] <= ts[-1] and odom[0][-1] >= ts[0]:
+        ot, opos, oquat = odom
+        pos = np.stack([np.interp(ts, ot, opos[:, k]) for k in range(3)], 1)
+        yaw = np.interp(ts, ot, np.unwrap(_yaw(oquat)))
+        quat = _with_yaw(imu[idx], yaw)
+        pose_basis = "LIO bridge odometry (rec/zmq_odom), heading from LIO, tilt from the pelvis IMU"
+        pose_source = "lio"
+    else:
+        rows = [(r["t"], r["status"].get("xy"), r["status"].get("pelvis_z_m"), r["status"].get("yaw_rad")) for r in status]
+        rows = [r for r in rows if isinstance(r[1], list) and len(r[1]) == 2 and all(_finite_number(v) for v in r[1])
+                and _finite_number(r[2]) and _finite_number(r[3])]
+        if len(rows) < 2:
+            raise ReplayError("Console session has no pose: neither LIO odometry nor node status with xy / pelvis z / yaw")
+        rt = np.asarray([r[0] for r in rows])
+        pos = np.stack([np.interp(ts, rt, [r[1][0] for r in rows]), np.interp(ts, rt, [r[1][1] for r in rows]),
+                        np.interp(ts, rt, [r[2] for r in rows])], 1)
+        yaw = np.interp(ts, rt, np.unwrap([r[3] for r in rows]))
+        quat = _with_yaw(imu[idx], yaw)
+        pose_basis = (f"node.py status at 5 Hz ({session.get('odom') or 'odometry'}), linearly interpolated: xy, pelvis z "
+                      "(forward kinematics) and heading; tilt from the pelvis IMU")
+        pose_source = "node-status"
+    model = Path(model_path) if model_path else FLOW_ROOT / "sim/assets/g1_29dof.xml"
+    nq, addresses = _model_joint_addresses(model)
+    if nq != 36:
+        raise ReplayError(f"model nq={nq}: the console replay needs the 29-DoF G1 (sim/assets/g1_29dof.xml)")
+    qposes = np.concatenate([pos, quat, q[idx]], 1)
+    tilt = np.arccos(np.clip(1 - 2 * (imu[idx, 1] ** 2 + imu[idx, 2] ** 2), -1, 1))
+    events = _node_events(root / "node.log", origin)
+    plan_log = _json(root / "node_plans.json", {}) or {}
+    rows = plan_log.get("plans", [])
+    up = next((e for e in events if e["type"] == "node_up"), None)
+    plan_times = [up["time"] + float(r["tick"]) * DT for r in rows] if up else []
+    phases, goals, goal_dist = status_at("phase"), status_at("goal"), status_at("goal_dist_m")
+    frames = []
+    for k, i in enumerate(idx):
+        tt = float(ts[k] - origin)
+        j = bisect.bisect_right(plan_times, tt) - 1
+        plan = _plan(rows[j], plan_times[j], tt, "estimated from node_up monotonic timestamp + tick × 20 ms") if j >= 0 else None
+        qk = qposes[k]
+        frames.append({"time": tt, "sequence": int(i), "source_time": float(ts[k]), "source_clock_domain": "host-monotonic",
+                       "receipt_time": None, "sim_time": None, "position": qk[:3].tolist(), "quaternion_wxyz": qk[3:7].tolist(),
+                       "classification": "estimated", "frame_id": "odom", "validity": "valid",
+                       "joints": qk[7:].tolist(), "joints_classification": "measured", "qpos": qk.tolist(),
+                       "reference": None, "command": None, "plan": plan,
+                       "navigation": {"phase": phases[k], "goal_xy": goals[k]},
+                       "health": {"state_age_ms": 0.0, "reference_age_ms": None,
+                                  "planner_latency_ms": plan["latency_ms"] if plan else None,
+                                  "tilt_rad": float(tilt[k]), "goal_dist_m": goal_dist[k], "tracking_rmse_rad": None,
+                                  "lowcmd_age_ms": None, "sonic_inference_ms": None, "contact_force_n": None,
+                                  "gpu_utilization": None}})
+    duration = float(ts[-1] - origin)
+    files = [rec / "meta.json", root / "session.json", root / "node_plans.json", root / "node.log", rec / "node_status.jsonl",
+             root / "node_memory.npz"]
+    metadata = _metadata(path, CONSOLE_KIND, model, duration, "host-monotonic", origin, files, [
+        "A real robot session: joints are measured (rt/lowstate); the pose is an estimate (see pose_basis); there is no "
+        "ground truth and no obstacle contact measurement.",
+        "The recorded LiDAR (raw sensor-frame PointCloud2) is not decoded in this view; the map shown is the node's final "
+        "memory when the session dumped one.",
+        "Planner event times are estimated from node_up + tick × 20 ms on the deploy PC's monotonic clock.",
+        "Motor commands (rt/lowcmd) and the runner's internals are recorded but not shown here.",
+        "Studio reads this directory only; it never connects to the robot or the deploy PC to replay it."])
+    title = session.get("note") or f"{session.get('robot') or 'G1'} · {Path(path).name}"
+    real = session.get("mode") in (None, "robot")  # `g1 sim` sessions use the same recorder
+    metadata.update(title=f"{'Robot' if real else 'Console sim'} session · {title}"[:120], robot="real" if real else "simulated",
+                    kind="robot-session",
+                    model_variant="G1 29 DoF (joints from rt/lowstate)", pose_basis=pose_basis, pose_source=pose_source,
+                    recording_format=meta.get("format"), recorder_meta={k: meta.get(k) for k in
+                    ("clock", "iface", "domain", "lidar", "status_hz", "host", "started_unix", "stopped_unix") if k in meta},
+                    console={k: session.get(k) for k in ("mode", "robot", "odom", "guards", "goal_lookahead", "goal", "operator",
+                                                          "note", "git", "runner_commit", "bundle_manifest_sha256",
+                                                          "rear_blind_deg", "started") if k in session},
+                    source_samples=int(len(t)), recorded_state_rate_hz=float((len(t) - 1) / max(t[-1] - t[0], 1e-9)),
+                    joint_qpos_addresses=dict(zip(JOINT_NAMES, addresses)), hardware_validated=False)
+    metadata["provenance"]["repositories"] = []  # the recording names its own git (metadata.console.git)
+    return {"schema_version": 1, "metadata": metadata, "joint_names": list(JOINT_NAMES), "frames": frames,
+            "events": sorted(events, key=lambda e: e["time"]),
+            "environment": {"boxes": [], "classification": "unavailable", "source": None,
+                            "note": "A real site: no configured geometry"},
+            "perception": _final_map(root / "node_memory.npz", duration), "graph": _console_graph(),
+            "trajectory": [f["position"] for f in frames]}
+
+
+def _finite_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _console_graph():
+    nodes = [{"id": "robot", "label": "G1 (PC1)", "kind": "robot"},
+             {"id": "planner", "label": "node.py (student planner)", "kind": "planner"},
+             {"id": "sonic", "label": "SONIC C++ runner", "kind": "controller"},
+             {"id": "recorder", "label": "deploy-kit recorder", "kind": "observer"}]
+    specs = [("robot", "planner", "Unitree DDS", "rt/lowstate + rt/utlidar/cloud_livox_mid360"),
+             ("planner", "sonic", "ZMQ", "pose v1 · 5556"),
+             ("sonic", "robot", "Unitree DDS", "rt/lowcmd"),
+             ("robot", "recorder", "Unitree DDS (subscribe only)", "rt/lowstate, rt/lowcmd, lidar"),
+             ("planner", "recorder", "ZMQ REP status", "node status 5 Hz")]
+    edges = [{"source": a, "target": b, "transport": tr, "topic": topic, "status": "configured", "observed_rate_hz": None,
+              "age_ms": None, "drops": None, "qos": None, "basis": "deploy-kit configuration; recorded, not discovered"}
+             for a, b, tr, topic in specs]
+    return {"basis": "configured-from-source", "runtime_discovered": False, "nodes": nodes, "edges": edges,
+            "ros2": {"available": False, "reason": "No ROS graph was recorded"}, "dds_domain": None,
+            "dds_domain_note": "The robot's DDS domain; Studio opens no DDS participant to replay it"}
+
+
 def load_session(path, *, environment_path=None, model_path=None, max_frames=MAX_FRAMES):
     """Decode one explicitly selected directory. Never searches research trees."""
     path = Path(path).expanduser().resolve()
@@ -414,6 +633,8 @@ def load_session(path, *, environment_path=None, model_path=None, max_frames=MAX
         return _lockstep(path, environment_path, model_path, max_frames)
     if (path / "sim.npz").is_file():
         return _realtime(path, model_path, max_frames)
+    if console_rec_dir(path) is not None:
+        return _console(path, model_path, max_frames)
     raise ReplayError(f"No supported recording in {path}")
 
 

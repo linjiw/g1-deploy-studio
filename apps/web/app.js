@@ -148,7 +148,7 @@ function updateModeBadge() {
       : r ? `<span class="outcome ${r.arrived === r.walks && r.walks ? 'outcome-good' : 'outcome-warn'}">${r.arrived ?? 0}/${r.walks ?? 0} walks arrived</span>` : '';
     return;
   }
-  $('mode-badge').textContent = detached ? `◌ Detached CPU simulation · ${level}` : live ? `● Live CPU simulation · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\.(flow_)?policy_worker/.test(m.provenance?.adapter ?? '') ? `Replay · CPU rehearsal · ${level}` : `Replay · recorded lockstep · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'Replay · ZMQ capture · L0' : m.fidelity === 'L3' ? 'Replay · real-time chain · L3' : 'Replay · L0';
+  $('mode-badge').textContent = detached ? `◌ Detached CPU simulation · ${level}` : live ? `● Live CPU simulation · ${level}` : m.recording_kind === 'sonic-mujoco-lockstep' ? (/^studio\.(flow_)?policy_worker/.test(m.provenance?.adapter ?? '') ? `Replay · CPU rehearsal · ${level}` : `Replay · recorded lockstep · ${level}`) : m.recording_kind === 'recorded-wire-transport' ? 'Replay · ZMQ capture · L0' : m.recording_kind === 'robot-console-session' ? (m.robot === 'real' ? `Replay · robot session (deploy kit) · ${level}` : `Replay · console sim session · ${level}`) : m.fidelity === 'L3' ? 'Replay · real-time chain · L3' : 'Replay · L0';
   $('mode-badge').title = `${fid.label}. Proves: ${fid.proves} Hides: ${fid.hides}`;
   $('mode-badge').classList.toggle('sim', live);
   const result = m.test_result;
