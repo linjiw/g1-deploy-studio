@@ -178,11 +178,24 @@ class RecordedFactsTests(unittest.TestCase):
         self.assertEqual([q["interface"] for q in conflict], ["rt/odostate orientation"])
 
 
+def deploy_root_off_pin():
+    """The profile cites line numbers of the pinned deploy stack (config/deploy.json); another checkout moves them."""
+    import subprocess
+    from studio import paths
+    pin = json.loads((Path(__file__).resolve().parents[1] / 'config/deploy.json').read_text())['deploy_stack']['commit']
+    head = subprocess.run(['git', '-C', str(paths.get('deploy_root')), 'rev-parse', 'HEAD'], capture_output=True,
+                          text=True).stdout.strip()
+    return head if head and head != pin else None
+
+
 class SourceVerificationTests(unittest.TestCase):
     def setUp(self):
         missing = missing_reference()
         if missing:
             self.skipTest(f"read-only reference source not present on this host: {missing}")
+        off = deploy_root_off_pin()
+        if off:
+            self.skipTest(f"deploy root at {off[:7]}, not the pinned commit: the profile cites the pinned sources")
 
     def test_profile_matches_reference_sources(self):
         self.assertEqual(rp.verify_against_sources(PROFILE), [])

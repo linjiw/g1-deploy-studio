@@ -156,7 +156,9 @@ the resample pool ran, which happens more often than that, so it brackets the ta
 - node.py's latency rule with the bundle planner's timing;
 - LIO-level odometry drift (the G4 configuration);
 - one map for the session (`keep`, as node.py);
-- the current G1 actuator limits.
+- the current G1 actuator limits;
+- when the deploy stack has them: `--guards walls` and `--goal-lookahead 1.0`, the flags the lab G1 walked with on
+  H5–H6 (section 3a).
 
 The public site's recordings (`tools/site/record_goals.py`, profile `deploy`) use the fixed 160 ms predictive model
 instead.
@@ -195,6 +197,33 @@ instead.
   it writes anything. Rehearse preselects the profile whose block Flow names as adopted; a bundle labelled "adopted
   block" when it was built reads "previously adopted" once Flow adopts another.
 - WX-family profiles are privileged: they plan from the exact boxes, not from LiDAR. They run in Rehearse only.
+
+## 3a. Deploy-side guards and walking speed
+
+g1-student-deploy's `g1deploy/guards.py` (branch `robustness`, merged into `integration`) adds opt-in guards between
+the lidar memory, the frozen planner and SONIC: `node.py --guards deploy|walls`. Its `docs/ROBUSTNESS.md` describes
+each guard and the evidence behind it. They are:
+- a self mask for leaked self-returns;
+- guidance boxes that never wrap the robot;
+- a walk envelope (pelvis, knee and tilt);
+- a calm fallback, with a latch that keeps a no-safe streak calm;
+- measured anchoring after a fallback or a missed prediction;
+- under `walls`, low overheads as walls for the planner and the route.
+
+Navigate (Advanced → *Guards*, *Walking speed*) and Rehearse (*Guards*, *Walking speed*, for the deploy bundle student)
+offer the presets the configured deploy stack has. The gateway reads them from `g1deploy/guards.py`; the tagged stack
+`deploy-2026-10-23` has none and offers only *off*.
+
+- **Rehearse and suites** pass them to `sim.lockstep.run_episode(guards=, goal_lookahead=)`. The recorded plan rows
+  follow the guarded plan, the one that drives SONIC, not the frozen selection.
+- **Navigate** runs the same steps in its own loop: the guarded view and selection (`plan_guarded`), the calm latch,
+  walking drops, and measured anchoring. The fixed-latency mode does this as `sim.lockstep` does; node mode does it
+  as `node.py`, with request-ordered staleness. At 0 ms latency a guarded Navigate walk equals the guarded source
+  rehearsal frame for frame. The integration tests `GuardedNavWorkerTests` check this for `walls` + 1.0 m and for
+  `deploy` (worst |qpos| difference 5e-6).
+- **The record:** `metadata.guards` holds the preset and its full configuration, `metadata.goal_lookahead_m` the
+  effective lookahead. Plan rows carry `guard`, `no_safe`, `rejected`, `self_masked`, `calm_hold` and `predicted`,
+  and the events `guard`, `calm_hold`, `calm_release` and `anchor_miss`.
 
 ## 6. Remaining gaps
 

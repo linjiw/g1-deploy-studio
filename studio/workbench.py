@@ -47,6 +47,25 @@ NAV_PLANNER = {'quick': {'candidates': 2, 'ode_steps': 4, 'label': 'Quick · K 2
                'balanced': {'candidates': 8, 'ode_steps': 6, 'label': 'Balanced · K 8, ODE 6 · about 0.3x real time'},
                'deployed': {'candidates': 16, 'ode_steps': 10, 'label': 'Deployed budget · K 16, ODE 10 · about 0.15x real time'}}
 NAV_ODOMETRY = ('truth', 'lio', 'drift')
+GUARD_LABELS = {
+    'off': 'Off · the frozen planner alone',
+    'deploy': 'Deploy · self mask, split boxes, walk envelope, calm fallback, anchor check (node.py --guards deploy)',
+    'walls': 'Walls · deploy + low overheads as walls, no ducking (node.py --guards walls; H5–H6)'}
+
+
+def guard_options():
+    """The deploy-side guard presets the configured deploy stack offers (g1deploy/guards.py of g1-student-deploy,
+    branch robustness / integration). Read from the source file; the tagged stack has none and offers only 'off'."""
+    source = REFERENCE_ROOT / 'g1deploy/guards.py'
+    try:
+        text = source.read_text()
+    except OSError:
+        text = ''
+    available = all(k in text for k in ('def plan_guarded', 'class CalmLatch', '"walls"'))
+    presets = dict(GUARD_LABELS) if available else {'off': GUARD_LABELS['off']}
+    return {'available': available, 'presets': presets, 'source': str(source) if available else None,
+            'lookahead_m': {'default': None, 'slow': 1.0, 'range': [0.5, 2.0]},
+            'note': None if available else 'The configured deploy stack has no g1deploy/guards.py (tag deploy-2026-10-23).'}
 NAV_COMMANDS = ('goal', 'clear', 'go', 'stand', 'takeover', 'end')
 NAV_WALL_S = 3600.0
 MAX_NAV_COMMANDS = 2000
@@ -652,7 +671,7 @@ class Workbench:
         from studio import policies
         catalog = policies.catalog()
         return {'schema_version': 1, 'csrf_token': self.token, 'maps': maps, 'map_warnings': self.map_warnings,
-                'backends': [self.capabilities()], 'policies': catalog['policies'],
+                'backends': [self.capabilities()], 'policies': catalog['policies'], 'guards': guard_options(),
                 'flow_research': catalog['flow_research'],
                 'criteria': self._criteria(),
                 'actuators': [{'id': k, **{f: v[f] for f in ('label', 'hardware', 'description')}} for k, v in actuator_profiles.PROFILES.items()],
@@ -718,6 +737,8 @@ class Workbench:
                     'criterion': self._criterion(request.get('criterion', 'arrive_hold')),
                     'latency': self._latency(request.get('latency'), profile),
                     'actuators': actuator_profiles.validate(request.get('actuators', actuator_profiles.DEFAULT_PROFILE if new_request else 'source')),
+                    'guards': self._guards(request.get('guards', 'off'), profile),
+                    'goal_lookahead_m': self._lookahead(request.get('goal_lookahead_m'), profile),
                     'preset_label': label(request['preset_label']) if request.get('preset_label') else None,
                     'planner': {'candidates': integer(planner.get('candidates', 2), 'candidates', 1, max_k),
                                 'ode_steps': integer(planner.get('ode_steps', 4), 'ODE steps', 1, max_ode)}}
@@ -789,7 +810,33 @@ class Workbench:
                 'start_xy', 'goal_xy', 'start_yaw_rad', 'seed', 'planner', 'backend_id')
         content = {k: scenario.get(k) for k in keys}
         content['actuators'] = scenario.get('actuators', 'source')  # part of the physics: never reuse across profiles
+        # Guards and walking speed change what drives SONIC; only non-defaults enter the key, so scenarios saved
+        # before these fields existed keep theirs.
+        if scenario.get('guards', 'off') != 'off':
+            content['guards'] = scenario['guards']
+        if scenario.get('goal_lookahead_m') is not None:
+            content['goal_lookahead_m'] = scenario['goal_lookahead_m']
         return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def _guards(value, profile):
+        from studio.policy_worker import validate_guards
+        value = validate_guards(value)
+        if value == 'off':
+            return value
+        if profile.get('loader') != 'deploy-bundle':
+            raise ValueError('Guards apply to the deploy bundle student only (g1deploy/guards.py)')
+        if not guard_options()['available']:
+            raise ValueError('Guards need g1deploy/guards.py in the configured deploy stack (branch robustness or integration)')
+        return value
+
+    @staticmethod
+    def _lookahead(value, profile):
+        from studio.policy_worker import validate_lookahead
+        value = validate_lookahead(value)
+        if value is not None and profile.get('loader') != 'deploy-bundle':
+            raise ValueError('goal_lookahead_m applies to the deploy bundle student only')
+        return value
 
     def save_scenario(self, request):
         scenario = self.prepare(request, new_request=True)
@@ -904,6 +951,9 @@ class Workbench:
         actuator_profile = actuators.validate(document.get('actuators', 'g1-current'))
         stand_mode = nav_worker.validate_stand_mode(document.get('stand_mode', 'default'))
         seed = integer(document.get('seed', 0), 'seed', 0, 2**31-1)
+        nav_profile = policies.get_profile(DEFAULT_POLICY_ID)
+        guards = self._guards(document.get('guards', 'off'), nav_profile)
+        goal_lookahead = self._lookahead(document.get('goal_lookahead_m'), nav_profile)
         # The worker's rehearsal-parity mode (a goal and Go at t = 0, unchecked) is for tests that run it directly;
         # the public API never offers it (review L7).
         initial_goal = None
@@ -940,7 +990,8 @@ class Workbench:
             navigation = {'robot': 'simulated', 'label': label, 'map_id': map_id, 'map_label': world.get('label'),
                           'start_xy': start_xy, 'start_yaw_rad': start_yaw, 'planner': document.get('planner', 'quick'),
                           'planner_label': preset['label'], 'latency': latency, 'actuators': actuator_profile,
-                          'odometry': odometry, 'map_mode': map_mode, 'seed': seed, 'stand_mode': stand_mode}
+                          'odometry': odometry, 'map_mode': map_mode, 'seed': seed, 'stand_mode': stand_mode,
+                          'guards': guards, 'goal_lookahead_m': goal_lookahead}
             job = {'id': key, 'status': 'starting', 'kind': 'navigation', 'navigation': navigation,
                    'scenario': {'label': label, 'map_id': map_id}, 'scenario_id': None,
                    'started_unix_s': time.time(), 'output': output, 'process': None, 'latest': None,
@@ -957,7 +1008,8 @@ class Workbench:
                            'start_yaw_rad': start_yaw, 'seed': seed,
                            'planner': {k: preset[k] for k in ('candidates', 'ode_steps')}, 'latency': latency,
                            'actuators': actuator_profile, 'odometry': odometry, 'map_mode': map_mode,
-                           'stand_mode': stand_mode, 'policy': {'identity_sha256': policy_identity['identity_sha256']}}
+                           'stand_mode': stand_mode, 'guards': guards, 'goal_lookahead_m': goal_lookahead,
+                           'policy': {'identity_sha256': policy_identity['identity_sha256']}}
                 job['process'] = self._launch(output, 'nav_worker.py', request, lease_fd)
                 self.catalog.register(key, output/'run/session.json', f'Live · {label}', provider=lambda: self.session_data(key),
                                       extra={'group': 'Navigation sessions', 'status': 'running', 'policy_id': profile['id'],

@@ -42,6 +42,13 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(clean['policy']['loader'], 'deploy-bundle')
         self.assertEqual(clean['stand_mode'], 'default')    # node.py stand(): arms to the default pose
         self.assertEqual(nav_worker.validate_request(request(stand_mode='hold_upper'))['stand_mode'], 'hold_upper')
+        self.assertEqual(clean['guards'], 'off')             # the frozen planner alone unless asked
+        self.assertIsNone(clean['goal_lookahead_m'])         # the bundle's evaluated 1.5 m
+        guarded = nav_worker.validate_request(request(guards='walls', goal_lookahead_m=1.0))
+        self.assertEqual((guarded['guards'], guarded['goal_lookahead_m']), ('walls', 1.0))
+        for bad in ({'guards': 'on'}, {'goal_lookahead_m': 3.0}, {'goal_lookahead_m': 'slow'}):
+            with self.assertRaises(ValueError):
+                nav_worker.validate_request(request(**bad))
 
     def test_rejects_bad_values(self):
         for bad in ({'odometry': 'gps'}, {'seed': -1}, {'goal_radius_m': 3}, {'initial_goal': [1]}, {'id': '../x'},
@@ -227,13 +234,15 @@ class NodeLatencyTests(unittest.TestCase):
                      'self.latency_est = float(np.quantile(self.latencies[-8:], 0.9))',
                      'first = self.active is None',
                      'anchor_tick = now_tick  # computed while standing still: start it when it lands',
-                     'if reason or anchor_tick <= self.last_streamed_anchor:',
                      'start = max(anchor_tick, now_tick - 2)',
                      'self.last_streamed_anchor = now_tick + 10**6',
                      'plan = planner.plan(np.asarray(hist), [], goal_fn, map_fn, sel, prev=None, guide_boxes=guide)',
                      'ap.add_argument("--latency-guess-s", type=float, default=0.3)',
                      'ap.add_argument("--inflight", type=int, default=1,'):
             self.assertIn(line, source)
+        # the stale rule: inline at deploy-2026-10-23; with guards (branch robustness) the unguarded form is kept
+        self.assertTrue('if reason or anchor_tick <= self.last_streamed_anchor:' in source
+                        or 'stale = anchor_tick <= self.last_streamed_anchor' in source)
         self.assertEqual((nav_worker.NODE_LATENCY_GUESS_S, nav_worker.NODE_LATENCY_WINDOW, nav_worker.NODE_LATENCY_QUANTILE),
                          (0.3, 8, 0.9))
 
@@ -515,6 +524,86 @@ class NavWorkerIntegrationTests(unittest.TestCase):
         worst = max(abs(a - b) for fa, fb in zip(nav['frames'][:n], source['frames'][:n]) for a, b in zip(fa['qpos'], fb['qpos']))
         print(f'\nparity: {n} frames until arrival at {arrived:.2f} s, worst |qpos| difference {worst:.2e}', flush=True)
         self.assertLess(worst, 1e-4, 'nav worker qpos (rounded to 1e-5) diverged from the source rehearsal before arrival')
+
+
+def _guards_available():
+    from studio import workbench
+    return workbench.guard_options()['available']
+
+
+@unittest.skipUnless(ENABLED and _guards_available(), 'needs STUDIO_INTEGRATION=1 and a deploy stack with g1deploy/guards.py')
+class GuardedNavWorkerTests(unittest.TestCase):
+    """Navigate with --guards against the deploy stack's own sim.lockstep run_episode(guards=, goal_lookahead=)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def standing(self, latest):
+        n = latest.get('navigation', {})
+        return n.get('paused') and n.get('phase') in ('WAIT', 'ARRIVED', 'STOPPED')
+
+    def _parity(self, guards, lookahead, goal, seed, world=PILLAR):
+        s = Session(Path(self.tmp.name) / f'nav-{guards}', request(map=world, seed=seed, initial_goal=goal, guards=guards,
+                                                                    goal_lookahead_m=lookahead))
+        self.addCleanup(s.close)
+        s.wait(self.standing, what='arrival')
+        s.send('end')
+        s.wait(lambda l: l.get('status') == 'completed', 60, 'completion')
+        s.process.wait(30)
+        nav = json.loads((s.output / 'session.json').read_text())
+        self.assertEqual(nav['metadata']['guards']['preset'], guards)
+        self.assertEqual(nav['metadata']['goal_lookahead_m'], lookahead or 1.5)  # the effective value
+        arrived = next(e['time'] for e in nav['events'] if e['type'] == 'arrived')
+        req = {'schema_version': 1, 'id': 'parity', 'goal_xy': goal, 'start_xy': [0, 0], 'start_yaw_rad': 0, 'duration_s': 10,
+               'seed': seed, 'planner': {'candidates': 2, 'ode_steps': 4}, 'criterion': 'arena_reach', 'actuators': 'g1-current',
+               'latency': {'ms': 0, 'anchor': 'measured'}, 'map': world, 'guards': guards, 'goal_lookahead_m': lookahead}
+        path = Path(self.tmp.name) / f'bundle-{guards}.json'
+        path.write_text(json.dumps(req))
+        env = dict(os.environ, PYTHONPATH=str(ROOT), CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2', PYTHONDONTWRITEBYTECODE='1')
+        out = Path(self.tmp.name) / f'bundle-{guards}'
+        done = subprocess.run([str(DEPLOY_PYTHON), '-B', str(ROOT / 'studio/policy_worker.py'), '--request', str(path),
+                               '--output', str(out)], capture_output=True, text=True, timeout=900, env=env, cwd=ROOT)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        source = json.loads((out / 'session.json').read_text())
+        self.assertEqual(source['metadata']['planner_configuration']['guards'], guards)
+        n = int(round(arrived / 0.02))
+        self.assertGreater(n, 50)
+        self.assertGreaterEqual(len(source['frames']), n)
+        worst = max(abs(a - b) for fa, fb in zip(nav['frames'][:n], source['frames'][:n]) for a, b in zip(fa['qpos'], fb['qpos']))
+        print(f'\nguards {guards} lookahead {lookahead}: {n} frames until arrival at {arrived:.2f} s, worst |qpos| '
+              f'difference {worst:.2e}; guard events {[e["message"] for e in nav["events"] if e["type"] == "guard"][:5]}', flush=True)
+        self.assertLess(worst, 1e-4, 'guarded nav worker diverged from the guarded source rehearsal before arrival')
+        return nav, source
+
+    def test_walls_slow_matches_the_guarded_source_rehearsal(self):
+        self._parity('walls', 1.0, [2.5, 0.3], 3)
+
+    def test_node_latency_mode_with_guards_walks_and_records_guard_fields(self):
+        """node.py's latency rule (the robot's own) with --guards walls --goal-lookahead 1.0, end to end on open floor.
+        (At the tests' K 2 / ODE 4 budget the planner itself is poor near obstacles; guard parity is the tests above.)"""
+        s = Session(Path(self.tmp.name) / 'nav-node', request(map=FLAT, seed=2, guards='walls', goal_lookahead_m=1.0,
+                                                               latency={'mode': 'node', 'preset': 'bundle-fused'}))
+        self.addCleanup(s.close)
+        s.wait(self.standing, what='standing start')
+        commands = s.send('goal', xy=[2.0, 0.3])
+        self.assertEqual(s.reply(commands, s.seq)['status'], 'applied')
+        commands = s.send('go')
+        self.assertEqual(s.reply(commands, s.seq)['status'], 'applied')
+        latest = s.wait(lambda l: self.standing(l) and l['navigation']['legs'] and l['navigation']['legs'][-1]['outcome'],
+                        900, 'walk end')
+        s.send('end')
+        s.wait(lambda l: l.get('status') == 'completed', 60, 'completion')
+        s.process.wait(30)
+        nav = json.loads((s.output / 'session.json').read_text())
+        self.assertEqual(latest['navigation']['legs'][-1]['outcome'], 'arrived')
+        self.assertTrue(nav['plans'] and all('guard' in p and 'calm_hold' in p for p in nav['plans']))
+        self.assertEqual(nav['metadata']['guards']['preset'], 'walls')
+        self.assertEqual(nav['metadata']['goal_lookahead_m'], 1.0)
+
+    def test_deploy_matches_the_guarded_source_rehearsal(self):
+        nav, _ = self._parity('deploy', None, [2.5, -0.2], 1)
+        self.assertTrue(all('guard' in p for p in nav['plans']))  # every plan row carries the guard fields
 
 
 if __name__ == '__main__':

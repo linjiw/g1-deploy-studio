@@ -5,7 +5,7 @@ import { $, escape, num, request, emit, on, finite, distinctLabels } from './uti
 
 export const nav = {
   catalog: null, robot: 'simulated', mapId: null, map: null, presetIndex: 0,
-  settings: { planner: 'quick', latency: 'none', actuators: 'g1-current', odometry: 'truth', map_mode: 'keep', seed: 0 },
+  settings: { planner: 'quick', latency: 'none', actuators: 'g1-current', odometry: 'truth', map_mode: 'keep', seed: 0, guards: 'off', lookahead: '' },
   job: null, timer: null, pick: null, busy: false, lastPerception: -Infinity, pendingSeq: null, notice: null,
   showTruth: false, robotLink: null, finished: null, mapBounds: null, endRequestedAt: null,
 };
@@ -23,6 +23,9 @@ const LATENCY = {
 // The robot's deploy configuration (docs/DEPLOY_FIDELITY.md): deployed budget, node.py's latency rule with the bundle
 // planner's measured timing, LIO-level odometry, one map for the session, the current G1.
 const DEPLOY_SETTINGS = { planner: 'deployed', latency: 'node', actuators: 'g1-current', odometry: 'lio', map_mode: 'keep' };
+// What the robot ran on H5-H6 (docs/ROBUSTNESS.md of g1-student-deploy): --guards walls --goal-lookahead 1.0.
+const DEPLOY_GUARDS = { guards: 'walls', lookahead: '1.0' };
+const LOOKAHEAD = { '': 'Evaluated · goal lookahead 1.5 m', '1.0': 'Slow · 1.0 m (first hardware walks)' };
 const ODOMETRY = { truth: 'Simulator truth', lio: 'LIO-level drift', drift: 'Poor odometry (drift)' };
 const ACTUATORS = { 'g1-current': 'Current G1 (139/139/88 N·m hips)', 'g1-rev1': 'G1 rev 1 (88/139/88)', source: 'Training model (88/88/88)' };
 const PHASE = {
@@ -159,7 +162,8 @@ async function startSession() {
   try {
     const body = { map_id: nav.mapId, start_xy: q.start_xy, start_yaw_rad: q.start_yaw_rad ?? 0, planner: nav.settings.planner,
       latency: LATENCY[nav.settings.latency].value, actuators: nav.settings.actuators, odometry: nav.settings.odometry,
-      map_mode: nav.settings.map_mode, seed: nav.settings.seed };
+      map_mode: nav.settings.map_mode, seed: nav.settings.seed, guards: nav.settings.guards,
+      goal_lookahead_m: nav.settings.lookahead ? Number(nav.settings.lookahead) : null };
     nav.job = await request('/api/nav/start', body);
     nav.lastPerception = -Infinity; nav.pick = null;
     emit('navigate:started', nav.job);
@@ -243,6 +247,12 @@ function preview() {
 }
 export function resetPreview() { nav.previewKey = undefined; }
 
+function guardPresets() {
+  const presets = nav.catalog?.guards?.presets ?? { off: 'Off · the frozen planner alone' };
+  if (!(nav.settings.guards in presets)) nav.settings.guards = 'off';
+  return presets;
+}
+
 function setupForm() {
   const worlds = runnableWorlds(), list = starts();
   const option = (value, text, selected) => `<option value="${escape(value)}" ${selected ? 'selected' : ''}>${escape(text)}</option>`;
@@ -258,6 +268,9 @@ function setupForm() {
         <label class="field"><span>Planner latency</span><select id="nav-latency">${Object.entries(LATENCY).map(([k, v]) => option(k, v.label, k === nav.settings.latency)).join('')}</select></label>
         <label class="field"><span>Hardware limits</span><select id="nav-actuators">${Object.entries(ACTUATORS).map(([k, v]) => option(k, v, k === nav.settings.actuators)).join('')}</select></label>
         <label class="field"><span>Odometry</span><select id="nav-odometry">${Object.entries(ODOMETRY).map(([k, v]) => option(k, v, k === nav.settings.odometry)).join('')}</select></label>
+        <label class="field" title="${escape(guardPresets()[nav.settings.guards] ?? '')}"><span>Guards</span><select id="nav-guards">${Object.entries(guardPresets()).map(([k, v]) => option(k, v, k === nav.settings.guards)).join('')}</select></label>
+        <label class="field"><span>Walking speed</span><select id="nav-lookahead">${Object.entries(LOOKAHEAD).map(([k, v]) => option(k, v, k === nav.settings.lookahead)).join('')}</select></label>
+        ${nav.catalog.guards?.available ? '' : `<p class="tiny">${escape(nav.catalog.guards?.note ?? 'Guards need g1deploy/guards.py in the deploy stack.')}</p>`}
         <label class="field"><span>Map memory</span><select id="nav-map-mode">${Object.entries(MAP_MODES).map(([k, v]) => option(k, v, k === nav.settings.map_mode)).join('')}</select></label>
         <p class="tiny">The node keeps one memory, and returns from the robot's own arms can pile up in it as phantom low ceilings over long sessions (docs/NAVIGATE.md §5). Fresh clears it before each walk.</p>
         <label class="field narrow"><span>Seed</span><input id="nav-seed" type="number" min="0" step="1" value="${nav.settings.seed}"></label>
@@ -295,12 +308,13 @@ function sessionHelp() {
 function bindSetup(root) {
   root.querySelector('#nav-world')?.addEventListener('change', e => selectWorld(e.target.value).catch(err => { nav.notice = { kind: 'warning', text: err.message }; render(); }));
   root.querySelector('#nav-start')?.addEventListener('change', e => { nav.presetIndex = Number(e.target.value); preview(); renderStageBar(); });
-  for (const [id, key] of [['nav-planner', 'planner'], ['nav-latency', 'latency'], ['nav-actuators', 'actuators'], ['nav-odometry', 'odometry'], ['nav-map-mode', 'map_mode']])
+  for (const [id, key] of [['nav-planner', 'planner'], ['nav-latency', 'latency'], ['nav-actuators', 'actuators'], ['nav-odometry', 'odometry'], ['nav-map-mode', 'map_mode'], ['nav-guards', 'guards'], ['nav-lookahead', 'lookahead']])
     root.querySelector(`#${id}`)?.addEventListener('change', e => { nav.settings[key] = e.target.value; });
   root.querySelector('#nav-seed')?.addEventListener('change', e => { nav.settings.seed = Math.max(0, Math.floor(Number(e.target.value) || 0)); });
   root.querySelector('#nav-deploy-preset')?.addEventListener('click', () => {
-    Object.assign(nav.settings, DEPLOY_SETTINGS); nav.advancedOpen = true;
-    nav.notice = { kind: 'ok', text: "Deploy settings: K 16 / ODE 10, node.py's latency rule with the bundle planner's timing, LIO-level odometry, one map. About 0.15x real time on this CPU." };
+    Object.assign(nav.settings, DEPLOY_SETTINGS, nav.catalog.guards?.available ? DEPLOY_GUARDS : {}); nav.advancedOpen = true;
+    nav.notice = { kind: 'ok', text: "Deploy settings: K 16 / ODE 10, node.py's latency rule with the bundle planner's timing, LIO-level odometry, one map"
+      + (nav.catalog.guards?.available ? ', guards walls and lookahead 1.0 m (the robot\'s H5–H6 flags; pick deploy for overheads)' : '') + '. About 0.15x real time on this CPU.' };
     render();
   });
   root.querySelector('#nav-start-session')?.addEventListener('click', startSession);

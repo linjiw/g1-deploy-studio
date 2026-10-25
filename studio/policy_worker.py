@@ -176,6 +176,24 @@ def validate_planner(planner):
     return settings
 
 
+GUARD_PRESETS = ('off', 'deploy', 'walls')
+
+
+def validate_guards(value):
+    """The deploy-side guard preset (g1-student-deploy g1deploy/guards.py, `node.py --guards`). Availability in the
+    configured deploy stack is the gateway's check (workbench.guard_options); a worker fails loudly without it."""
+    if value not in GUARD_PRESETS:
+        raise ValueError(f'guards must be one of {list(GUARD_PRESETS)}')
+    return value
+
+
+def validate_lookahead(value):
+    """`node.py --goal-lookahead` (sets walking speed): None keeps the bundle's evaluated 1.5 m."""
+    if value is None:
+        return None
+    return _number(value, 'goal_lookahead_m', 0.5, 2.0)
+
+
 def validate_request(request):
     """Allowlisted physics inputs. A point cloud cannot silently become collision truth."""
     if not isinstance(request, dict) or type(request.get('schema_version')) is not int or request.get('schema_version') != 1:
@@ -210,6 +228,8 @@ def validate_request(request):
              'duration_s': _number(request.get('duration_s', 2), 'duration_s', .02, MAX_DURATION_S),
              'seed': seed, 'planner': settings, 'criterion': criterion, 'policy': clean_policy,
              'latency': validate_latency(request.get('latency')),
+             'guards': validate_guards(request.get('guards', 'off')),
+             'goal_lookahead_m': validate_lookahead(request.get('goal_lookahead_m')),
              # Requests saved before actuator profiles existed ran on the unpatched source model.
              'actuators': _actuators.validate(request.get('actuators', 'source')),
              'map': clean_map_document}
@@ -373,7 +393,8 @@ def execute(request, output):
                     'planner_configuration': dict(req['planner'], device='cpu', implementation='eager',
                                                    route_source='sensor', lidar='mjray', start='stand',
                                                    latency_s=req['latency']['ms'] / 1000, anchor_mode=req['latency']['anchor'],
-                                                   inflight=1),
+                                                   inflight=1, guards=req['guards'],
+                                                   goal_lookahead_m=req['goal_lookahead_m']),
                     'fidelity': 'L2' if req['latency']['ms'] else 'L1',
                     'latency_model': {'ms': req['latency']['ms'], 'anchor': req['latency']['anchor'],
                                       'implementation': 'g1-student-deploy sim.lockstep run_episode(latency_s, anchor_mode, inflight=1)',
@@ -649,13 +670,47 @@ def execute(request, output):
                            'source': 'FlowPlanner.plan', 'latency_ms': row['latency_s']*1000})
             return result
         flow.planner.FlowPlanner.plan = observed_plan
+        # Guards (g1deploy/guards.py through run_episode(guards=)): the plan that drives SONIC is the guarded result, not
+        # the frozen selection observed above; the row is updated to it and attribution follows it.
+        import inspect
+        accepts = inspect.signature(lockstep.run_episode).parameters
+        guard_kwargs = {}
+        if req['guards'] != 'off':
+            if 'guards' not in accepts or not hasattr(lockstep, 'G'):
+                raise RuntimeError('guards requested but the configured deploy stack has no g1deploy/guards.py')
+            guard_kwargs['guards'] = req['guards']
+            original_guarded = lockstep.G.plan_guarded
+
+            def observed_guarded(*args, **kwargs):
+                count = len(plans)
+                out = original_guarded(*args, **kwargs)
+                if len(plans) > count:
+                    row, g = plans[-1], out.get('guard') or {}
+                    cl = out.get('chosen_clearance_m')
+                    row.update(rule='dropped' if out.get('rejected') else out['rule'],
+                               chosen_clearance_m=float(cl) if cl is not None and math.isfinite(cl) else None,
+                               plan_xy=out['qpos'][:, :2].tolist(), plan_root_z=out['qpos'][:, 2].tolist(),
+                               guard=g.get('action'), no_safe=bool(g.get('no_safe')), rejected=out.get('rejected'),
+                               self_masked=g.get('self_masked_cells'), guide_boxes=g.get('guide_boxes'))
+                    if not out.get('rejected'):
+                        plan_objects[id(out)] = (out, row)
+                    if g.get('action'):
+                        events.append({'time': len(frames)*.02, 'type': 'guard', 'message': f"guard: {g['action']}",
+                                       'source': 'g1deploy.guards', 'action': g['action']})
+                return out
+            lockstep.G.plan_guarded = observed_guarded
+        if req['goal_lookahead_m'] is not None:
+            if 'goal_lookahead' not in accepts:
+                raise RuntimeError('goal_lookahead_m requested but the deploy stack run_episode has no goal_lookahead')
+            guard_kwargs['goal_lookahead'] = req['goal_lookahead_m']
         publish(force=True)
         episode_error = None
         try:
             report = lockstep.run_episode(output / 'task.json', req['seed'], output / 'native',
                         device='cpu', planner_impl='eager', start='stand', route_source='sensor',
                         lidar='mjray', deadline_s=req['duration_s'], planner_overrides=req['planner'],
-                        latency_s=req['latency']['ms'] / 1000, anchor_mode=req['latency']['anchor'], inflight=1)
+                        latency_s=req['latency']['ms'] / 1000, anchor_mode=req['latency']['anchor'], inflight=1,
+                        **guard_kwargs)
         except Exception as exc:
             episode_error = exc
             if not frames or not (output / 'native/score.json').is_file():
