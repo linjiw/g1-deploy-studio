@@ -174,9 +174,15 @@ Studio replays these sessions read-only. Copy or link a session directory, or a 
 recorded real robot session**.
 
 - **Joints:** measured, from `rt/lowstate` `q`, with duplicate samples dropped.
-- **Pose:** an estimate. It comes from the LIO bridge (`rec/zmq_odom`) when recorded, else from the node's own status
-  at 5 Hz (xy, FK pelvis height and heading), interpolated. Tilt always comes from the pelvis IMU.
-  `metadata.pose_basis` says which.
+- **Pose:** an estimate, from the best source that passes:
+  - the LIO bridge (`rec/zmq_odom`), when at least 95% of its samples pass the plausibility check (|xy| ≤ 50 m, z in
+    [-0.5, 2.0] m, no jump faster than 5 m/s). Two lab sessions of 2026-10-24 had a LIO that diverged before they
+    began, out to 1e4–1e6 m;
+  - else the node's own status at 5 Hz (xy, FK pelvis height and heading), interpolated;
+  - else the IMU attitude at a fixed point (`attitude-only`), as in a stream-replay session.
+
+  Tilt always comes from the pelvis IMU. `metadata.pose_basis` and `pose_source` say which source was used.
+  `metadata.pose_health` holds the LIO pass share and a cross-check of LIO height against the node's FK pelvis height.
 - **Timeline:** node events from `node.log`; plans from `node_plans.json`, timed from `node_up` + tick × 20 ms; the
   node's phase and goal per frame.
 - **Map:** the node's final memory when the session dumped one (`node_memory.npz`).

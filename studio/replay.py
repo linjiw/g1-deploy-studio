@@ -411,6 +411,9 @@ def _realtime(path, model_path, max_frames):
 CONSOLE_FORMAT = "g1deploy.recording.v1"
 CONSOLE_KIND = "robot-console-session"
 CONSOLE_MAX_ROWS = 4_000_000  # 1 kHz lowstate: about 67 minutes
+# LIO health (deploy-PC review of the 2026-10-24 sessions: two had diverged before they began, 1e4-1e6 m): a sample is
+# plausible within this box and without a jump faster than LIO_MAX_SPEED; the stream is used when most samples pass.
+LIO_MAX_XY_M, LIO_Z_RANGE_M, LIO_MAX_SPEED_M_S, LIO_MIN_PASS = 50.0, (-0.5, 2.0), 5.0, 0.95
 
 
 def console_rec_dir(path):
@@ -473,6 +476,23 @@ def _rec_odom(rec):
     return np.asarray(t)[order], np.asarray(pos)[order], np.asarray(quat)[order]
 
 
+def lio_health(t, pos):
+    """Per-sample plausibility of LIO odometry and the share that passes: inside the site box, z in range, and no
+    jump faster than LIO_MAX_SPEED_M_S from the previous good sample (a diverged LIO runs off to 1e4 m and beyond)."""
+    ok = (np.abs(pos[:, :2]) <= LIO_MAX_XY_M).all(1) & (pos[:, 2] >= LIO_Z_RANGE_M[0]) & (pos[:, 2] <= LIO_Z_RANGE_M[1])
+    last = None
+    for i in range(len(t)):
+        if not ok[i]:
+            continue
+        if last is not None:
+            dt = max(t[i] - t[last], 1e-3)
+            if np.linalg.norm(pos[i] - pos[last]) > LIO_MAX_SPEED_M_S * dt + 0.05:
+                ok[i] = False
+                continue
+        last = i
+    return ok, float(ok.mean()) if len(ok) else 0.0
+
+
 def _yaw(q):
     w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
     return np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
@@ -522,6 +542,26 @@ def _console(path, model_path, max_frames):
         return [status[k]["status"].get(name) if k >= 0 else None for k in j]
 
     odom = _rec_odom(rec)
+    health = None
+    if odom is not None:
+        good, share = lio_health(odom[0], odom[1])
+        health = {"lio_samples": int(len(good)), "lio_plausible_share": round(share, 4),
+                  "rule": f"|xy| <= {LIO_MAX_XY_M:g} m, z in [{LIO_Z_RANGE_M[0]:g}, {LIO_Z_RANGE_M[1]:g}] m, no jump faster "
+                          f"than {LIO_MAX_SPEED_M_S:g} m/s; used when >= {LIO_MIN_PASS:.0%} pass"}
+        odom = (odom[0][good], odom[1][good], odom[2][good]) if share >= LIO_MIN_PASS and good.sum() >= 2 else None
+    rows = [(r["t"], r["status"].get("xy"), r["status"].get("pelvis_z_m"), r["status"].get("yaw_rad")) for r in status]
+    rows = [r for r in rows if isinstance(r[1], list) and len(r[1]) == 2 and all(_finite_number(v) for v in r[1])
+            and _finite_number(r[2]) and _finite_number(r[3])]
+    if odom is not None and len(rows) >= 2:
+        # Cross-check: LIO height (floor at z = 0) against the node's forward-kinematics pelvis height, at status times.
+        rt_ = np.asarray([r[0] for r in rows])
+        inside = (rt_ >= odom[0][0]) & (rt_ <= odom[0][-1])
+        if inside.any():
+            dz = np.interp(rt_[inside], odom[0], odom[1][:, 2]) - np.asarray([r[2] for r in rows])[inside]
+            health.update(lio_minus_fk_pelvis_z_m={"median": round(float(np.median(dz)), 3),
+                                                   "max_abs": round(float(np.abs(dz).max()), 3), "samples": int(inside.sum())},
+                          lio_z_min_m=round(float(odom[1][:, 2].min()), 3),
+                          fk_pelvis_z_min_m=round(float(min(r[2] for r in rows)), 3))
     if odom is not None and odom[0][0] <= ts[-1] and odom[0][-1] >= ts[0]:
         ot, opos, oquat = odom
         pos = np.stack([np.interp(ts, ot, opos[:, k]) for k in range(3)], 1)
@@ -529,19 +569,22 @@ def _console(path, model_path, max_frames):
         quat = _with_yaw(imu[idx], yaw)
         pose_basis = "LIO bridge odometry (rec/zmq_odom), heading from LIO, tilt from the pelvis IMU"
         pose_source = "lio"
+    elif len(rows) < 2:
+        # Neither healthy LIO nor node status (a stream-replay session, or LIO diverged): attitude only, at the origin.
+        pos = np.tile([0.0, 0.0, 0.79], (len(ts), 1))
+        quat = imu[idx]
+        pose_basis = ("attitude only: pelvis IMU orientation at a fixed point (0, 0, 0.79 m); no usable position was "
+                      "recorded" + (" (LIO odometry failed the plausibility check)" if health else ""))
+        pose_source = "attitude-only"
     else:
-        rows = [(r["t"], r["status"].get("xy"), r["status"].get("pelvis_z_m"), r["status"].get("yaw_rad")) for r in status]
-        rows = [r for r in rows if isinstance(r[1], list) and len(r[1]) == 2 and all(_finite_number(v) for v in r[1])
-                and _finite_number(r[2]) and _finite_number(r[3])]
-        if len(rows) < 2:
-            raise ReplayError("Console session has no pose: neither LIO odometry nor node status with xy / pelvis z / yaw")
         rt = np.asarray([r[0] for r in rows])
         pos = np.stack([np.interp(ts, rt, [r[1][0] for r in rows]), np.interp(ts, rt, [r[1][1] for r in rows]),
                         np.interp(ts, rt, [r[2] for r in rows])], 1)
         yaw = np.interp(ts, rt, np.unwrap([r[3] for r in rows]))
         quat = _with_yaw(imu[idx], yaw)
         pose_basis = (f"node.py status at 5 Hz ({session.get('odom') or 'odometry'}), linearly interpolated: xy, pelvis z "
-                      "(forward kinematics) and heading; tilt from the pelvis IMU")
+                      "(forward kinematics) and heading; tilt from the pelvis IMU"
+                      + (" (LIO odometry failed the plausibility check)" if health and health["lio_plausible_share"] < LIO_MIN_PASS else ""))
         pose_source = "node-status"
     model = Path(model_path) if model_path else FLOW_ROOT / "sim/assets/g1_29dof.xml"
     nq, addresses = _model_joint_addresses(model)
@@ -563,7 +606,8 @@ def _console(path, model_path, max_frames):
         qk = qposes[k]
         frames.append({"time": tt, "sequence": int(i), "source_time": float(ts[k]), "source_clock_domain": "host-monotonic",
                        "receipt_time": None, "sim_time": None, "position": qk[:3].tolist(), "quaternion_wxyz": qk[3:7].tolist(),
-                       "classification": "estimated", "frame_id": "odom", "validity": "valid",
+                       "classification": "estimated", "frame_id": "odom",
+                       "validity": "partial" if pose_source == "attitude-only" else "valid",
                        "joints": qk[7:].tolist(), "joints_classification": "measured", "qpos": qk.tolist(),
                        "reference": None, "command": None, "plan": plan,
                        "navigation": {"phase": phases[k], "goal_xy": goals[k]},
@@ -586,7 +630,7 @@ def _console(path, model_path, max_frames):
     title = session.get("note") or f"{session.get('robot') or 'G1'} · {Path(path).name}"
     real = session.get("mode") in (None, "robot")  # `g1 sim` sessions use the same recorder
     metadata.update(title=f"{'Robot' if real else 'Console sim'} session · {title}"[:120], robot="real" if real else "simulated",
-                    kind="robot-session", frame_id="odom",
+                    kind="robot-session", frame_id="odom", pose_health=health,
                     policy_identity="the deploy PC's SONIC runner and student node (see metadata.console)",
                     model_variant="G1 29 DoF (joints from rt/lowstate)", pose_basis=pose_basis, pose_source=pose_source,
                     recording_format=meta.get("format"), recorder_meta={k: meta.get(k) for k in

@@ -32,7 +32,7 @@ def pack(topic, fields):
     return topic + header.ljust(protocols.HEADER_SIZE, b'\0') + b''.join(blobs)
 
 
-def write_session(root, *, lio=False, seconds=2.0, rate=1000, chunk_s=1.0):
+def write_session(root, *, lio=False, seconds=2.0, rate=1000, chunk_s=1.0, lio_offset=(0.0, 0.0), status=True):
     rec = root / 'rec'
     (rec / 'lowstate').mkdir(parents=True)
     (rec / 'meta.json').write_text(json.dumps({'format': 'g1deploy.recording.v1', 'clock': 'time.monotonic',
@@ -53,11 +53,12 @@ def write_session(root, *, lio=False, seconds=2.0, rate=1000, chunk_s=1.0):
         rows.append(json.dumps({'t': ts, 't_unix': ts + 1.7e9, 'status': {
             'phase': 'RUN' if k else 'PRESCAN', 'xy': [0.5 * (ts - t0), 0.0], 'yaw_rad': 0.2, 'pelvis_z_m': 0.78,
             'goal': [2.0, 0.0], 'goal_dist_m': 2.0 - 0.5 * (ts - t0), 'guards': 'walls'}}))
-    (rec / 'node_status.jsonl').write_text('\n'.join(rows) + '\n{"t": 1, "sta')  # a line cut by power loss
+    (rec / 'node_status.jsonl').write_text(('\n'.join(rows) if status else '') + '\n{"t": 1, "sta')  # a cut line
     if lio:
         (rec / 'zmq_odom').mkdir()
         ot = np.arange(t0, t0 + seconds, 0.05)
-        msgs = [pack(b'odom', [('pos', [0.4 * (x - t0), 0.1, 0.8]), ('quat_wxyz', yaw_quat(0.5)), ('lin_w', [0.4, 0, 0]),
+        msgs = [pack(b'odom', [('pos', [0.4 * (x - t0) + lio_offset[0], 0.1 + lio_offset[1], 0.8]), ('quat_wxyz', yaw_quat(0.5)),
+                               ('lin_w', [0.4, 0, 0]),
                                ('ang_w', [0, 0, 0]), ('stamp', [x])]) for x in ot]
         off = np.cumsum([0] + [len(m) for m in msgs])
         np.savez(rec / 'zmq_odom' / '000000.npz', t=ot, t_unix=ot + 1.7e9,
@@ -113,11 +114,39 @@ class ConsoleReplayTests(unittest.TestCase):
         self.assertAlmostEqual(f['position'][1], 0.1, places=6)
         self.assertAlmostEqual(float(replay._yaw(np.asarray(f['quaternion_wxyz'])[None])[0]), 0.5, places=4)
 
+    def test_diverged_lio_falls_back_to_the_node_status(self):
+        """h3/h4 of 2026-10-24: LIO had diverged before the session began (1e4 m and beyond)."""
+        write_session(self.root, lio=True, lio_offset=(2.5e4, -1e5))
+        s = replay.load_session(self.root, max_frames=100)
+        m = s['metadata']
+        self.assertEqual(m['pose_source'], 'node-status')
+        self.assertIn('failed the plausibility check', m['pose_basis'])
+        self.assertEqual(m['pose_health']['lio_plausible_share'], 0.0)
+        self.assertLess(max(abs(f['position'][0]) for f in s['frames']), 2.0)
+
+    def test_no_usable_position_is_attitude_only(self):
+        """A stream-replay session (h4): no node status, and the LIO had diverged."""
+        write_session(self.root, lio=True, lio_offset=(1e6, 0.0), status=False)
+        s = replay.load_session(self.root, max_frames=50)
+        self.assertEqual(s['metadata']['pose_source'], 'attitude-only')
+        self.assertTrue(all(f['position'] == [0.0, 0.0, 0.79] and f['validity'] == 'partial' for f in s['frames']))
+        self.assertAlmostEqual(s['frames'][10]['health']['tilt_rad'], 0.05, places=3)
+
+    def test_lio_jumps_are_rejected_and_heights_cross_checked(self):
+        write_session(self.root, lio=True)
+        ok, share = replay.lio_health(np.array([0.0, 0.05, 0.10, 0.15]), np.array([[0, 0, .8], [0.02, 0, .8], [3.0, 0, .8], [0.06, 0, .8]]))
+        self.assertEqual(ok.tolist(), [True, True, False, True])  # 3 m in 50 ms is not a robot
+        self.assertAlmostEqual(share, 0.75)
+        h = replay.load_session(self.root, max_frames=50)['metadata']['pose_health']
+        self.assertEqual(h['lio_plausible_share'], 1.0)
+        self.assertAlmostEqual(h['lio_minus_fk_pelvis_z_m']['median'], 0.8 - 0.78, places=3)
+
     def test_rec_dir_itself_and_refusals(self):
         write_session(self.root)
         self.assertEqual(replay.console_rec_dir(self.root / 'rec'), self.root / 'rec')
-        (self.root / 'rec' / 'node_status.jsonl').write_text('')
-        with self.assertRaisesRegex(replay.ReplayError, 'no pose'):
+        for chunk in (self.root / 'rec' / 'lowstate').glob('*.npz'):
+            chunk.unlink()
+        with self.assertRaisesRegex(replay.ReplayError, 'no rt/lowstate'):
             replay.load_session(self.root)
         other = Path(self.tmp.name) / 'other'
         other.mkdir()
