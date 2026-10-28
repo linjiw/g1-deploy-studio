@@ -101,7 +101,7 @@ export function quickCheck(lookup, xy, radius = ROBOT_DISC_M) {
 // ------------------------------------------------------------------------------------------------ cutaway
 // Columns nearer the camera than the subject (along the view direction, minus a margin) are cut to a 0.35 m stub, as
 // in an architectural cutaway: the room's walls behind the robot never hide the robot or the floor ahead of it.
-export const CUT = { uCutCam: { value: new THREE.Vector2() }, uCutDir: { value: new THREE.Vector2(1, 0) }, uCutDist: { value: -1e9 }, uCutStub: { value: 0.3 } };
+export const CUT = { uCutCam: { value: new THREE.Vector2() }, uCutDir: { value: new THREE.Vector2(1, 0) }, uCutDist: { value: -1e9 }, uCutStub: { value: 0.12 } };
 function cutaway(material) {
   material.onBeforeCompile = shader => {
     Object.assign(shader.uniforms, CUT);
@@ -118,7 +118,7 @@ function cutaway(material) {
         if (dot(vCutWorld.xy - uCutCam, uCutDir) < uCutDist && vCutWorld.z > uCutStub) discard;`)
       // The inside of a cut column reads as a pale section fill, not a dark hole.
       .replace('#include <dithering_fragment>', `#include <dithering_fragment>
-        if (!gl_FrontFacing) gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.97, 0.94, 0.91), 0.72);`);
+        if (!gl_FrontFacing) gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.96, 0.94, 0.92), 0.82);`);
   };
   material.side = THREE.DoubleSide;   // a cut column shows its inside, darker, not a hole
   return material;
@@ -192,7 +192,7 @@ class MemoryLayer {
     const ms = this.ensure('step', steps), mo = this.ensure('obstacle', obstacles), mc = this.ensure('overhead', overheads);
     const m4 = new THREE.Matrix4(), col = new THREE.Color(), lowC = new THREE.Color(COLORS.obstacleLow), highC = new THREE.Color(COLORS.obstacleHigh);
     const stepC = new THREE.Color(COLORS.step), ohC = new THREE.Color(COLORS.overhead), ohLowC = new THREE.Color(COLORS.overheadLow);
-    let a = 0, b = 0, c = 0; const side = res * 0.98;
+    let a = 0, b = 0, c = 0; const side = res;   // no gaps: a wall reads as one block
     for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
       const k = i * ny + j, code = support[k], x = lo[0] + i * res, y = lo[1] + j * res;
       if (code !== 255) {
@@ -311,13 +311,14 @@ export function init() {
   D.hoverGroup = new THREE.Group(); D.hoverGroup.name = 'hover';       // scene
   D.rehearsalGroup = new THREE.Group(); D.rehearsalGroup.name = 'rehearsal';  // scene
   D.anchorGroup = new THREE.Group(); D.anchorGroup.name = 'anchors';   // scene
+  D.robotAnchors = new THREE.Group(); D.robotAnchors.name = 'robot-anchors';  // the robot's frame, posed with it
   D.sceneOnly = new THREE.Group(); D.sceneOnly.name = 'scene-frame';   // everything that needs the scene frame
   D.twinGroup = new THREE.Group(); D.twinGroup.name = 'twin'; D.twinGroup.visible = false;  // memory_S
   D.scanGroup.add(D.scanMem.group, D.twinGroup);
   D.liveGroup.add(D.liveMem.group);
   D.cloudGroup.add(D.ring.group);
   D.sceneOnly.add(D.scanGroup, D.goalGroup, D.hoverGroup, D.rehearsalGroup, D.anchorGroup);
-  D.root.add(D.sceneOnly, D.liveGroup, D.cloudGroup);
+  D.root.add(D.sceneOnly, D.liveGroup, D.cloudGroup, D.robotAnchors);
   // Live overlays in the odom frame: route, plan path, node goal.
   D.lines = { route: polyline(COLORS.route, 0.95, 512), plan: polyline(COLORS.plan, 1, 256) };
   D.liveGroup.add(D.lines.route, D.lines.plan);
@@ -370,7 +371,7 @@ export function leave() {
 const ROBOT_STYLE = {
   live: null,
   scanGhost: { opacity: 0.2, color: COLORS.scanGhost }, scanPose: null,
-  exact: { opacity: 0.42, color: COLORS.exact }, drift: { opacity: 0.36, color: COLORS.drift }, offset: { opacity: 0.36, color: COLORS.offset },
+  exact: { opacity: 0.5, color: COLORS.exact }, drift: { opacity: 0.28, color: COLORS.drift }, offset: { opacity: 0.28, color: COLORS.offset },
   plan1: { opacity: 0.16, color: COLORS.plan }, plan2: { opacity: 0.09, color: COLORS.plan }, rehearsalLive: { opacity: 0.45, color: COLORS.exact },
 };
 export function setModel(spec) {
@@ -487,6 +488,7 @@ export async function setLive(v, { now = performance.now(), slot = 'robot', hide
     const q = v.qpos; D.liveOdomPose = [q[0], q[1], frames.yawOf(q.slice(3, 7))];
     D.liveScenePose = align ? frames.compose(align.scene_from_odom, D.liveOdomPose) : D.liveOdomPose;
     D.liveRole = role;
+    if (role === 'live') setFrame(D.robotAnchors, D.liveScenePose);
   }
   if (role === 'live') show('rehearsalLive', false); else show('live', false);
   // Plan futures: 2 ghosts + the plan path; the node's route; the node's goal.
@@ -507,6 +509,7 @@ export async function setLive(v, { now = performance.now(), slot = 'robot', hide
 }
 export function clearLive() {
   init();
+  setFrame(D.robotAnchors, IDENTITY);
   D.liveMem.set(null); D.liveLookup = null; D.liveOdomPose = null; D.liveScenePose = null; D.align = null; D.aligned = false;
   for (const role of ['live', 'plan1', 'plan2', 'rehearsalLive']) show(role, false);
   D.lines.plan.visible = D.lines.route.visible = false;
@@ -593,17 +596,18 @@ export function setGoal(goal) {
   D.goalGroup.add(g);
   const path = goal.path ?? [];
   if (path.length > 1) {
-    D.goalGroup.add(ribbon(path, ROUTE_MARGIN_M, status === 'block' ? COLORS.block : COLORS.route, status === 'block' ? 0.08 : 0.12));
-    // Centre line: teal where the scan saw the floor, grey where the route crosses unseen space.
-    const pos = [], colA = [], seenC = new THREE.Color(status === 'block' ? COLORS.block : COLORS.route), unseenC = new THREE.Color(0xa3adb8);
+    D.goalGroup.add(ribbon(path, ROUTE_MARGIN_M, status === 'block' ? COLORS.block : COLORS.route, status === 'block' ? 0.08 : 0.15));
+    // Centre band: teal where the scan saw the floor, grey where the route crosses unseen space.
+    const seenC = status === 'block' ? COLORS.block : COLORS.route, unseenC = 0xa3adb8;
+    let run = [path[0]], runSeen = null;
+    const flush = () => { if (run.length > 1) { const band = ribbon(run, 0.022, runSeen === false ? unseenC : seenC, 0.95, 0.026); band.renderOrder = 6; D.goalGroup.add(band); } };
     for (let k = 1; k < path.length; k++) {
       const a = path[k - 1], b = path[k], mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      const cell = D.scanLookup?.cell(mid), seen = cell && D.scanLookup.mem.support[cell.k] !== 255;
-      pos.push(a[0], a[1], 0.03, b[0], b[1], 0.03);
-      const c = seen ? seenC : unseenC; colA.push(c.r, c.g, c.b, c.r, c.g, c.b);
+      const cell = D.scanLookup?.cell(mid), seen = !!cell && D.scanLookup.mem.support[cell.k] !== 255;
+      if (runSeen !== null && seen !== runSeen) { flush(); run = [a]; }
+      runSeen = seen; run.push(b);
     }
-    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); lg.setAttribute('color', new THREE.Float32BufferAttribute(colA, 3));
-    const line = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 })); line.renderOrder = 6; D.goalGroup.add(line);
+    flush();
   }
   if (goal.gap?.at_xy && goal.gap.width_m > 0) {
     // Two posts the route passes between, the gap's width apart, across the route.
@@ -711,17 +715,22 @@ export async function setScanPoseRobot(visible) {
 export function setAnchors(list, highlight = D.highlight) {
   init();
   D.anchors = list ?? []; D.highlight = highlight;
-  disposeGroup(D.anchorGroup);
+  disposeGroup(D.anchorGroup); disposeGroup(D.robotAnchors);
   const base = D.liveScenePose && D.aligned ? D.liveScenePose : [0, 0, 0];
+  if (!(D.liveScenePose && D.aligned)) setFrame(D.robotAnchors, IDENTITY);
   for (const a of D.anchors) {
     const k = a.anchor?.kind, strong = a.id === highlight, col = a.status === 'block' ? COLORS.block : a.status === 'warn' ? COLORS.warn : COLORS.pass;
     if (!strong && a.status === 'pass') continue;  // passing checks draw only when asked
-    const op = strong ? 0.42 : 0.16;
+    if (a.status === 'later' && !strong) continue;  // not measurable yet: nothing to show
+    const op = strong ? 0.42 : 0.14;
     if (k === 'wedge') {
-      const yaw = base[2] + (a.anchor.yaw ?? Math.PI), half = THREE.MathUtils.degToRad((a.anchor.deg ?? 90) / 2), r = a.anchor.range_m ?? 1;
+      // In the robot's frame: it moves and turns with the robot.
+      const yaw = a.anchor.yaw ?? Math.PI, half = THREE.MathUtils.degToRad((a.anchor.deg ?? 90) / 2), r = a.anchor.range_m ?? 1;
       const fan = new THREE.Mesh(new THREE.CircleGeometry(r, 40, yaw - half, half * 2), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: op, side: THREE.DoubleSide, depthWrite: false }));
-      fan.position.set(base[0], base[1], 0.015); fan.renderOrder = 3; D.anchorGroup.add(fan);
-      if (strong) tag('REAR BLIND: THE LIDAR CANNOT SEE HERE', col, [base[0] + Math.cos(yaw) * r * 0.7, base[1] + Math.sin(yaw) * r * 0.7, 0.4], D.anchorGroup);
+      fan.position.z = 0.015; fan.renderOrder = 3; D.robotAnchors.add(fan);
+      const edge = new THREE.Mesh(new THREE.RingGeometry(r - 0.015, r, 40, 1, yaw - half, half * 2), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: strong ? 0.9 : 0.45, side: THREE.DoubleSide, depthWrite: false }));
+      edge.position.z = 0.016; D.robotAnchors.add(edge);
+      tag(strong ? 'REAR BLIND: THE LIDAR CANNOT SEE HERE' : (a.label ?? 'rear blind'), col, [Math.cos(yaw) * r * 0.75, Math.sin(yaw) * r * 0.75, 0.25], D.robotAnchors);
     } else if (k === 'cells' && (a.anchor.cells_xy ?? a.anchor.cells)?.length) {
       const cells = a.anchor.cells_xy ?? a.anchor.cells, im = new THREE.InstancedMesh(unitBox, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: strong ? 0.8 : 0.4 }), cells.length);
       const m4 = new THREE.Matrix4(); cells.forEach((p, i) => { m4.makeScale(0.05, 0.05, p[2] ?? 0.06).setPosition(p[0], p[1], 0); im.setMatrixAt(i, m4); });
@@ -730,11 +739,12 @@ export function setAnchors(list, highlight = D.highlight) {
       const at = a.anchor.at ?? [0, 0, 0], p = a.anchor.frame === 'scene' ? at : [...frames.apply(base, at), at[2] ?? 0];
       const ring = flatRing(0.16, 0.2, col, strong ? 0.95 : 0.5, 0.03); ring.position.set(p[0], p[1], 0.03); D.anchorGroup.add(ring);
       if (k === 'frame') { const ax = new THREE.AxesHelper(0.3); ax.position.set(p[0], p[1], p[2] ?? 1.2); ax.rotation.z = base[2]; D.anchorGroup.add(ax); }
+      if (strong) tag(a.label ?? 'check', col, [p[0], p[1], (p[2] ?? 0) + 0.35], D.anchorGroup);
     } else if (k === 'pose' && strong) {
       const p = a.anchor.pose ?? [0, 0, 0], ring = flatRing(0.34, 0.38, col, 0.9, 0.03); ring.position.set(p[0], p[1], 0.03); D.anchorGroup.add(ring);
     }
   }
-  D.anchorGroup.visible = D.layers.checks;
+  D.anchorGroup.visible = D.robotAnchors.visible = D.layers.checks;
   markDirty();
 }
 // Where the camera flies for an anchor (scene frame): [x, y, z, radius].
@@ -767,6 +777,7 @@ export function applyVisibility(context = {}) {
   const rehearsal = D.layers.rehearsal && D.context.step === 'rehearse';
   D.rehearsalGroup.visible = rehearsal;
   D.anchorGroup.visible = D.layers.checks;
+  if (D.robotAnchors) D.robotAnchors.visible = D.layers.checks && (!live || D.aligned);
   for (const role of ['exact', 'drift', 'offset']) if (D.robots[role] && D.rehearsal) D.robots[role].root.visible = rehearsal;
   // The robot at its scan pose: hidden while the rehearsal's robots start from that pose.
   if (D.robots.scanPose && D.context.tracksShown && D.context.step === 'rehearse') D.robots.scanPose.root.visible = false;

@@ -16,7 +16,7 @@ const STEPS = [
 ];
 const SCAN_FRESH_S = 15 * 60, STALE_S = 1, LOST_S = 3, ESTOP_GIVE_UP_MS = 10000, SONIC_LONG_S = 8 * 60;
 const ODOMETRY = {
-  fused: { label: 'FAST-LIO + legs (fused)', note: 'LIO corrects, legs and IMU predict; LIO doubt stops the walk.' },
+  fused: { label: 'FAST-LIO + legs', note: 'Fused: LIO corrects, legs and IMU predict; LIO doubt stops the walk.' },
   leg: { label: 'Legs only', note: 'No lidar odometry: distance is under-counted by 25-40 %.' },
   zmq: { label: 'FAST-LIO only', note: 'The LIO pose alone, through the bridge.' },
 };
@@ -213,7 +213,7 @@ function onState(before, wasScanning) {
   const sess = session(), name = sess?.name ?? null;
   if (name !== S.sessionName) {
     if (S.sessionName && !name) { S.reviewName = S.sessionName; d3.clearLive(); S.view = null; S.panel = null; S.lease.lost = S.lease.lost; }
-    if (name) { S.cursors = { cloud: -1, mem: -1 }; S.view = null; S.sendResult = null; S.goResult = null; }
+    if (name) { S.cursors = { cloud: -1, mem: -1 }; S.view = null; S.sendResult = null; S.goResult = null; S.startCheck = null; S.autoCheckKey = null; S.clearedAt = null; S.ladderNote = {}; if (S.estop.state !== 'sending') S.estop = { state: null, targets: [], t0: 0, error: null }; }
     S.sessionName = name;
   }
   if (!viewSlot() && S.view) { S.view = null; d3.clearLive(); }
@@ -228,7 +228,11 @@ async function pollReadiness() {
   if (S.scanName) q.set('scan', S.scanName);
   q.set('slot', sess?.slot ?? (isRobot() ? 'robot' : 'sim'));
   const r = await api(`/api/deploy/readiness?${q}`);
-  if (r.ok && Array.isArray(r.data.checks)) { S.readiness = r.data.checks; renderReadiness(); d3.setAnchors(anchoredChecks(), S.highlight); }
+  if (r.ok && Array.isArray(r.data.checks)) {
+    S.readiness = r.data.checks; renderReadiness();
+    const anchors = anchoredChecks(), key = JSON.stringify([anchors, S.highlight]);
+    if (key !== S.anchorKey) { S.anchorKey = key; d3.setAnchors(anchors, S.highlight); }  // the 3D changes only when they do
+  }
 }
 
 async function pollScanLive() {
@@ -348,7 +352,7 @@ async function loadTracks(rec) {
   S.tracks = out;
   const duration = await d3.setRehearsal(out);
   S.timeline = { ...S.timeline, t: duration, duration, playing: false };
-  applyContext(); d3.setScanPoseRobot(!session());
+  applyContext(); d3.setScanPoseRobot(!S.view && !S.scanLive?.running);
   renderAll();
 }
 
@@ -473,7 +477,7 @@ async function selectScan(name, frame = true) {
   if (!r.ok) { S.notice = { kind: 'warning', text: `Could not open ${name}: ${reason(r)}` }; renderAll(); return; }
   S.scene = r.data;
   d3.setScanScene(r.data);
-  d3.setScanPoseRobot(!session());
+  d3.setScanPoseRobot(!S.view && !S.scanLive?.running);
   // A new scan makes the goal check stale: check the same goal again on this scan (a computation, not a press).
   if (S.goal?.xy && S.goal.check?.scan !== name) checkGoal(S.goal.xy);
   if (frame && S.visible) frameStep(true);
@@ -843,7 +847,8 @@ function ladderRows() {
   return rows.map(r => {
     const l = byKey[r.key] ?? { state: 'todo' };
     let lock = null;
-    if (lost && ['arm', 'goal', 'go'].includes(r.key)) lock = 'Live view lost: watch the robot';
+    if (p?.runner === 'E-STOP') lock = 'E-STOP is active: end the session';
+    else if (lost && ['arm', 'goal', 'go'].includes(r.key)) lock = 'Live view lost: watch the robot';
     else if (r.key === 'go') lock = locks[0] ?? null;
     else if (r.key === 'goal' && !goalUsable()) lock = S.goal ? 'The goal is not checked on this scan (Goal)' : 'Pick a goal first (Goal)';
     else if (r.key === 'map' && cleared > 0) lock = `Rescanning: ${Math.ceil(cleared)} s`;
@@ -877,7 +882,9 @@ function deployBody() {
   const attempts = panelAttempts(), last = attempts.at(-1), untagged = attempts.filter(a => a.outcome && !a.tag);
   const sc = S.startCheck, envelope = sc ? (sc.within_offset_envelope ? 'inside the rehearsed start-offset envelope' : 'outside the rehearsed start-offset envelope') : null;
   let primary = null;
-  if (walking()) primary = { label: 'Walking…', action: 'none', locked: 'Stand or E-STOP from the bar above; the remote and the physical E-stop stay in hand' };
+  const estopped = p.runner === 'E-STOP';
+  if (estopped) primary = { label: 'End session…', action: 'sheet:end', locked: null };
+  else if (walking()) primary = { label: 'Walking…', action: 'none', locked: 'Stand or E-STOP from the bar above; the remote and the physical E-stop stay in hand' };
   else if (nowRow) {
     const action = { arm: 'sheet:arm', sonic: 'ladder:sonic', map: 'ladder:map', goal: 'send-goal', go: 'sheet:go' }[nowRow.key];
     const label = { arm: 'Arm…', sonic: 'Start SONIC', map: 'Clear map', goal: 'Send goal', go: isRobot() ? 'GO…' : 'GO (practice)…' }[nowRow.key];
@@ -887,14 +894,15 @@ function deployBody() {
     title: walking() ? 'Walking' : `${isRobot() ? 'Robot' : 'Practice'} session`,
     lead: `${sess.name} · ${PHASE[p.phase] ?? p.phase ?? 'starting'}${p.runner ? ` · runner ${p.runner}` : ''}`,
     html: `
-      <ol class="dp-ladder">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}">${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.detail || r.sub)}</small>${r === nowRow && r.lock ? `<em>${escape(r.lock)}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' ? `<em class="${S.ladderNote[r.key].kind}">${escape(S.ladderNote[r.key].text)}</em>` : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}${r.state === 'done' && r.key === 'goal' && !walking() && goalUsable() ? '<button class="link-button" data-action="send-goal">Resend</button>' : ''}</li>`).join('')}</ol>
+      ${estopped ? '<div class="callout danger" role="alert"><strong>E-STOP is active.</strong> The runner holds the robot in its safe mode and the console refuses every other press. End the session; start a new one to try again.</div>' : ''}
+      <ol class="dp-ladder${estopped ? ' stopped' : ''}">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}">${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.detail || r.sub)}</small>${r === nowRow && r.lock ? `<em>${escape(r.lock)}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' ? `<em class="${S.ladderNote[r.key].kind}">${escape(S.ladderNote[r.key].text)}</em>` : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}${r.state === 'done' && r.key === 'goal' && !walking() && goalUsable() ? '<button class="link-button" data-action="send-goal">Resend</button>' : ''}</li>`).join('')}</ol>
       ${S.sendResult ? `<div class="callout ${S.sendResult.ok ? 'ok' : 'warning'}" role="status">${S.sendResult.ok ? `Goal confirmed by the node${S.sendResult.check ? `. Start check: moved ${num(S.sendResult.check.moved_m, 2)} m, turned ${num(S.sendResult.check.turned_deg, 0)}° (${escape(S.sendResult.check.within_offset_envelope ? 'inside the rehearsed envelope' : 'outside the rehearsed envelope')})` : ''}.` : `Send goal refused: ${escape(S.sendResult.text)}`}</div>` : ''}
       ${S.goResult && !S.goResult.ok ? `<div class="callout warning" role="status">GO refused by the console: ${escape(S.goResult.text)}</div>` : ''}
       ${sc ? `<p class="tiny">Robot now vs its scan pose: ${num(sc.moved_m, 2)} m, ${num(sc.turned_deg, 0)}° · ${escape(envelope)} (grey ghost in 3D).</p>` : ''}
       ${untagged.map(a => tagCard(a)).join('')}
       ${attempts.length ? `<h4>Attempts</h4><ol class="dp-attempts">${attempts.map(a => `<li><strong>${a.n}</strong><span class="outcome ${a.outcome === 'arrived' ? 'outcome-good' : a.outcome ? 'outcome-warn' : 'outcome-live'}">${escape(a.outcome ?? 'walking')}</span>${finite(a.final_dist_m) ? `<small>${num(a.final_dist_m, 2)} m from the goal</small>` : ''}${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : ''}</li>`).join('')}</ol>` : ''}`,
     primary,
-    secondary: `<button class="dp-secondary" data-action="sheet:end" ${walking() ? 'disabled title="The robot is walking: Stand or E-STOP first"' : ''}>End session…</button>${walking() ? lockLine('End session is locked while the robot walks') : ''}`,
+    secondary: estopped ? '' : `<button class="dp-secondary" data-action="sheet:end" ${walking() ? 'disabled title="The robot is walking: Stand or E-STOP first"' : ''}>End session…</button>${walking() ? lockLine('End session is locked while the robot walks') : ''}`,
   };
 }
 function tagCard(a) {
@@ -1151,6 +1159,7 @@ function updateInsets() {
   const top = Math.max(rect('dp-top')?.bottom ?? box.top, rect('dp-banners')?.bottom ?? box.top) - box.top;
   const hud = rect('dp-bottom'), bottom = hud ? box.bottom - hud.top : 0;
   const ready = rect('dp-readiness'), left = ready && S.readinessOpen ? ready.right - box.left : 0;
+  if (ready) $('deploy-stage').style.setProperty('--dp-ready-right', `${Math.round(ready.right - box.left)}px`);
   d3.setInsets({ top: Math.max(0, top), bottom: Math.max(0, bottom), left: Math.max(0, left), right: 0 });
 }
 
@@ -1174,7 +1183,7 @@ function checkShown(c) {
   if (stale) return { status: 'unknown', text: `UNKNOWN · ${Math.round(nowS() - c.at)} s old` };
   return { status: c.status, text: c.status === 'unknown' ? 'UNKNOWN' : null };
 }
-const anchoredChecks = () => (S.readiness ?? []).filter(c => c.anchor).map(c => ({ id: c.id, status: checkShown(c).status, anchor: c.anchor }));
+const anchoredChecks = () => (S.readiness ?? []).filter(c => c.anchor).map(c => ({ id: c.id, status: checkShown(c).status, anchor: c.anchor, label: c.label }));
 function renderReadiness() {
   const el = $('dp-readiness'); if (!el || !S.visible) return;
   const checks = S.readiness ?? [], shown = checks.map(c => ({ c, s: checkShown(c) }));
@@ -1264,8 +1273,9 @@ function uiTick() {
   if (S.clearedAt && performance.now() - S.clearedAt < 11000) renderPanel();
   // The scan ghost vs robot now: shown once a session is aligned with the scan.
   const sc = S.startCheck, sess = session(), ghost = [!!(sess && d3.isAligned()), sc ? `MOVED ${num(sc.moved_m, 2)} M, TURNED ${num(sc.turned_deg, 0)}°` : null];
-  const ghostKey = JSON.stringify([ghost, !sess && !S.scanLive?.running, d3.hasModel()]);
-  if (ghostKey !== S.ghostKey) { S.ghostKey = ghostKey; d3.setScanGhost(...ghost); d3.setScanPoseRobot(!sess && !S.scanLive?.running); }
+  const poseRobot = !S.view && !S.scanLive?.running;
+  const ghostKey = JSON.stringify([ghost, poseRobot, d3.hasModel(), S.step]);
+  if (ghostKey !== S.ghostKey) { S.ghostKey = ghostKey; d3.setScanGhost(...ghost); d3.setScanPoseRobot(poseRobot); }
   uiTimer = setTimeout(uiTick, 250);
 }
 
@@ -1289,8 +1299,7 @@ const STAGE_HTML = `
   <div class="dp-layers" id="dp-layers" hidden></div>
   <div class="dp-banners" id="dp-banners" aria-live="polite"></div>
   <aside class="dp-readiness" id="dp-readiness" aria-label="Readiness"></aside>
-  <div class="dp-bottom" id="dp-bottom"><div class="dp-timeline" id="dp-timeline" hidden></div><div class="dp-hud" id="dp-hud" aria-live="off"></div><div class="dp-legend" id="dp-legend"></div></div>
-  <ol class="dp-ticker" id="dp-ticker" aria-label="Console events" hidden></ol>
+  <div class="dp-bottom" id="dp-bottom"><div class="dp-timeline" id="dp-timeline" hidden></div><div class="dp-hud" id="dp-hud" aria-live="off"></div><div class="dp-side"><ol class="dp-ticker" id="dp-ticker" aria-label="Console events" hidden></ol><div class="dp-legend" id="dp-legend"></div></div></div>
   <div class="dp-hover-tip" id="dp-hover-tip" hidden></div>`;
 export function initDeploy(ctx) {
   S.ctx = ctx;
@@ -1331,7 +1340,7 @@ export async function enter() {
   uiTick();
   for (const p of Object.values(pollers)) p.start(0);
   await loadModel();
-  d3.setScanPoseRobot(!session());
+  d3.setScanPoseRobot(!S.view && !S.scanLive?.running);
 }
 export function leave() {
   S.visible = false; clearTimeout(uiTimer); playTimeline(false);

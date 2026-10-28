@@ -337,12 +337,34 @@ try {
   await page.waitForTimeout(1500);
   outage = false;
   await shot('22-recovered');
+  // The real robot looks different everywhere it matters: the start sheet, the E-STOP bar, the Arm sheet.
+  step('robot-styling');
+  await page.click('[data-step="connect"]');
+  await page.click('[data-mode="robot"]');
+  assert.equal(await page.locator('[data-mode="robot"]').getAttribute('aria-pressed'), 'true');
+  await page.click('[data-step="deploy"]');
+  await until('Start robot session', async () => /Start robot session/.test(await primaryText()) && !(await primary().isDisabled()), 15000);
+  await primary().click(); await page.waitForSelector('.dp-sheet[data-tone="robot"]');
+  for (const box of await page.locator('.dp-sheet [data-confirm]').all()) await box.check();
+  await shot('23-robot-start-sheet');
+  await page.click('#dp-sheet-ok');
+  await until('the robot session', s => !!s.session && s.session.startsWith('robot-'), 20000);
+  await page.waitForSelector('#deploy-estop[data-kind="robot"]:not([hidden])');
+  await until('arm (robot)', s => s.ladder.arm === 'now');
+  await primary().click(); await page.waitForSelector('.dp-sheet[data-tone="robot"]');
+  await shot('24-robot-arm-sheet', { narrow: true });
+  await page.click('#dp-sheet-cancel');
+  allowed.push({ status: 404, path: '/api/deploy/live' }, { status: 404, path: '/api/deploy/panel' });
+  await page.click('[data-action="sheet:end"]'); await page.waitForSelector('.dp-sheet'); await page.click('#dp-sheet-ok');
+  await until('robot session ended', s => !s.session, 20000);
+  await page.waitForSelector('#deploy-estop', { state: 'hidden' });
+  await page.click('[data-step="connect"]'); await page.click('[data-mode="practice"]');
   // A Replay round trip leaves Replay working: its recording opens on the first visit.
   step('replay');
   await page.click('#workspace-replay');
   await page.waitForFunction(() => window.__studio.state.session && document.getElementById('loading-overlay').hidden, null, { timeout: 90000 });
   assert.equal(await page.evaluate(() => window.__deploy.d3.root.visible), false, 'Deploy\'s scene is hidden in Replay');
-  await shot('23-replay-after-deploy');
+  await shot('25-replay-after-deploy');
   await page.click('#workspace-deploy');
   await page.waitForTimeout(800);
 } catch (error) {
