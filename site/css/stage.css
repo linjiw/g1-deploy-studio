@@ -136,6 +136,11 @@
 .seg { display: inline-flex; padding: 2px; border-radius: 10px; background: var(--s-fill); border: 1px solid var(--s-line); }
 .seg button { height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--s-ink-3); font-size: 13px; white-space: nowrap; }
 .seg button[aria-pressed="true"] { background: var(--s-fill-3); color: var(--s-ink); }
+.seg button:disabled { opacity: .4; cursor: not-allowed; }
+.seg button[data-camera="film"][aria-pressed="true"] { background: var(--s-accent); color: #fff; }
+.film-status { font-size: 11.5px; pointer-events: none; }
+.film-status > span:first-child { color: var(--s-accent); }
+.stage.narrow .film-status { display: none; }
 .scrub { position: relative; width: clamp(140px, 26cqi, 420px); height: 36px; display: flex; align-items: center; }
 .stage[data-walk="0"] .scrub, .stage[data-walk="0"] .time, .stage[data-walk="0"] [data-el="speed"], .stage[data-walk="0"] [data-el="play"] { display: none; }
 .bands { position: absolute; left: 0; right: 0; top: 50%; height: 6px; transform: translateY(-50%); border-radius: 3px; background: var(--s-fill-2); }
@@ -331,6 +336,8 @@
 .stage.short .layers button { padding-left: 7px; padding-right: 7px; }
 .stage.demo.narrow:not(.thin) .dock { left: 50%; right: auto; transform: translateX(-50%); flex-wrap: nowrap; max-width: calc(100% - 20px); }
 .stage.demo.narrow:not(.thin) .scrub { order: 0; flex: 0 1 auto; width: clamp(110px, 22cqi, 280px); }
+.stage.demo.short:not(.thin) .dock .scrub { width: clamp(80px, 14cqi, 180px); }
+.stage.demo.short:not(.thin) .dock .room { max-width: 140px; }
 .stage.demo.narrow:not(.thin) .time { order: 0; min-width: 76px; }
 .stage.demo.narrow:not(.thin) .goal-chip, .stage.demo.narrow:not(.thin) .result { left: auto; right: 10px; width: min(400px, 50%); }
 .stage.demo.narrow:not(.thin) .guide { display: none; }

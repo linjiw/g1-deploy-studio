@@ -63,7 +63,7 @@ await check('A rejected walk after New goal cannot resurrect the cancelled goal'
   const held = new Promise(resolve => { release = resolve; });
   await p.route('**/data/*/g/*.json', async route => { await held; await route.fulfill({ status: 503, body: 'temporary outage' }); });
   await p.evaluate(() => { const d = window.studioDemo; d.selectCell(d.S.recorded[0], { stage: true }); window.pendingWalk = d.go(); });
-  await p.getByRole('button', { name: 'New goal (R)' }).click(); release();
+  await p.getByRole('button', { name: 'New goal', exact: true }).click(); release();
   await p.evaluate(() => window.pendingWalk);
   assert.deepEqual(await p.evaluate(() => ({ mode: window.studioDemo.S.mode, goal: window.studioDemo.S.selected })), { mode: 'pick', goal: null });
   assert.ok(await p.locator('[data-el="go"]').isDisabled());

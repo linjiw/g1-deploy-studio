@@ -21,6 +21,45 @@ const FLOOR_M = 32;   // the backdrop floor: a square this wide, fading to trans
 
 const tmp = { q: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), m: new THREE.Matrix4(), s: new THREE.Vector3(), p: new THREE.Vector3(), size: new THREE.Vector2() };
 
+const ease = (a, b, t) => { const x = Math.max(0, Math.min(1, (t - a) / Math.max(0.001, b - a))); return x * x * (3 - 2 * x); };
+const mix = (a, b, t) => a + (b - a) * t;
+
+// A camera pose only: [eye xyz, target xyz]. Recorded robot poses never pass through this filter.
+// The shot depends only on recording time, so seeking and video capture give the same framing as playback.
+export function filmPose(walk, world, time, aspect = 1, out = new Float64Array(6)) {
+  const t = Math.max(0, Math.min(walk.duration, time)), k = walk.index(t), next = Math.min(k + 1, walk.n - 1);
+  const alpha = next === k ? 0 : (t - walk.times[k]) / (walk.times[next] - walk.times[k]);
+  // Smooth the camera's target over nearby recorded samples to remove footfall bob; retain the robot's motion.
+  for (let axis = 0; axis < 3; axis++) {
+    let a = 0, b = 0, weight = 0;
+    for (let j = -5; j <= 5; j++) {
+      const w = 6 - Math.abs(j); weight += w;
+      a += walk.frames[Math.max(0, Math.min(walk.n - 1, k + j)) * 36 + axis] * w;
+      b += walk.frames[Math.max(0, Math.min(walk.n - 1, next + j)) * 36 + axis] * w;
+    }
+    out[axis + 3] = mix(a / weight, b / weight, alpha);
+  }
+  const sx = walk.frames[0], sy = walk.frames[1], goal = walk.goal ?? world.start_xy;
+  const gx = goal[0], gy = goal[1], span = Math.hypot(gx - sx, gy - sy);
+  const heading = span > 0.1 ? Math.atan2(gy - sy, gx - sx) : world.start_yaw_rad ?? 0;
+  const trackAt = Math.min(2.4, walk.duration * 0.22), finishAt = Math.max(trackAt, walk.duration - Math.min(3, walk.duration * 0.22));
+  const tracking = ease(0.15, trackAt, t), finishing = ease(finishAt, walk.duration, t);
+  const x = out[3], y = out[4], z = Math.max(0.45, Math.min(0.72, out[5] * 0.8));
+  // Establish the task, track the executed body, then show its final relation to the goal (including a miss).
+  out[3] = mix(mix(sx + (gx - sx) * 0.18, x, tracking), mix(x, gx, 0.28), finishing);
+  out[4] = mix(mix(sy + (gy - sy) * 0.18, y, tracking), mix(y, gy, 0.28), finishing);
+  out[5] = mix(0.48, z, tracking);
+  const establish = Math.max(6.2, Math.min(9, 5.8 + span * 0.3));
+  const distance = mix(mix(establish, 3.9, tracking), 4.1 + Math.hypot(gx - x, gy - y) * 0.9, finishing)
+    / Math.min(1, Math.sqrt(Math.max(0.2, aspect)));
+  const pitch = mix(mix(0.78, 0.45, tracking), 0.62, finishing);
+  const yaw = heading - 2.35 + 0.3 * Math.sin(Math.PI * t / Math.max(0.001, walk.duration));
+  out[0] = out[3] + Math.cos(yaw) * Math.cos(pitch) * distance;
+  out[1] = out[4] + Math.sin(yaw) * Math.cos(pitch) * distance;
+  out[2] = out[5] + Math.sin(pitch) * distance;
+  return out;
+}
+
 export class Viewer {
   constructor(container, { onPick, onHover } = {}) {
     this.container = container;
@@ -39,7 +78,7 @@ export class Viewer {
     controls.enableDamping = true; controls.dampingFactor = 0.12;
     controls.maxPolarAngle = Math.PI * 0.49; controls.minDistance = 1.2; controls.maxDistance = 22;
     controls.addEventListener('change', () => this.dirty());
-    controls.addEventListener('start', () => this.start());
+    controls.addEventListener('start', () => { this.onInteraction?.(); this.start(); });
     scene.add(new THREE.HemisphereLight(0xf4f8fb, 0x8a96a2, 1.35));
     const sun = this.sun = new THREE.DirectionalLight(0xffffff, 1.5);
     sun.position.set(-3, -4, 8); sun.castShadow = true;
@@ -128,6 +167,7 @@ export class Viewer {
     const share = this.views ? this.views[0].w : 1;
     this.camera.aspect = w * share / h; this.camera.updateProjectionMatrix();
     for (const m of this.lineMaterials) m.resolution.set(w * share, h);
+    if (this.film) this.filmFrame(this.film.walk, this.film.world, this.film.time, { reducedMotion: this.film.reducedMotion, force: true });
     this.dirty();
   }
   setViews(views) { this.views = views; this.resize(); }
@@ -448,6 +488,29 @@ export class Viewer {
   }
 
   // ----- camera
+  filmFrame(walk, world, time, { reducedMotion = false, force = false } = {}) {
+    if (!this.film || this.film.walk !== walk || this.film.reducedMotion !== reducedMotion) {
+      this.clearFilm();
+      this.film = { walk, world, time, reducedMotion, pose: new Float64Array(6), damping: this.controls.enableDamping };
+      // Clear any remaining orbit momentum before taking the camera. No wall-clock animation is added.
+      this.controls.enableDamping = false; this.controls.update();
+      if (reducedMotion) this.frame(world, 'orbit');
+    }
+    const film = this.film; film.time = time;
+    this.follow = false;
+    if (reducedMotion) { if (force) this.frame(world, 'orbit'); film.shot = 'Still view'; return film.shot; }
+    const p = filmPose(walk, world, time, this.camera.aspect, film.pose);
+    this.controls.target.set(p[3], p[4], p[5]); this.camera.position.set(p[0], p[1], p[2]);
+    this.controls.maxDistance = Math.max(22, this.camera.position.distanceTo(this.controls.target) * 1.2);
+    this.controls.update(); this.dirty();
+    film.shot = time < Math.min(2.4, walk.duration * 0.22) ? 'Establishing' : time > walk.duration - Math.min(3, walk.duration * 0.22) ? 'Finish' : 'Tracking';
+    return film.shot;
+  }
+  clearFilm() {
+    if (!this.film) return;
+    this.controls.enableDamping = this.film.damping;
+    this.film = null;
+  }
   frame(world, mode = 'orbit') {
     // Aim between the start mark and the room's centre: the robot and where it can go both stay in view.
     const b = world.bounds, s = world.start_xy;
@@ -494,6 +557,7 @@ export class Viewer {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearFilm(); this.onInteraction = null;
     this.abort.abort(); this.stop(); cancelAnimationFrame(this._hoverRequest); this._contextStatus?.remove();
     this._resizer.disconnect(); this._seer.disconnect(); this.controls.dispose();
     clear(this.scene);

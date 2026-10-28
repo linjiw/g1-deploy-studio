@@ -11,7 +11,11 @@
     "site:check": "node tools/site/check.mjs",
     "test:browser:edges": "node tools/browser/replay_edges.mjs && node tools/browser/studio_ux.mjs",
     "test:visualization": "node tools/browser/visualization_performance.mjs",
-    "site:check:edges": "node tools/site/ux_edges.mjs"
+    "site:check:edges": "node tools/site/ux_edges.mjs",
+    "site:check:story": "node tools/site/story_check.mjs",
+    "site:check:film": "node tools/site/cinematic.mjs",
+    "site:check:media": "node tools/site/media_check.mjs",
+    "site:highlights": "node tools/site/highlights.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",

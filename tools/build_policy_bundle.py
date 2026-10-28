@@ -29,9 +29,9 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import re  # noqa: E402
 
-from studio.policy_bundle import ARTIFACT_LINKS, BUNDLE_ID, POLICY_ROOT, sha256, tree_hashes, verify  # noqa: E402
+from studio.policy_bundle import ARTIFACT_LINKS, BUNDLE_ID, POLICY_ROOT, sha256, tree_hashes, verify, wm_refinement_paths  # noqa: E402
 
-BLOCK = re.compile(r'[A-Za-z0-9]{1,16}')
+BLOCK = re.compile(r'(?=[A-Za-z0-9-]{1,16}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*')
 
 from studio import paths  # noqa: E402
 
@@ -61,9 +61,9 @@ def git(repo, *args, binary=False):
 
 
 def build(commit, config_path, arm_name, teacher, force=False, block='WX', variant=None, label=None, adopted_commit=None,
-          pin_basis=None):
+          pin_basis=None, wm_refine_models=None):
     if not BLOCK.fullmatch(block):
-        raise SystemExit('--block must be 1-16 letters or digits')
+        raise SystemExit('--block must be 1-16 letters, digits or separating hyphens')
     commit = git(FLOW, 'rev-parse', '--verify', f'{commit}^{{commit}}')
     bundle_id = f"flow-{block.lower()}-rf-{commit[:7]}-{teacher.split('_')[-1]}"
     if not BUNDLE_ID.fullmatch(bundle_id):
@@ -78,6 +78,26 @@ def build(commit, config_path, arm_name, teacher, force=False, block='WX', varia
         raise SystemExit('Selected arm is not retrieval-free')
     if Path(arm['planner']['run']).name != teacher:
         raise SystemExit(f"Arm {arm_name} uses {Path(arm['planner']['run']).name}, not {teacher}")
+    planner = dict(config.get('planner_defaults', {}), **arm['planner'])
+    overrides = {'device': 'cpu'}
+    refinement_members = []
+    if planner.get('wm_refine'):
+        try:
+            refinement_members = wm_refinement_paths(wm_refine_models or planner.get('wm_refine_models'))
+        except ValueError as error:
+            raise SystemExit(f'{error}; pass --wm-refine-models A B to pin source-default ensembles') from error
+        overrides.update(wm_refine_models=[str(refinement_members[0].parent), str(refinement_members[2].parent)],
+                         wm_refine_device='cpu')
+    elif wm_refine_models is not None:
+        raise SystemExit('--wm-refine-models requires a configuration with wm_refine enabled')
+    teacher_dir = Path(planner['run'])
+    wm = Path(planner['exec_model'])
+    # Resolve and hash each required file before creating a bundle. No artifact tree is copied.
+    artifacts = [ident(teacher_dir / 'model.pt', 'flow teacher checkpoint'), ident(teacher_dir / 'receipt.json', 'teacher receipt')]
+    artifacts += [ident(p, 'WM-v2 execution-check member') for p in sorted(wm.glob('member*.pt'))]
+    artifacts += [ident(wm / 'train_log.json', 'WM-v2 training log')]
+    artifacts += [ident(p, 'WM-v5 refinement member') for p in refinement_members]
+    artifacts += [ident(FLOW / rel, 'planner geometry/reference artifact') for rel in ARTIFACT_LINKS]
     root = POLICY_ROOT / bundle_id
     if root.exists() and not force:
         raise SystemExit(f'{root} exists; use --verify-only or --force')
@@ -99,14 +119,6 @@ def build(commit, config_path, arm_name, teacher, force=False, block='WX', varia
         if link.is_symlink() or link.exists():
             link.unlink()
         link.symlink_to(FLOW / rel)
-    teacher_dir = Path(arm['planner']['run'])
-    if teacher_dir.name != teacher:
-        raise SystemExit(f'Arm {arm_name} uses {teacher_dir.name}, not {teacher}')
-    wm = Path(arm['planner']['exec_model'])
-    artifacts = [ident(teacher_dir / 'model.pt', 'flow teacher checkpoint'), ident(teacher_dir / 'receipt.json', 'teacher receipt')]
-    artifacts += [ident(p, 'WM-v2 execution-check member') for p in sorted(wm.glob('member*.pt'))]
-    artifacts += [ident(wm / 'train_log.json', 'WM-v2 training log')]
-    artifacts += [ident(FLOW / rel, 'planner geometry/reference artifact') for rel in ARTIFACT_LINKS]
     manifest = {
         'schema_version': 1, 'id': bundle_id, 'created_unix_s': time.time(),
         'label': label or f'Flow {block}-RF · adopted block · teacher {teacher}',
@@ -119,7 +131,7 @@ def build(commit, config_path, arm_name, teacher, force=False, block='WX', varia
                                             if block == 'WX' else f'Flow commit {commit[:7]}, config {config_path}, arm {arm_name}.'),
                  'config_path': config_path, 'config_blob': git(FLOW, 'rev-parse', f'{commit}:{config_path}'),
                  'config_sha256': hashlib.sha256(config_blob).hexdigest(), 'arm': arm_name},
-        'planner_overrides': {'device': 'cpu'},
+        'planner_overrides': overrides,
         'deployed_budget': {'candidates': config['planner_defaults']['candidates'], 'ode_steps': config['planner_defaults']['ode_steps']},
         'artifacts': artifacts,
         'humanoid_lfh': {'path': str(LFH.resolve()), 'commit': git(LFH, 'rev-parse', 'HEAD'),
@@ -132,7 +144,9 @@ def build(commit, config_path, arm_name, teacher, force=False, block='WX', varia
             'Privileged block: map, selection, guidance, execution check and route use the exact configured boxes (simulator ground truth), not LiDAR.',
             'WM-v2 execution check was trained on Isaac SONIC executions; its accuracy under MuJoCo is unmeasured.',
             ('WX was evaluated in Isaac (guard 121/156, V-learn 172/213); MuJoCo CPU results do not transfer automatically.'
-             if block == 'WX' else f'{block} was evaluated in Isaac (Flow research/BEST_MODEL.md); MuJoCo CPU results do not transfer automatically.'),
+             if block == 'WX' else f'{block} research adoption is identified by the manifest adoption commit and pin basis; it is not MuJoCo or hardware qualification.'),
+            *(['WM-v5 refinement uses two Isaac-trained ensembles; upper-body edits and their WM-v2 acceptance are predictions, not measured clearance.'
+               ] if refinement_members else []),
             'Studio starts standing; Isaac arena tasks start from a recorded walk near 1 m/s.',
             'CPU planner randomness differs from Isaac CUDA runs; identical states can give different candidates.',
             'Lockstep: physics waits for each replan, so planner latency does not delay plans in simulation.',
@@ -153,6 +167,7 @@ def main(argv=None):
     ap.add_argument('--label', default=None, help="profile label (default 'Flow <block>-RF · adopted block · teacher <teacher>')")
     ap.add_argument('--adopted-commit', default=None, help='the adoption commit to record (default: 4ba73cb for WX, else --commit)')
     ap.add_argument('--pin-basis', default=None, help='why this commit is pinned (default: the WX note for WX)')
+    ap.add_argument('--wm-refine-models', nargs=2, metavar=('A', 'B'), help='explicit absolute WM5 ensemble directories; pins member0.pt and member1.pt from each')
     ap.add_argument('--verify-only', action='store_true')
     ap.add_argument('--force', action='store_true')
     args = ap.parse_args(argv)
@@ -167,7 +182,7 @@ def main(argv=None):
             status |= bool(problems)
         return status
     root, manifest = build(args.commit, args.config, args.arm, args.teacher, args.force, block=args.block, variant=args.variant,
-                           label=args.label, adopted_commit=args.adopted_commit, pin_basis=args.pin_basis)
+                           label=args.label, adopted_commit=args.adopted_commit, pin_basis=args.pin_basis, wm_refine_models=args.wm_refine_models)
     problems = verify(root)
     print(json.dumps({'bundle': str(root), 'id': manifest['id'], 'flow_commit': manifest['flow']['commit'],
                       'config_sha256': manifest['flow']['config_sha256'], 'src_files': len(manifest['src_files']),

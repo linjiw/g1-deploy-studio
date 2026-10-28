@@ -69,6 +69,11 @@ class Demo {
     v.groups.route.add(this.lines.route); v.groups.plan.add(this.lines.plan); v.groups.trail.add(this.lines.trail);
     this.pose = new Float64Array(36); this.refPose = new Float64Array(36);
     this.cameraMode = 'orbit';
+    this.viewer.onInteraction = () => this.stopFilm(true);
+    this.motionPreference = matchMedia('(prefers-reduced-motion: reduce)');
+    this.motionPreference.addEventListener('change', () => {
+      if (this.cameraMode === 'film' && this.S.walk) { this.viewer.clearFilm(); this.apply(); }
+    }, sig);
     // Inside the page the keys belong to the demo only after a visitor has clicked or tabbed into it; a full-bleed
     // demo always has them.
     this.engaged = !embedded;
@@ -122,15 +127,15 @@ class Demo {
     else this.live(`Standing at the start mark. ${tap()} the floor to pick a goal, or open the room menu.`);
   }
 
-  // ----- hash: [#try/]<room>[/<goal>[/play[@seconds]]]
+  // ----- hash: [#try/]<room>[/<goal>[/(play|film)[@seconds]]]
   parseHash() {
-    const m = location.hash.slice(1).match(new RegExp(`^${this.hashPrefix.replace('/', '\\/')}([a-z]+)(?:\\/(g\\d\\d-\\d\\d))?(\\/play(?:@(\\d+(?:\\.\\d+)?))?)?$`));
-    return m ? { world: m[1], goal: m[2], play: !!m[3], at: m[4] ? Number(m[4]) : null } : null;
+    const m = location.hash.slice(1).match(new RegExp(`^${this.hashPrefix.replace('/', '\\/')}([a-z]+)(?:\\/(g\\d\\d-\\d\\d))?(?:\\/(play|film)(?:@(\\d+(?:\\.\\d+)?))?)?$`));
+    return m ? { world: m[1], goal: m[2], play: !!m[3], film: m[3] === 'film', at: m[4] ? Number(m[4]) : null } : null;
   }
   // What the link should say for what is on screen: the room, a sent goal, or a walk.
   here() {
     const S = this.S;
-    return S.walk ? `${S.worldId}/${S.walk.goal_id}/play` : S.staged ? `${S.worldId}/${S.staged.id}` : S.worldId;
+    return S.walk ? `${S.worldId}/${S.walk.goal_id}/${this.cameraMode === 'film' ? 'film' : 'play'}` : S.staged ? `${S.worldId}/${S.staged.id}` : S.worldId;
   }
   writeHash(path) {
     if (this.el.full) this.el.full.href = `${this.fullHref}#${path}`;
@@ -152,7 +157,10 @@ class Demo {
     this.S.clicked = null;
     this.linking = true;
     this.selectCell(cell, { stage: true });
-    if (h.play && this.S.mode === 'staged') await this.go({ at: h.at ?? 0, autoplay: !reducedMotion() });
+    if (h.play && this.S.mode === 'staged') {
+      if (!h.film) this.stopFilm();
+      await this.go({ at: h.at ?? 0, autoplay: !reducedMotion(), film: h.film });
+    }
     this.linking = false;
     if (this.embedded && document.activeElement && !this.root.contains(document.activeElement)) this.el.canvas.focus({ preventScroll: true });
   }
@@ -256,7 +264,7 @@ class Demo {
     if (lower === 'g' && S.mode === 'staged') { e.preventDefault(); this.go(); return; }
     if (lower === 'r') { this.reset(); return; }
     if (lower === '?') { this.toggleHelp(); return; }
-    if (lower === 'c') { this.camera({ orbit: 'top', top: 'follow', follow: 'orbit' }[this.cameraMode ?? 'orbit']); return; }
+    if (lower === 'c') { this.camera({ orbit: 'top', top: 'follow', follow: 'orbit', film: 'orbit' }[this.cameraMode ?? 'orbit']); return; }
     if (lower === 'f') { this.camera('follow'); return; }
     if (lower === 'n') { this.togglePicker(); return; }
     if (/^[1-9]$/.test(k) && this.catalog[Number(k) - 1]) { this.loadWorld(this.catalog[Number(k) - 1].id); return; }
@@ -291,6 +299,7 @@ class Demo {
       return false;
     }
     if (token !== S.loadToken || this.destroyed) return false;  // a later click or Stop won
+    this.stopFilm();
     Object.assign(S, { worldId: id, world, walk: null, selected: null, staged: null, mode: 'pick', hover: null, clicked: null, cursor: null });
     this.el.cursorTip.hidden = true;
     const v = this.viewer;
@@ -315,6 +324,7 @@ class Demo {
 
   resetRobot() {
     const S = this.S, w = S.world, v = this.viewer;
+    this.stopFilm();
     v.dimOutcomes(false);
     this.el.ghostTip.hidden = true;
     Object.assign(S, { walk: null, t: 0, playing: false, mapStep: -1, trailIndex: -1, trailWalk: null, planShown: null, lidarShown: null, phase: null, events: 0 });
@@ -428,7 +438,7 @@ class Demo {
     this.live('Goal sent and read back. Nothing moves until the operator presses Go.');
     this.focusIn(this.el.chip.querySelector('[data-act="go"]') ?? this.el.go);
   }
-  async go({ at = 0, autoplay = true } = {}) {
+  async go({ at = 0, autoplay = true, film = false } = {}) {
     const S = this.S, c = S.staged;
     if (!c || S.mode !== 'staged') return;
     const hadFocus = this.root.contains(document.activeElement) && document.activeElement !== this.el.canvas;
@@ -438,8 +448,9 @@ class Demo {
       if (this.destroyed || S.staged !== c || S.mode !== 'loading') return;
       this.viewer.setMarker('hoverMarker', null);
       S.walk = walk; S.mapStep = -1; S.phase = null; S.events = 0;
-      this.writeHash(`${S.worldId}/${c.id}/play`);
-      this.viewer.focus([S.world.start_xy, c.xy]);
+      if (film) { this.cameraMode = 'film'; this.viewer.follow = false; this.autoFollow = false; }
+      this.writeHash(this.here());
+      if (this.cameraMode !== 'film') this.viewer.focus([S.world.start_xy, c.xy]);
       if (this.root.clientWidth < 640 && this.cameraMode === 'orbit') {
         // On a phone the room is small: walk with the robot instead (Orbit brings the room back).
         this.viewer.look([S.world.start_xy[0], S.world.start_xy[1], 0.6], { yaw: S.world.start_yaw_rad + Math.PI + 0.6, pitch: 0.55, distance: 4.2 });
@@ -447,6 +458,7 @@ class Demo {
         this.autoFollow = true;
       }
       this.seek(at);
+      this.syncCamera();
       if (autoplay) this.play();
       if (hadFocus || (this.root.contains(document.activeElement) && document.activeElement.disabled !== false) || document.activeElement === document.body && this.engaged) this.el.play.focus({ preventScroll: true });
       if (!at) this.splash('Pre-scan, then walk', 'it stands for 0.5 s while the LiDAR fills its map');
@@ -478,13 +490,14 @@ class Demo {
   reset() {
     const S = this.S, focused = this.root.contains(document.activeElement), hadWalk = !!S.walk;
     this.pause();
+    const wasFilm = this.cameraMode === 'film'; this.stopFilm();
     if (S.walk) this.resetRobot();
     Object.assign(S, { selected: null, staged: null, mode: 'pick', clicked: null, detail: false });
     this.viewer.setMarker('goalMarker', null);
     this.viewer.setLine(this.lines.route, null);
     this.el.ghostTip.hidden = true;
     // Back to picking: the room in view again (a phone followed the robot during the walk), and the first hint.
-    if (hadWalk && (this.autoFollow || this.cameraMode === 'follow')) this.camera('orbit');
+    if (hadWalk && (wasFilm || this.autoFollow || this.cameraMode === 'follow')) this.camera('orbit');
     this.autoFollow = false;
     if (S.picked) { S.picked = false; this.root.classList.remove('picked'); }
     this.writeHash(S.worldId);
@@ -536,6 +549,10 @@ class Demo {
   apply() {
     const S = this.S, w = S.walk, v = this.viewer, L = S.layers;
     v.setPose(w.pose(S.t, this.pose));
+    if (this.cameraMode === 'film') {
+      const shot = v.filmFrame(w, S.world, S.t, { reducedMotion: this.motionPreference.matches });
+      if (this.el.filmShot.textContent !== shot) this.el.filmShot.textContent = shot;
+    }
     // The plan body is drawn where it is the plan: while walking, and while a deferred stand holds the plan's last
     // frame. Standing, the node's reference is a stand, not a plan.
     const ref = L.body && w.planHeld(S.t) ? w.refPose(S.t, this.refPose) : null;
@@ -620,6 +637,15 @@ class Demo {
   }
   camera(mode) {
     const v = this.viewer;
+    if (mode === 'film') {
+      if (!this.S.walk) return;
+      if (this.cameraMode === 'film') { this.stopFilm(true); return; }
+      this.cameraMode = 'film'; this.autoFollow = false; v.follow = false;
+      this.syncCamera(); this.apply(); this.writeHash(this.here());
+      this.live(this.motionPreference.matches ? 'Film uses a still camera for reduced motion.' : 'Film camera on. Drag or zoom the view to take control.');
+      return;
+    }
+    this.stopFilm();
     if (mode === 'follow') {
       v.follow = !(this.cameraMode === 'follow');
       this.cameraMode = v.follow ? 'follow' : 'orbit';
@@ -631,8 +657,23 @@ class Demo {
       v.follow = false; this.cameraMode = mode;
       v.frame(this.S.world, mode);
     }
-    for (const b of this.root.querySelectorAll('[data-camera]')) b.setAttribute('aria-pressed', String(b.dataset.camera === this.cameraMode));
+    this.syncCamera();
     if (this.S.walk) this.apply();
+  }
+  syncCamera() {
+    for (const b of this.root.querySelectorAll('[data-camera]')) {
+      b.setAttribute('aria-pressed', String(b.dataset.camera === this.cameraMode));
+      if (b.dataset.camera === 'film') b.disabled = !this.S.walk;
+    }
+    this.el.filmStatus.hidden = this.cameraMode !== 'film';
+    this.root.classList.toggle('film-camera', this.cameraMode === 'film');
+  }
+  stopFilm(announce = false) {
+    if (this.cameraMode !== 'film') return;
+    this.viewer.clearFilm(); this.cameraMode = 'orbit'; this.viewer.follow = false;
+    this.syncCamera();
+    if (this.S.walk) this.writeHash(this.here());
+    if (announce) this.live('Film camera off. You control the view.');
   }
 
   // This walk in the split view of the main page (plan body against the executed body).
@@ -646,7 +687,7 @@ class Demo {
     location.href = new URL(`${this.home ?? '../'}${hash}`, location.href).href;
   }
   async copyLink() {
-    const S = this.S, path = `#${S.worldId}/${S.walk.goal_id}/play`;
+    const S = this.S, path = `#${S.worldId}/${S.walk.goal_id}/${this.cameraMode === 'film' ? 'film' : 'play'}`;
     const url = new URL(this.embedded ? `${this.fullHref}${path}` : path, location.href).href;
     try {
       if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title: 'A recorded walk · G1 Deploy Studio', url }); return; }
@@ -729,6 +770,7 @@ class Demo {
   }
   render() {
     const S = this.S;
+    this.syncCamera();
     this.root.dataset.mode = S.mode;
     this.root.dataset.walk = S.walk ? '1' : '0';
     this.renderChip();
@@ -989,6 +1031,7 @@ function template({ embedded, home, stop }) {
   </div>
   <div class="chrome top-right">
     <span class="phase" data-el="phase">WAIT</span>
+    <span class="film-status pill" data-el="filmStatus" hidden title="Recorded-time camera. Drag or zoom to take control."><span aria-hidden="true">◉</span> Film · <span data-el="filmShot">Establishing</span></span>
     ${embedded ? '<a class="pill" data-el="full" target="_blank" rel="noopener" aria-label="Open full screen"><span class="t">Open full screen</span> ↗</a>' : ''}
     ${stop ? '<button class="pill" data-el="stop" title="Stop the demo and free its memory" disabled>Stop</button>' : ''}
   </div>
@@ -1010,7 +1053,7 @@ function template({ embedded, home, stop }) {
     <span class="time mono" data-el="time">0.0 s</span>
     <button class="dk small" data-el="speed" title="Playback speed (simulated time)" aria-label="Playback speed: 1 times">1×</button>
     <button class="dk room" data-el="rooms" aria-haspopup="dialog" aria-expanded="false" title="Rooms and walks (N)"><span data-el="roomName">Room</span><small data-el="roomCount"></small><span aria-hidden="true">▾</span></button>
-    <div class="seg" role="group" aria-label="Camera"><button data-camera="orbit" aria-pressed="true">Orbit</button><button data-camera="top" aria-pressed="false">Top</button><button data-camera="follow" aria-pressed="false">Follow</button></div>
+    <div class="seg" role="group" aria-label="Camera"><button data-camera="orbit" aria-pressed="true">Orbit</button><button data-camera="top" aria-pressed="false">Top</button><button data-camera="follow" aria-pressed="false">Follow</button><button data-camera="film" aria-pressed="false" title="A guided camera for this recorded walk. Drag or zoom to take control." disabled>Film</button></div>
   </div>
   <div class="picker" data-el="picker" role="dialog" aria-label="Rooms and walks" hidden>
     <div class="picker-head"><b>Rooms and walks</b><button class="btn small" data-el="shuffle">Pick one for me</button><button class="x" data-el="pickerClose" aria-label="Close">✕</button></div>
@@ -1031,6 +1074,7 @@ function template({ embedded, home, stop }) {
         <dt><kbd>B</kbd> <kbd>M</kbd> <kbd>L</kbd> <kbd>P</kbd> <kbd>W</kbd> <kbd>O</kbd> <kbd>V</kbd></dt><dd>plan body, map, LiDAR, plan, real room, outcomes, robot</dd>
         <dt><kbd>C</kbd> <kbd>F</kbd></dt><dd>camera, follow</dd></dl>
       <p class="fineprint">Recorded, simulated walks of the deploy stack, one per goal, one seed. Your browser plays them back and runs no policy.</p>
+      <p class="fineprint"><b>Film</b> frames the task, tracks the recorded body and shows its finish. Drag or zoom to take control; pause also stops the camera. Reduced motion uses a still view. Share a guided walk with <code>/film</code> in place of <code>/play</code> in its link.</p>
     </div>
   </div>`;
 }

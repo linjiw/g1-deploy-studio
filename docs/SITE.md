@@ -4,7 +4,7 @@
 
 | Page | What it is |
 |---|---|
-| `/` | The project page: a demo slot that loads on **Start** (and frees its memory on **Stop**), the highlights with the tour video, *every walk, one dot*, a split view (*Take a closer look*), the system diagram, the robot day, the findings with the outcome table, an FAQ with metric definitions, and a pointer to the next step |
+| `/` | The project page: selected recorded films, an interactive Learning from Hallucination explanation, a demo slot that loads on **Start** (and frees its memory on **Stop**), *every walk, one dot*, a split view, system diagram, robot day, findings and metric definitions |
 | `/demo/` | The Navigate demo, full-bleed. The main page's slot is the same app, embedded |
 | `/next/` | The execution gap: the plan body against the executed body, measured by Studio in its own recordings |
 
@@ -19,6 +19,18 @@ Owner decision, 2026-10-21, confirmed 2026-10-22 ("Recorded only, live in local 
 | Live sessions served from this machine | About one CPU core per visitor, a public tunnel to a research machine, and only up while it is |
 
 ## The demo
+
+The opening showcase selects one clean arrival from each of doorway, detour and clutter: zero recorded obstacle contact, final simulator-truth error at most 0.4 m, duration at most 20 seconds, then farthest goal first. The selection runs against the public catalog and links to the exact recording. These are selected successes from the frozen October 8 student bundle, not an aggregate or evidence for the latest research planner. The full atlas and failures remain visible.
+
+The Learning from Hallucination explanation is an event-driven SVG with keyboard steps and a scrubber: motion, compatible imagined scenes, conditional learning, runtime candidates, execution checks, and SONIC tracking. It labels all sketches as conceptual. It distinguishes this project's whole-body adaptation from original LfH (which also hallucinates perception at deployment), and links the original LfH and HLSD papers. Runtime checks and refinement predict execution; they are not measured clearance guarantees.
+
+**Film camera:** `demo/#<room>/<goal>/film[@<seconds>]` and embedded `#try/<room>/<goal>/film` establish the task, track the executed body and frame its finish. Camera poses are deterministic functions of recording time; recorded robot poses are unchanged. Pausing stops the camera, dragging/zooming takes control, and reduced-motion preferences use a still view and start paused. The comparison view retains matched cameras. Paused/offscreen views do no rendering work.
+
+The 25 fps highlight film is generated from the same public recordings and camera, at recorded speed, with native playback controls, captions and `preload="none"`. Reproduce it with `SITE_URL=<local build> node tools/site/highlights.mjs <media>/showcase`; use `FILM_REVIEW=<evidence dir>` to save review frames. Media stays in checksummed release assets, outside Git. Run `site:check:story` and `site:check:film` alongside the normal public-site checks.
+
+**Recent research film:** the separate WXD-TNP-R2 retrieval-free showcase contains two explicitly selected development successes, ducking and storage clutter, recorded in Isaac with SONIC and privileged scene geometry. It is separate from the frozen MuJoCo/LiDAR Navigate catalog. `tools/site/export_research_showcase.py` reads only the two allowlisted callbacks and verifies their hashes, joint/reference ordering, 50 Hz clock, continuity, contact samples and final goal distances. The full sessions stay local; only rendered media and sanitized provenance are published. The recipe adoption commit is identified as a later adoption decision, not a verified recording-time source revision; original checkpoint hashes were not recorded. Its arrival rule permits reaching the goal while moving, so it does not establish a stationary hold.
+
+Render that export with `SITE_URL=<local build> node tools/site/research_film.mjs <render.json> <media>/research`. `REVIEW_ONLY=1` produces review stills first. The script verifies avatar identity and every rendered root position, excludes absent sensor channels, and extracts the poster from the exact movie at the recorded ducking moment. `site:check:media` verifies the shipped films in a real browser and can run against the public Pages URL.
 
 The 3D view fills a white, quiet stage (a pale floor and grid that fade into the backdrop, the robot's map in light tints, colours chosen to read on white, as in SuperMimic's project page and Studio itself, which shares this palette); the chrome floats over it as white glass and lets clicks through except on its controls.
 
@@ -138,7 +150,7 @@ Per room, `data/<room>/index.json` holds:
 
 - **Where:** GitHub Pages, from `.github/workflows/pages.yml`. The page source is in `site/`. The data, the stills and the video are not in Git (AGENTS.md: no recordings in Git). They are release assets of the tag in `tools/site/release.json`; the workflow downloads them and checks their SHA-256. `tools/site/package.sh` makes them.
 - **What a visit costs:**
-  - Until something starts: text, two posters, the tour's poster and captions, `worlds.json` and `featured.json`, and once the page is idle the robot day's room. About 0.3 MB compressed.
+  - Until something starts: text, the LfH SVG, posters and captions, `worlds.json` and `featured.json`, and once the page is idle the robot day's room. Curated thumbnails load lazily. Browser acceptance records the actual request/byte count; no model, individual walk, video or 3D renderer downloads before interaction.
   - **Start:** three.js (about 170 kB compressed), the robot (0.75 MB: 36 Unitree meshes simplified from 371k to 85k triangles and quantized) and a room. A progress card shows the download.
   - About 60 kB per walk played. Findings stills load as they near the viewport. The video loads only when played.
 - **Rendering:**
@@ -163,5 +175,6 @@ A change to `site/` alone redeploys with the same data.
 | `site-v2` | 2026-10-22 | 473: wall detour 107, alternating walls 106, corridor 124, doorway 72, cluttered room 64 | Levels 0 and 1 in the first three rooms, level 0 in the others. Schema 2: every walk carries the plan body; rooms list their walks; split-view scenarios; findings stills | data 24 MB (76 MB unpacked), media 25 MB (with the stills) |
 | `site-v3` | 2026-10-22 | the same 473 | as `site-v2` | Contact per frame is the peak over the ticks it stands for. Walk rows carry the goal's x, y and rooms their start pose, for the room menu's directions and the chart | data 24 MB, media 25 MB (unchanged) |
 | `site-v4` | 2026-10-22 | the same 473 | as `site-v2` | The data of `site-v3`, byte for byte. The findings stills are rendered again on the white stage | data 24 MB (unchanged), media 25 MB |
+| `site-v5` | 2026-10-28 | the same 473 Navigate walks, plus two separately labeled research-film examples | as `site-v2`; research films are selected development successes, not added to Navigate statistics | Same Navigate data. Exact selected posters, a recorded-speed Film-camera montage and the recent R2 research film, with captions and provenance |
 
 The batch can keep recording the remaining levels at the lowest priority for a later release. Nothing on the published site changes until `tools/site/release.json` names a new tag.

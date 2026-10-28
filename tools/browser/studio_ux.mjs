@@ -21,11 +21,25 @@ try {
   await page.goto(`${base}/?session=sonic-lockstep`); await ready(page);
   for (const width of [320, 390, 768, 1024]) {
     await page.setViewportSize({ width, height: 900 });
+    await page.waitForFunction(() => document.body.classList.contains('drawer-mode') === (innerWidth >= 1024 && innerWidth < 1280));
+    const drawer = page.locator('#inspector-toggle');
+    if (await drawer.isVisible()) {
+      await drawer.click();
+      assert.equal(await drawer.getAttribute('aria-expanded'), 'true');
+    }
     assert.equal(await page.locator('.inspector').isVisible(), true, `inspector at ${width}`);
-    assert.equal(await page.locator('#evidence-button').isVisible(), true, `evidence key at ${width}`);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `horizontal overflow at ${width}`);
     await page.locator('#tab-health').click();
     assert.equal(await page.locator('#tab-health').getAttribute('aria-selected'), 'true');
+    if (await drawer.isVisible()) {
+      await page.keyboard.press('Escape');
+      assert.equal(await drawer.getAttribute('aria-expanded'), 'false');
+      assert.equal(await drawer.evaluate(el => document.activeElement === el), true);
+    }
+    const evidenceButton = await page.locator('#evidence-button').isVisible() ? page.locator('#evidence-button') : page.locator('#hardware-chip');
+    await evidenceButton.click();
+    assert.equal(await page.locator('#evidence-legend').isVisible(), true, `evidence key at ${width}`);
+    await page.keyboard.press('Escape');
     await page.screenshot({ path: path.join(evidence, `studio-${width}.png`), fullPage: true });
   }
   check('inspector, evidence key and health remain accessible at 320, 390, 768 and 1024 px');
@@ -74,7 +88,8 @@ try {
   await page.setViewportSize({ width: 1100, height: 1000 });
   const narrowScene = await page.locator('.viewport-shell').boundingBox(), narrowToolbar = await page.locator('.vp-toolbar').boundingBox(), narrowTitle = await page.locator('.vp-title').boundingBox();
   assert.ok(narrowToolbar.x >= narrowScene.x && narrowToolbar.x + narrowToolbar.width <= narrowScene.x + narrowScene.width + 1, 'toolbar fits the narrow desktop scene');
-  assert.ok(narrowTitle.y >= narrowToolbar.y + narrowToolbar.height, 'title clears the desktop toolbar');
+  assert.ok(narrowTitle.y + narrowTitle.height <= narrowToolbar.y + 1 || narrowToolbar.y + narrowToolbar.height <= narrowTitle.y + 1 ||
+    narrowTitle.x + narrowTitle.width <= narrowToolbar.x + 1, 'title clears the desktop toolbar');
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('#sensors-panel [data-pin-sensor="base_pose"]').click();
   const summary = page.locator('#sensors-panel [data-sensor-card="base_pose"] summary');
@@ -101,7 +116,7 @@ try {
   const touch = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
   const mobile = await touch.newPage();
   await mobile.goto(`${base}/?session=sonic-lockstep`); await ready(mobile);
-  for (const id of ['play', 'restart', 'camera-orbit', 'layers-button', 'evidence-button']) {
+  for (const id of ['play', 'restart', 'camera-orbit', 'layers-button', 'hardware-chip']) {
     assert.ok((await mobile.locator(`#${id}`).boundingBox()).height >= 44, `${id} touch target`);
   }
   assert.equal(await mobile.locator('.loader').evaluate(el => getComputedStyle(el).animationName), 'none');
@@ -109,7 +124,8 @@ try {
   await mobile.screenshot({ path: path.join(evidence, 'studio-touch.png'), fullPage: true });
   await mobile.setViewportSize({ width: 320, height: 700 });
   const toolbar = await mobile.locator('.vp-toolbar').boundingBox(), title = await mobile.locator('.vp-title').boundingBox();
-  assert.ok(title.y >= toolbar.y + toolbar.height, 'wrapped touch toolbar must not overlap the title');
+  assert.ok(title.y + title.height <= toolbar.y + 1 || toolbar.y + toolbar.height <= title.y + 1 ||
+    title.x + title.width <= toolbar.x + 1, 'wrapped touch toolbar must not overlap the title');
   assert.ok(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   await touch.close();
   check('touch controls have 44 px targets and reduced-motion stops loader animation');
