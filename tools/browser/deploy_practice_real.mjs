@@ -137,6 +137,7 @@ try {
   await until('GO', async () => ready(/GO/), 20000);
   await primary().click();
   await page.waitForSelector('.dp-sheet');
+  for (const box of await page.locator('.dp-sheet input[type="checkbox"]').all()) await box.check();
   await shot('11-go-sheet');
   await page.click('#dp-sheet-ok');
   await until('walking', s => ['PRESCAN', 'RUN', 'ARRIVED'].includes(s.phase), 20000, 200);
@@ -151,8 +152,10 @@ try {
   await page.waitForSelector('.dp-tagcard', { timeout: 20000 });
   await page.locator('.dp-tagcard [data-tag="clean"]').click();
   await page.locator('.dp-tagcard input[data-note]').fill('practice e2e on the real chain');
-  await page.locator('.dp-tagcard [data-action^="tag:"]').click();
+  await until('Save tag', async () => ready(/Save tag/), 10000);
+  await primary().click();
   await until('the tag', s => s.attempts.at(-1)?.tag === 'clean', 15000);
+  await shot('13c-tagged');
 
   step('estop');
   await page.click('#dp-estop');
