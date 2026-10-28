@@ -633,6 +633,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.deploy_call(lambda: (200, self.server.deploy.goal_check(query.get('scan', [''])[0], x, y)))
             if path == '/api/deploy/link':
                 return self.respond(self.server.deploy.link_status())
+            if path == '/api/deploy/heartbeat':
+                return self.respond(self.server.deploy.heartbeat())
             if path == '/api/version':
                 return self.respond(dict(self.server.identity, hardware_enabled=False))
             if path == '/api/workbench' and workbench:

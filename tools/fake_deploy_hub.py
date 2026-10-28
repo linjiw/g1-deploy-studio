@@ -811,11 +811,14 @@ def make_handler(handler_get, handler_post, token, delay=lambda: 0.0):
 
         def _send(self, code, obj):
             data = json.dumps(obj, allow_nan=False).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the client gave up (Studio's 1 s E-STOP timeout against a slow panel)
 
         def _q(self):
             u = urlparse(self.path)

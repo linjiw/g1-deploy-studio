@@ -63,6 +63,7 @@ CHECK_TTL_S = 600.0            # a goal check's check_id is good for send_goal f
 MAX_CHECKS = 512
 ESTOP_TIMEOUT_S = 1.0          # per console; all consoles in parallel
 DIRECT_TIMEOUT_S = 1.5         # Stand / Takeover: the console waits up to 1.0 s for its main loop before it answers
+HEARTBEAT_TIMEOUT_S = 0.5      # GET /state of each console on the direct path
 MAX_BLOCKING_CELLS = 200
 AUDIT_MAX_BYTES = 16 * 1024 * 1024
 
@@ -243,6 +244,19 @@ def read_panel_target(token_file, port_hint=None):
     if not token or not isinstance(port, int) or not 0 < port < 65536:
         raise ValueError(f"{p} holds no panel port and token")
     return port, token
+
+
+def console_get_state(port, token, timeout):
+    """GET /state of a console's panel on 127.0.0.1. Returns (status, reply dict); raises OSError/ValueError."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("GET", "/state?" + urllib.parse.urlencode({"t": token}))
+        r = conn.getresponse()
+        status, raw = r.status, r.read(4 * 1024 * 1024)
+    finally:
+        conn.close()
+    obj = json.loads(raw or b"{}")
+    return status, sanitize(obj if isinstance(obj, dict) else {})
 
 
 def console_post(port, token, body, timeout):
@@ -663,6 +677,40 @@ class Deploy:
         self.audit("estop", operator=operator, ok=out["ok"], targets=rows)
         return out
 
+    def heartbeat(self):
+        """Each cached console's heartbeat on the direct path (its panel's /state, not the deploy service):
+        console_age_s = now - console_t_mono (one host, one monotonic clock). The page says CONSOLE NOT RESPONDING
+        above 1 s, the E-STOP's own path being the one that is late."""
+        targets = self.consoles.snapshot()
+        rows = [None] * len(targets)
+
+        def one(i, target):
+            row = {"slot": target["slot"], "name": target["name"], "ok": False, "console_age_s": None,
+                   "latency_ms": None, "error": target.get("error")}
+            if target.get("token") and target.get("port"):
+                t0 = time.monotonic()
+                try:
+                    status, state = console_get_state(target["port"], target["token"], HEARTBEAT_TIMEOUT_S)
+                    t_mono = state.get("console_t_mono")
+                    ok_t = isinstance(t_mono, (int, float)) and not isinstance(t_mono, bool)
+                    row.update(ok=status == 200 and ok_t, error=None if status == 200 and ok_t else
+                               f"the console answered {status}" + ("" if ok_t else " without console_t_mono"),
+                               console_age_s=round(time.monotonic() - t_mono, 3) if ok_t else None)
+                except (OSError, ValueError, http.client.HTTPException) as error:
+                    row["error"] = f"{type(error).__name__}: {error}"[:200]
+                row["latency_ms"] = round(1000 * (time.monotonic() - t0), 1)
+            rows[i] = row
+
+        threads = [threading.Thread(target=one, args=(i, t), daemon=True) for i, t in enumerate(targets)]
+        for th in threads:
+            th.start()
+        deadline = time.monotonic() + HEARTBEAT_TIMEOUT_S + 0.2
+        for th in threads:
+            th.join(max(0.0, deadline - time.monotonic()))
+        rows = [r or {"slot": t["slot"], "name": t["name"], "ok": False, "console_age_s": None, "latency_ms": None,
+                      "error": f"no reply within {HEARTBEAT_TIMEOUT_S:.1f} s"} for r, t in zip(rows, targets)]
+        return {"targets": rows, "t": round(time.time(), 3)}
+
     def direct(self, document):
         """Stand (h) or Takeover (t) to one live console, on the E-STOP's path (no deploy service, no lease)."""
         slot, act = document.get("slot"), document.get("act")
@@ -694,9 +742,9 @@ class Deploy:
                 self.refresh_state(timeout=STATE_TIMEOUT_S)
             except DeployError:
                 pass
-        age = self.consoles.age()
-        fresh = age is not None and age <= max_age_s + STATE_TIMEOUT_S
-        basis = ("deploy service" if fresh else "last known (the deploy service is not reachable)"
+        with self.consoles.lock:
+            answered = self.consoles.state_ok is not None and self.consoles.state_error is None
+        basis = ("deploy service" if answered else "last known (the deploy service is not reachable)"
                  if self.consoles.ever_ok else "none known")
         return {"targets": self.consoles.snapshot(), "basis": basis}
 
