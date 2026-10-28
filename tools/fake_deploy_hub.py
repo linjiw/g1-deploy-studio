@@ -366,8 +366,10 @@ class FakeConsole:
     def _close(self, outcome):
         if self.attempts and self.attempts[-1]["outcome"] is None:
             a = self.attempts[-1]
-            a.update(outcome=outcome, t_end=round(self.t(), 2), end_odom=self.pose_odom(),
-                     final_dist_m=round(float(np.hypot(*(self.goal_odom - self.pose_odom()[:2]))), 2))
+            dist = round(float(np.hypot(*(self.goal_odom - self.pose_odom()[:2]))), 2)
+            # the console's own field names (g1deploy/attempts.py: result, end_goal_dist_m) beside the older ones
+            a.update(outcome=outcome, result=outcome, t_end=round(self.t(), 2), end_odom=self.pose_odom(),
+                     final_dist_m=dist, end_goal_dist_m=dist)
 
     # -- the robot
     def loop(self):

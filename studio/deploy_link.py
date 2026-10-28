@@ -462,7 +462,12 @@ class Deploy:
             if isinstance(obj, dict):
                 obj = dict(obj, studio=self.link_status())
             return status, obj
-        return self.link.get(route, query)
+        status, obj = self.link.get(route, query)
+        if status in (404, 502) and route in ("/api/deploy/live", "/api/deploy/panel", "/api/deploy/rehearsal/track"):
+            # a slot that just ended (404), a console still starting (502), a run not started yet: an answer, not an
+            # error (the page polls it until the state changes)
+            return 200, dict(obj if isinstance(obj, dict) else {}, ok=False, ended=status == 404, starting=status == 502)
+        return status, obj
 
     # -- the operator lease
     def _live_lease(self):

@@ -43,10 +43,10 @@ export const S = {
   ctx: null, visible: false, step: store.get('step', 'connect'),
   state: null, stateAt: 0, stateOk: null, everOk: false, stateError: null, cachedLive: false,
   readiness: null, mode: store.get('mode', 'practice'), operator: store.get('operator', ''), profile: store.get('profile', null),
-  odom: store.get('odom', null), seconds: 8, scanName: store.get('scan', null), scene: null, sceneLoading: null,
+  odom: store.get('odom', null), seconds: 8, room: store.get('room', null), scanName: store.get('scan', null), scene: null, sceneLoading: null,
   pendingScan: null, scanLive: null,
   goal: null, hover: null, pickToken: 0,
-  rehearsalName: null, tracks: null, tracksFor: null, timeline: { t: 0, playing: false, duration: 0, raf: 0 },
+  rehearsalName: null, tracks: null, tracksFor: null, tracksSet: null, timeline: { t: 0, playing: false, duration: 0, raf: 0 },
   view: null, viewAt: -Infinity, viewSlot: null, viewStaleUntilFresh: false, cursors: { cloud: -1, mem: -1 }, panel: null, panelAt: 0,
   lease: { id: null, holder: null, until: 0, supported: null, lost: null, conflict: null },
   estop: { state: null, targets: [], t0: 0, error: null },
@@ -119,7 +119,8 @@ const profiles = () => {
 };
 const profileName = () => S.profile ?? st().default_profile ?? profiles()[0]?.name ?? null;
 const profileLabel = name => profiles().find(p => p.name === name)?.label ?? name ?? 'Unavailable';
-const odomName = () => S.odom ?? (st().robot_link?.lio_bridge ? 'fused' : 'leg');
+// FAST-LIO + legs by default: always in Practice (the simulator stands in for FAST-LIO), on the robot when its bridge runs
+const odomName = () => S.odom ?? (!isRobot() || st().robot_link?.lio_bridge ? 'fused' : 'leg');
 const isRobot = () => S.mode === 'robot';
 const holdsLease = () => S.lease.supported === false ? !!S.operator.trim() : !!S.lease.id && !S.lease.lost;
 function goalStatus(check = S.goal?.check) {
@@ -143,7 +144,9 @@ function liveAge() {
 }
 const liveState = () => { const a = liveAge(); return a > LOST_S ? 'lost' : a > STALE_S ? 'stale' : 'fresh'; };
 const walking = () => ['PRESCAN', 'RUN'].includes(S.panel?.phase ?? S.view?.phase);
-const panelAttempts = () => (Array.isArray(S.panel?.attempts) ? S.panel.attempts : []);
+// The console's attempt rows (g1deploy/attempts.py) say `result` and `end_goal_dist_m`; the page reads outcome / final_dist_m.
+const attemptRow = a => ({ ...a, outcome: a.outcome ?? a.result ?? null, final_dist_m: a.final_dist_m ?? a.end_goal_dist_m ?? null });
+const panelAttempts = () => (Array.isArray(S.panel?.attempts) ? S.panel.attempts.map(attemptRow) : []);
 
 function stepState(id) {
   const sess = session();
@@ -205,8 +208,12 @@ function onState(before, wasScanning) {
   if (S.pendingScan) {
     if (st().scan_job?.running) S.pendingSeen = true;
     else if (S.pendingSeen || performance.now() - (S.pendingScanAt ?? 0) > 3000) {
-      const name = S.pendingScan; S.pendingScan = null; S.pendingSeen = false; S.scanLive = null;
-      if (scanRow(name)) { S.scene = null; selectScan(name, true); }
+      // The job has ended; the hub lists the new scan on its next state (1 Hz). Wait for it, or for the job's error.
+      const name = S.pendingScan, job = st().scan_job ?? {}, waited = performance.now() - (S.pendingScanAt ?? 0);
+      const done = () => { S.pendingScan = null; S.pendingSeen = false; S.scanLive = null; };
+      if (scanRow(name)) { done(); S.scene = null; selectScan(name, true); }
+      else if (job.error && (!job.name || job.name === name)) { done(); S.notice = { kind: 'warning', text: `The scan failed: ${job.error}` }; }
+      else if (waited > 240000) { done(); S.notice = { kind: 'warning', text: `The scan ${name} did not appear in the deploy service's list` }; }
     }
   }
   // Session started or ended.
@@ -219,8 +226,11 @@ function onState(before, wasScanning) {
   if (!viewSlot() && S.view) { S.view = null; d3.clearLive(); }
   // A rehearsal set finished: load its tracks.
   const rec = rehearsalFor();
-  if (rec?.verdict && S.tracksFor !== rec.name) loadTracks(rec);
-  if (!rec && S.tracksFor) { S.tracksFor = null; S.tracks = null; d3.setRehearsal(null); }
+  // the set's runs finish one by one (the verdict comes with exact + drift; the start-offset run is last): reload the
+  // ghosts each time another run has a result
+  const tracksKey = rec ? `${rec.name}:${Object.values(rec.results ?? {}).filter(Boolean).length}:${rec.running ? 1 : 0}` : null;
+  if (rec?.verdict && S.tracksFor !== tracksKey) loadTracks(rec, tracksKey);
+  if (!rec && S.tracksFor) { S.tracksFor = null; S.tracksSet = null; S.tracks = null; d3.setRehearsal(null); }
 }
 
 async function pollReadiness() {
@@ -276,7 +286,7 @@ async function pollPanel() {
   if (r.status === 404) { S.panelGone = { name: sess.name, at: performance.now() }; return; }
   if (!r.ok) return;
   S.panel = r.data; S.panelAt = performance.now();
-  if (Array.isArray(r.data.attempts)) S.attempts[sess.name] = r.data.attempts;
+  if (Array.isArray(r.data.attempts)) S.attempts[sess.name] = r.data.attempts.map(attemptRow);
   if (S.visible) { renderPanel(); renderHud(); renderTicker(); renderStrip(); }
 }
 
@@ -333,29 +343,41 @@ function expectNow(fields) {
 
 async function startScan() {
   const seconds = Math.max(3, Math.min(30, Number(S.seconds) || 8));
-  const body = isRobot() ? { seconds } : { seconds, ...(baseScan() ? { scan: baseScan() } : {}) };
+  const room = practiceRoom();
+  const body = isRobot() ? { seconds } : { seconds, ...(room?.startsWith('course:') ? { course: room.slice(7) } : room ? { scan: room.slice(5) } : {}) };
   const res = await act(isRobot() ? 'scan' : 'practice_scan', body, { slot: null });
   if (res.ok) { S.pendingScan = res.data.name ?? null; S.pendingScanAt = performance.now(); S.scanLive = null; pollers.scanLive.start(200); }
   S.notice = res.ok ? null : { kind: 'warning', text: `Scan refused: ${res.reason}` };
   renderAll();
 }
 const baseScan = () => scans().find(s => !s.practice && !s.name.startsWith('practice-'))?.name ?? S.scanName;
+// Practice rooms: the twin of each real scan (newest first), then the kit's built-in courses.
+function practiceRooms() {
+  const real = scans().filter(s => !s.practice && !s.name.startsWith('practice-'))
+    .map(s => ({ value: `scan:${s.name}`, label: `Twin of ${scanLabel(s)}` }));
+  const courses = (st().courses ?? []).map(c => ({ value: `course:${c}`, label: `Course · ${c}` }));
+  return [...real, ...courses];
+}
+function practiceRoom() {
+  const rooms = practiceRooms();
+  return rooms.find(r => r.value === S.room)?.value ?? rooms[0]?.value ?? null;
+}
 
 async function runRehearsal() {
   const res = await act('rehearse', { scan: S.scanName, goal_scene: S.goal.xy, profile: profileName(), odom: odomName() }, { slot: null });
   S.notice = res.ok ? null : { kind: 'warning', text: `Rehearsal refused: ${res.reason}` };
-  if (res.ok) { S.rehearsalName = res.data.name; S.tracks = null; S.tracksFor = null; d3.setRehearsal(null); }
+  if (res.ok) { S.rehearsalName = res.data.name; S.tracks = null; S.tracksFor = null; S.tracksSet = null; d3.setRehearsal(null); }
   pollState(); renderAll();
 }
-async function loadTracks(rec) {
-  S.tracksFor = rec.name;
+async function loadTracks(rec, key) {
+  S.tracksFor = key;
   const runs = rec.runs ?? {}, out = {};
   await Promise.all(Object.entries(runs).map(async ([which, name]) => {
     const r = await api(`/api/deploy/rehearsal/track?name=${encodeURIComponent(name)}`, { timeout: 6000 });
-    if (r.ok && !r.data.running) out[which] = r.data;
+    if (r.ok && r.data.ok !== false && !r.data.running && Array.isArray(r.data.qpos)) out[which] = r.data;
   }));
-  if (S.tracksFor !== rec.name) return;
-  S.tracks = out;
+  if (S.tracksFor !== key) return;
+  S.tracks = out; S.tracksSet = rec.name;
   const duration = await d3.setRehearsal(out);
   S.timeline = { ...S.timeline, t: duration, duration, playing: false };
   applyContext(); d3.setScanPoseRobot(!S.view && !S.scanLive?.running);
@@ -528,7 +550,7 @@ function setStep(id, { frame = true } = {}) {
   renderAll();
   if (frame && changed) frameStep();
 }
-function applyContext() { d3.applyVisibility({ step: S.step, tracksShown: !!S.tracks && S.tracksFor === rehearsalFor()?.name }); d3.setRehearsalTime(S.timeline.t); }
+function applyContext() { d3.applyVisibility({ step: S.step, tracksShown: !!S.tracks && S.tracksSet === rehearsalFor()?.name }); d3.setRehearsalTime(S.timeline.t); }
 // Frame what matters for this step: the robot, the goal and the seen map. The camera mode is never changed.
 function frameStep(instant = false) {
   // Live and not yet aligned: the robot's own frame, where the scan's goal does not belong.
@@ -583,7 +605,12 @@ const VERDICT = {
 };
 function verdictText(rec) {
   if (!rec?.verdict) return null;
-  const [tone, title, fn] = VERDICT[rec.verdict] ?? ['warn', rec.verdict, () => ''];
+  let [tone, title, fn] = VERDICT[rec.verdict] ?? ['warn', rec.verdict, () => ''];
+  // the drift run carries the error of the robot's LEG odometry: on FAST-LIO (+ legs) it is a caution, not a verdict
+  if (rec.verdict === 'fails with drift' && ['fused', 'zmq'].includes(odomName())) {
+    tone = 'warn'; title = 'Fails with leg-odometry drift';
+    fn = () => 'Only the exact run arrived. With leg odometry this goal would fail; this walk uses FAST-LIO + legs, which tracks within a few centimetres. Watch the first walk closely.';
+  }
   const offset = rec.offset_ok === true ? 'A start 20° right / 0.2 m off still arrives.' : rec.offset_ok === false ? 'A start 20° right / 0.2 m off does not arrive: line the robot up with its scan pose.' : '';
   return { tone, title, text: `${fn(rec)} ${offset}`.trim() };
 }
@@ -774,9 +801,10 @@ function scanBody() {
       ${scanning ? `<div class="dp-progress"><div class="progress"><i style="width:${Math.min(100, ((live?.t ?? 0) / S.seconds) * 100)}%"></i></div><p class="tiny">${num(live?.t, 1)} s · ${live?.n_frames ?? 0} lidar frames · the map grows in 3D as points arrive</p></div>` : ''}
       <label class="field"><span>Scan</span><select id="dp-scan" ${scanning ? 'disabled' : ''}>${list.map(s => `<option value="${escape(s.name)}" ${s.name === S.scanName ? 'selected' : ''}>${escape(scanLabel(s))}</option>`).join('') || '<option>No scans yet</option>'}</select></label>
       ${row ? `<div class="dp-verdict ${verdictTone}">${statusIcon(verdictTone)}<div><strong>${escape(sc?.verdict ?? row.verdict ?? 'Unavailable')}</strong><span>${escape(ago(row.age_s))}${row.walked_since ? ' · walked since' : ''}${sc?.frames ? ` · ${sc.frames} frames` : ''}</span></div></div>
-        <ul class="dp-reasons">${(sc?.reasons ?? row.reasons ?? []).map(r => `<li>${escape(r)}</li>`).join('') || '<li>No reasons recorded</li>'}</ul>` : '<p class="tiny">No scan on this deploy PC yet.</p>'}
+        <ul class="dp-reasons">${(sc?.reasons ?? row.reasons ?? []).map(r => `<li>${escape(r)}</li>`).join('') || '<li>Nothing flagged around the robot</li>'}</ul>` : '<p class="tiny">No scan on this deploy PC yet.</p>'}
       ${stale ? `<div class="callout warning">Stale: ${escape(stale)}. Rescan before a robot session.</div>` : ''}
       ${counts ? `<div class="dp-counts"><span><i class="sw-ob"></i><b>${counts.obstacles}</b> obstacle cells</span><span><i class="sw-st"></i><b>${counts.steps}</b> step-over</span><span><i class="sw-oh"></i><b>${counts.overheads}</b> overhead</span></div>` : ''}
+      ${isRobot() ? '' : `<label class="field"><span>Practice room</span><select id="dp-room" ${scanning ? 'disabled' : ''}>${practiceRooms().map(r => `<option value="${escape(r.value)}" ${r.value === practiceRoom() ? 'selected' : ''}>${escape(r.label)}</option>`).join('') || '<option>No rooms</option>'}</select><span class="tiny">A practice scan stands the simulated robot in this room and scans it like the robot does.</span></label>`}
       <label class="field narrow"><span>Seconds</span><input id="dp-seconds" type="number" min="3" max="30" step="1" value="${S.seconds}"></label>`,
     primary,
     secondary: row && !stale && !scanning ? `<button class="dp-secondary" data-action="scan" ${locked || S.busy ? 'disabled' : ''}>Rescan (${S.seconds} s)</button>` : '',
@@ -820,7 +848,7 @@ function rehearseBody() {
   else if (sess?.slot === 'sim') locked = 'End the practice session first: rehearsals use the simulator slot';
   else if (robotWalking) locked = 'The robot is walking';
   else if (finite(gpu.free_mib) && finite(gpu.rehearsal_mib) && gpu.free_mib < gpu.rehearsal_mib) locked = `The GPU has ${(gpu.free_mib / 1024).toFixed(1)} GB free; a rehearsal needs ${(gpu.rehearsal_mib / 1024).toFixed(1)} GB`;
-  const v = verdictText(rec), tracks = S.tracksFor === rec?.name ? S.tracks : null;
+  const v = verdictText(rec), tracks = S.tracksSet === rec?.name ? S.tracks : null;
   const primary = rec?.verdict ? { label: 'Next: deploy', action: 'step:deploy', locked: v?.tone === 'block' ? null : null }
     : { label: rec?.running || running ? 'Rehearsing…' : 'Rehearse 3 runs (about 1-2 min)', action: 'rehearse', locked: rec?.running ? 'Running: the robots appear on the timeline when the runs end' : locked, busyText: 'Starting…' };
   return {
@@ -871,6 +899,8 @@ function ladderRows() {
     else if (r.key === 'goal' && !goalUsable()) lock = S.goal ? 'The goal is not checked on this scan (Goal)' : 'Pick a goal first (Goal)';
     else if (r.key === 'map' && cleared > 0) lock = `Rescanning: ${Math.ceil(cleared)} s`;
     else if (['sonic', 'map'].includes(r.key) && (p?.phase === 'BOOT' || !p?.phase)) lock = 'The planner node is starting (about 3-20 s after Arm)';
+    // the runner ramps the robot to its stand for about 25 s after Arm; the console refuses Start SONIC until INIT done
+    else if (r.key === 'sonic' && p?.runner !== 'INIT done' && p?.runner !== 'CONTROL') lock = 'The runner is ramping the robot to its stand (about 25 s after Arm)';
     return { ...r, state: l.state ?? 'todo', detail: l.detail, lock };
   });
 }
@@ -976,6 +1006,7 @@ function bindPanel(root) {
   root.querySelector('#dp-profile')?.addEventListener('change', e => { S.profile = e.target.value; store.set('profile', S.profile); renderAll(); });
   root.querySelector('#dp-odom')?.addEventListener('change', e => { S.odom = e.target.value; store.set('odom', S.odom); renderAll(); });
   root.querySelector('#dp-scan')?.addEventListener('change', e => selectScan(e.target.value));
+  root.querySelector('#dp-room')?.addEventListener('change', e => { S.room = e.target.value; store.set('room', S.room); renderPanel(true); });
   root.querySelector('#dp-seconds')?.addEventListener('change', e => { S.seconds = Math.max(3, Math.min(30, Number(e.target.value) || 8)); renderPanel(true); });
   root.querySelector('#dp-review')?.addEventListener('change', e => { S.reviewName = e.target.value; renderPanel(true); });
   root.querySelectorAll('[data-tag]').forEach(b => b.addEventListener('click', () => { const d = S.tagDraft[b.dataset.n] ??= {}; d.tag = b.dataset.tag; d.result = null; renderPanel(true); }));
@@ -1128,7 +1159,7 @@ function renderHud() {
     hudItem('Tilt', val(v.tilt_rad, x => `${(x * 180 / Math.PI).toFixed(1)}<em>°</em>`), finite(v.tilt_rad) && v.tilt_rad > 0.35 ? 'bad' : ''),
     hudItem('Plan latency', val(v.latency_s, x => `${Math.round(x * 1000)}<em>ms</em>`), finite(v.latency_s) && v.latency_s > 0.3 ? 'warn' : ''),
     hudItem('Odometry', val(odomText, x => escape(x)), odomTone),
-    hudItem('Remote', val(p?.remote ? (p.remote.connected ? 'connected' : 'NOT CONNECTED') : null, x => escape(x)), p?.remote && !p.remote.connected ? 'bad' : ''),
+    hudItem('Remote', !isRobot() ? '<span class="muted">not used in practice</span>' : val(p?.remote ? (p.remote.connected ? 'connected' : 'NOT CONNECTED') : null, x => escape(x)), isRobot() && p?.remote && !p.remote.connected ? 'bad' : ''),
     hudItem('Motors', val(temp, x => `${x.toFixed(0)}<em>°C</em>${finite(sonic) ? `<small>${Math.floor(sonic / 60)} min on SONIC${sonic > SONIC_LONG_S ? ' · end the session between tries' : ''}</small>` : ''}`), finite(temp) && temp > 70 ? 'bad' : finite(temp) && temp > 60 || sonic > SONIC_LONG_S ? 'warn' : ''),
     isRobot() ? hudItem('Lidar', val(lidar, x => `${x.toFixed(1)}<em>Hz</em>`), finite(lidar) && lidar < 8 ? 'warn' : '') : '',
   ].join('');
@@ -1143,7 +1174,7 @@ function renderTicker() {
 }
 function renderTimeline() {
   const el = $('dp-timeline'); if (!el) return;
-  const show = S.step === 'rehearse' && S.tracks && S.tracksFor === rehearsalFor()?.name && S.timeline.duration > 0;
+  const show = S.step === 'rehearse' && S.tracks && S.tracksSet === rehearsalFor()?.name && S.timeline.duration > 0;
   el.hidden = !show;
   if (!show) return;
   const t = S.timeline;
