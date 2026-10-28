@@ -287,18 +287,29 @@ try {
   await shot('16-go-sheet');
   await page.click('#dp-sheet-ok');
   await until('the walk', s => s.phase === 'RUN', 15000, 150);
-  await page.waitForTimeout(1600);
-  await shot('17-walking', { narrow: true });
-  const walk = await page.evaluate(() => ({ hud: document.querySelectorAll('#dp-hud .dp-hud-item').length, lidar: window.__deploy.d3.ring.counts }));
+  await page.waitForTimeout(1200);
+  const walk = await page.evaluate(() => ({ hud: document.querySelectorAll('#dp-hud .dp-hud-item').length, lidar: window.__deploy.d3.ring.counts,
+    driving: document.querySelector('#dp-hud .dp-hud-item.big strong')?.textContent, ticker: document.getElementById('dp-ticker').textContent }));
   assert.ok(walk.hud >= 8, `the HUD shows the live values (${walk.hud})`);
+  assert.equal(walk.driving, 'Policy walking', 'Driving in plain words');
+  assert.doesNotMatch(walk.ticker, /studio:\s*\w+\s+ok/, 'the ticker hides Studio\'s own echoes');
+  await shot('17-walking', { narrow: true });
   assert.ok(walk.lidar[1] > 0 && walk.lidar[2] > 0, `self-filtered and rear-blind points are drawn (dimmed): ${walk.lidar}`);
   await until('arrival', s => s.attempts.at(-1)?.outcome === 'arrived', 60000, 300);
+  // After a walk: the tag card first, in sight; the primary saves the tag, then picks the next goal.
   step('tag');
-  await page.waitForSelector('.dp-tagcard');
+  await page.waitForSelector('.dp-tagcard.first');
+  await page.waitForTimeout(400);
+  const after = await page.evaluate(() => ({ first: document.querySelector('.dp-body > *')?.classList.contains('dp-tagcard'), top: document.querySelector('.dp-body').scrollTop }));
+  assert.ok(after.first && after.top === 0, `the tag card is at the top of the panel: ${JSON.stringify(after)}`);
+  assert.match(await primaryText(), /Save tag/); assert.ok(await primary().isDisabled(), 'Save tag waits for a tag');
+  await shot('18a-arrived');
   await page.locator('.dp-tagcard [data-tag="clean"]').click();
   await page.locator('.dp-tagcard input[data-note]').fill('first practice walk, through the gap');
-  await page.locator('.dp-tagcard [data-action^="tag:"]').click();
+  await primary().click();
   await until('the tag', s => s.attempts.at(-1)?.tag === 'clean', 10000);
+  await until('Pick the next goal', async () => /Pick the next goal/.test(await primaryText()), 5000);
+  assert.equal(await page.locator('.dp-foot [data-action="send-goal"]').count(), 1, 'Send this goal again is the secondary');
   await shot('18-arrived-tagged');
 
   // ------------------------------------------------------------------ E-STOP during a second walk
@@ -315,7 +326,12 @@ try {
   await until('Send goal 2', async () => /Send goal/.test(await primaryText()) && !(await primary().isDisabled()), 15000);
   await primary().click();
   await until('GO 2', async () => /GO/.test(await primaryText()) && !(await primary().isDisabled()), 15000);
-  await primary().click(); await page.waitForSelector('.dp-sheet'); await page.click('#dp-sheet-ok');
+  await primary().click(); await page.waitForSelector('.dp-sheet');
+  // Goal 2 was never rehearsed: the GO sheet says so in amber instead of a green all-clear.
+  assert.match(await page.locator('.dp-sheet .dp-caution').textContent(), /No console lock, but:.*no rehearsal/s);
+  assert.equal(await page.locator('.dp-sheet .tiny.ok').count(), 0, 'no green all-clear beside a caution');
+  await shot('19-go2-caution');
+  await page.click('#dp-sheet-ok');
   await until('walk 2', s => s.phase === 'RUN', 15000, 100);
   await page.waitForTimeout(700);
   await page.click('#dp-estop');
@@ -357,14 +373,26 @@ try {
   step('lost');
   outage = true; stopHub();
   await page.waitForTimeout(4200);
-  const lost = await page.evaluate(() => ({ banner: document.getElementById('dp-banners').textContent, hud: document.getElementById('dp-hud').textContent,
-    bar: !document.getElementById('deploy-estop').hidden, lost: window.__deploy.d3.lost, label: window.__deploy.d3.lastSeenText,
-    primary: document.getElementById('dp-primary')?.disabled }));
-  assert.match(lost.banner, /LIVE VIEW LOST — the robot may still be walking/);
+  const lost = await page.evaluate(() => ({ bottom: document.getElementById('dp-lost').textContent, banners: document.getElementById('dp-banners').textContent,
+    stage: document.getElementById('deploy-stage').hasAttribute('data-lost'), title: document.querySelector('.dp-head h2').textContent,
+    lead: document.querySelector('.dp-head p').textContent, service: !!document.querySelector('.dp-top-callout'),
+    hud: document.getElementById('dp-hud').textContent, bar: !document.getElementById('deploy-estop').hidden, lost: window.__deploy.d3.lost,
+    label: window.__deploy.d3.lastSeenText }));
+  // One banner, at the bottom; the service error in the panel; the robot where it was last seen, with its age.
+  assert.match(lost.bottom, /LIVE VIEW LOST \d+ s — the robot may still be walking/);
+  assert.doesNotMatch(lost.banners, /LIVE VIEW LOST|does not answer/, 'no stacked banners over the stage');
+  assert.ok(lost.stage && lost.service && lost.title === 'Live view lost' && /last seen \d+ s ago/.test(lost.lead), JSON.stringify(lost));
   assert.match(lost.hud, /s old/, 'the HUD shows ages, never old numbers as live');
-  assert.ok(lost.bar && lost.lost && /LAST SEEN/.test(lost.label ?? ''), JSON.stringify(lost));
+  assert.ok(lost.bar && lost.lost && /Last seen \d+ s ago/.test(lost.label ?? ''), JSON.stringify(lost));
   assert.equal(await page.locator('#dp-estop').isDisabled(), false, 'E-STOP stays live');
   await shot('21-live-view-lost', { narrow: true });
+  // E-STOP with the consoles gone: red NOT DELIVERED at once, never SENT; the raw error only in the tooltip.
+  step('estop-undelivered');
+  await page.click('#dp-estop');
+  await page.waitForFunction(() => ['undelivered', 'failed'].includes(document.getElementById('dpe-status').dataset.state), null, { timeout: 2500 });
+  const pill = await page.evaluate(() => { const e = document.getElementById('dpe-status'); return { text: e.textContent, title: e.title }; });
+  assert.match(pill.text, /^NOT DELIVERED.*use the physical E-stop/); assert.doesNotMatch(pill.text, /SENT|Errno|Error/);
+  await shot('21b-estop-not-delivered');
   step('recover');
   await startHub();
   await page.waitForFunction(() => window.__deploy.S.stateOk === true && document.getElementById('deploy-estop').hidden, null, { timeout: 20000 });
@@ -377,6 +405,18 @@ try {
   await page.click('[data-mode="robot"]');
   assert.equal(await page.locator('[data-mode="robot"]').getAttribute('aria-pressed'), 'true');
   await page.click('[data-step="deploy"]');
+  // A Link block on the robot (the lidar silent) locks Start robot session with its words, and heads the panel.
+  const readinessRoute = url => url.pathname === '/api/deploy/readiness';
+  await page.route(readinessRoute, async route => {
+    const res = await route.fetch(), body = await res.json();
+    body.checks = body.checks.map(c => c.id === 'lidar' ? { ...c, status: 'block', detail: 'driver running, no frames for 12 s', fix: { hint: 'g1 lidar start' } } : c);
+    await route.fulfill({ response: res, json: body });
+  });
+  await until('the lidar block', async () => /Lidar publishing/.test(await lockText()), 10000);
+  assert.ok(await primary().isDisabled());
+  assert.match(await page.locator('.dp-block-line').textContent(), /Lidar publishing — driver running, no frames for 12 s · g1 lidar start/);
+  await shot('22b-robot-blocked-lidar');
+  await page.unroute(readinessRoute);
   await until('Start robot session', async () => /Start robot session/.test(await primaryText()) && !(await primary().isDisabled()), 15000);
   await primary().click(); await page.waitForSelector('.dp-sheet[data-tone="robot"]');
   for (const box of await page.locator('.dp-sheet [data-confirm]').all()) await box.check();
@@ -387,6 +427,20 @@ try {
   await until('arm (robot)', s => s.ladder.arm === 'now');
   await primary().click(); await page.waitForSelector('.dp-sheet[data-tone="robot"]');
   await shot('24-robot-arm-sheet', { narrow: true });
+  await page.locator('.dp-sheet [data-armed]').check(); await page.click('#dp-sheet-ok');
+  await until('WAIT (robot)', s => s.phase === 'WAIT', 20000);
+  await until('SONIC (robot)', async () => /Start SONIC/.test(await primaryText()) && !(await primary().isDisabled()), 10000); await primary().click();
+  await until('Clear map (robot)', async () => /Clear map/.test(await primaryText()) && !(await primary().isDisabled()), 10000); await primary().click();
+  await until('rescan (robot)', s => s.ladder.map === 'done', 20000, 500);
+  // The goal now sits on the robot's scan, where it was never rehearsed: GO needs one acknowledgement tick.
+  await until('Send goal (robot)', async () => /Send goal/.test(await primaryText()) && !(await primary().isDisabled()), 15000); await primary().click();
+  await until('GO (robot)', async () => /GO/.test(await primaryText()) && !(await primary().isDisabled()), 15000);
+  await primary().click(); await page.waitForSelector('.dp-sheet[data-tone="robot"][data-caution]');
+  assert.ok(await page.locator('#dp-sheet-ok').isDisabled(), 'GO waits for the acknowledgement tick');
+  assert.match(await page.locator('.dp-sheet .dp-lock').textContent(), /Tick the line above/);
+  await shot('24b-robot-go-caution', { narrow: true });
+  await page.locator('.dp-sheet [data-ack]').check();
+  assert.equal(await page.locator('#dp-sheet-ok').isDisabled(), false, 'the tick enables GO');
   await page.click('#dp-sheet-cancel');
   allowed.push({ status: 404, path: '/api/deploy/live' }, { status: 404, path: '/api/deploy/panel' });
   await page.click('[data-action="sheet:end"]'); await page.waitForSelector('.dp-sheet'); await page.click('#dp-sheet-ok');

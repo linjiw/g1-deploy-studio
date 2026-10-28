@@ -668,6 +668,10 @@ class FakeHub:
                "scene_from_odom": [round(v, 5) for v in inverse(c.odom_from_scene)], "moved_m": round(moved, 3),
                "turned_deg": round(math.degrees(q[2]), 1), "at": time.time(), "warn": moved > 0.1 or abs(q[2]) > 0.087,
                "within_offset_envelope": moved <= 0.25 and abs(math.degrees(q[2])) <= 25, "scan": scan}
+        # as the kit (hub.start_check): the envelope covers the first walk from the scan pose; after a walk, None
+        chk["closed_attempts"] = sum(1 for a in c.attempts if a.get("outcome") is not None)
+        if chk["closed_attempts"]:
+            chk["within_offset_envelope"] = None
         self.last_check[slot] = chk
         return chk
 

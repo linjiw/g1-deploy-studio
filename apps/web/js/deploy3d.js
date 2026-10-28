@@ -19,7 +19,7 @@ export const COLORS = {
   floor: [214, 230, 237], step: 0xf2c25c, obstacleLow: 0xf09a52, obstacleHigh: 0xa9503f, overhead: 0x9d7cc9, overheadLow: 0x6f47bd,
   pointLow: 0x8fb8e8, pointHigh: 0x1f4fa8, pointFloor: 0xc3cdd6, selfFiltered: 0xb9c2cb, rearBlind: 0xc6b2e6,
   route: C.travelled, goal: C.goal, gap: 0x2f74d0, block: C.red, pass: C.green, warn: 0xe0a030, pending: hex(UI.faint),
-  exact: 0x0f9e94, drift: 0xe0a030, offset: 0x8a63d2, plan: C.future, scanGhost: 0x55657a, lost: 0x9aa3ad, walked: 0x2a333d,
+  exact: 0x3d6fb5, drift: 0xc2408f, offset: 0x7d8794, plan: C.future, scanGhost: 0x55657a, lost: 0x9aa3ad, walked: 0x2a333d,
 };
 export const STEP_OVER_M = 0.25, FLOOR_M = 0.05, HEAD_CLEAR_M = 1.35, ROBOT_DISC_M = 0.30, ROUTE_MARGIN_M = 0.35;
 const RING = 8, RING_CAP = 6000, FADE_S = 1.5;
@@ -181,7 +181,7 @@ class MemoryLayer {
       const k = i * ny + j, code = support[k], t = (j * nx + i) * 4;  // texel row j along +y, column i along +x
       if (code === 255) { data[t + 3] = 0; continue; }
       const h = code * 0.02;
-      if (near && near[k]) { data[t] = 236; data[t + 1] = 112; data[t + 2] = 100; data[t + 3] = 255; nearCount++; }   // near-body returns: red
+      if (near && near[k]) { data[t] = 212; data[t + 1] = 172; data[t + 2] = 186; data[t + 3] = 255; nearCount++; }   // near-body returns (ignored): pink-grey
       else { data[t] = COLORS.floor[0]; data[t + 1] = COLORS.floor[1]; data[t + 2] = COLORS.floor[2]; data[t + 3] = 235; }
       if (h >= STEP_OVER_M) obstacles++; else if (h >= FLOOR_M) steps++;
       if (ceiling && ceiling[k] !== 255) overheads++;
@@ -413,7 +413,7 @@ function standQpos(x = 0, y = 0, yaw = 0) {
 
 // ------------------------------------------------------------------------------------------------ labels
 function tag(text, color, at, group) {
-  const s = makeLabel(text, color); s.position.set(at[0], at[1], at[2] ?? 1.75); s.center.set(0.5, 0); group.add(s); return s;
+  const s = makeLabel(text, color, { raw: true }); s.position.set(at[0], at[1], at[2] ?? 1.75); s.center.set(0.5, 0); group.add(s); return s;
 }
 function disposeLabel(s) { if (!s) return; s.material.map?.dispose(); s.material.dispose(); s.parent?.remove(s); }
 
@@ -537,7 +537,7 @@ export const isAligned = () => D.aligned;
 export const liveCounts = () => D.liveMem.counts ?? null;
 
 // LIVE VIEW LOST: the robot greyed and frozen where it was last seen, with its age at the robot.
-const lostMaterial = new THREE.MeshStandardMaterial({ color: COLORS.lost, transparent: true, opacity: 0.45, depthWrite: false, roughness: 0.9 });
+const lostMaterial = new THREE.MeshStandardMaterial({ color: 0x3a4553, transparent: true, opacity: 0.8, roughness: 0.85 });
 export function setLost(lost, ageS = null) {
   init();
   D.lost = lost;
@@ -548,11 +548,16 @@ export function setLost(lost, ageS = null) {
     else if (o.userData.material) { o.material = o.userData.material; o.userData.material = null; }
   });
   for (const role of ['plan1', 'plan2']) if (lost) show(role, false);
-  const text = lost && ageS !== null ? `LAST SEEN ${ageS.toFixed(1)} S AGO` : null;
+  const text = lost && ageS !== null ? `Last seen ${Math.round(ageS)} s ago` : null;
   if (text !== D.lastSeenText) {
     D.lastSeenText = text; disposeLabel(D.lostLabel); D.lostLabel = null;
     if (text && D.liveOdomPose) D.lostLabel = tag(text, C.red, [D.liveOdomPose[0], D.liveOdomPose[1], 1.62], D.liveGroup);
   }
+  if (lost && !D.lostRing && D.liveOdomPose) {
+    D.lostRing = new THREE.Group();
+    D.lostRing.add(flatRing(0.42, 0.5, C.red, 0.9, 0.03), flatDisc(0.42, C.red, 0.12, 0.028));
+    D.lostRing.position.set(D.liveOdomPose[0], D.liveOdomPose[1], 0); D.liveGroup.add(D.lostRing);
+  } else if (!lost && D.lostRing) { disposeGroup(D.lostRing); D.liveGroup.remove(D.lostRing); D.lostRing = null; }
   markDirty();
 }
 
@@ -601,11 +606,11 @@ export function setGoal(goal) {
   disposeGroup(D.goalGroup);
   D.goal = goal;
   if (!goal?.xy) { markDirty(); return; }
-  const status = goal.status ?? 'pending', col = status === 'block' ? COLORS.block : status === 'pending' ? COLORS.pending : COLORS.goal;
+  const status = goal.status ?? 'pending', col = status === 'block' ? COLORS.block : status === 'pending' ? COLORS.pending : status === 'pass' ? COLORS.pass : COLORS.goal;
   const g = new THREE.Group(); g.position.set(goal.xy[0], goal.xy[1], 0);
   g.add(flatDisc(ROBOT_DISC_M, col, 0.2), flatRing(ROBOT_DISC_M - 0.03, ROBOT_DISC_M, col, 0.95, 0.024));
   const pole = polyline(col, 0.85, 2); setPolyline(pole, [[0, 0, 0.03], [0, 0, 0.62]]); g.add(pole);
-  tag(goal.label ?? 'GOAL', status === 'block' ? C.red : COLORS.goal, [0, 0, 0.66], g).name = 'goal-label';
+  tag(goal.label ?? 'Goal', col, [0, 0, 0.66], g).name = 'goal-label';
   D.goalGroup.add(g);
   const path = goal.path ?? [];
   if (path.length > 1) {
@@ -642,7 +647,7 @@ export function setGoal(goal) {
     }
     const bar = polyline(gc, 0.9, 2); setPolyline(bar, [[at[0] - n[0] * w, at[1] - n[1] * w, 1.0], [at[0] + n[0] * w, at[1] + n[1] * w, 1.0]]); gate.add(bar);
     const sill = polyline(gc, 0.9, 2); setPolyline(sill, [[at[0] - n[0] * w, at[1] - n[1] * w, 0.03], [at[0] + n[0] * w, at[1] + n[1] * w, 0.03]]); gate.add(sill);
-    tag(`GAP ${goal.gap.width_m.toFixed(2)} M`, gc, [at[0], at[1], 1.06], gate);
+    tag(`Gap ${goal.gap.width_m.toFixed(2)} m`, gc, [at[0], at[1], 1.06], gate);
     gate.name = 'gap-gate'; D.goalGroup.add(gate);
   }
   const blocks = goal.blocking ?? [];
@@ -674,19 +679,31 @@ export async function setRehearsal(tracks) {
     const end = tr.qpos.at(-1), start = tr.qpos[0];
     const endMark = flatRing(0.06, 0.1, COLORS[which], 0.95, 0.04); endMark.position.set(end[0], end[1], 0.04); D.rehearsalGroup.add(endMark);
     if (which === 'offset') { const s = flatRing(0.18, 0.22, COLORS.offset, 0.8, 0.03); s.position.set(start[0], start[1], 0.03); D.rehearsalGroup.add(s); }
+    const clusters = [];
     for (const c of tr.contacts ?? []) {
-      const sph = new THREE.Mesh(new THREE.SphereGeometry(0.06 + Math.min(0.1, (c.n ?? 0) / 1500), 16, 12), new THREE.MeshBasicMaterial({ color: C.red, transparent: true, opacity: 0.85 }));
-      sph.position.set(c.root_xy[0], c.root_xy[1], 0.5); sph.renderOrder = 7; D.rehearsalGroup.add(sph);
+      if (!Array.isArray(c.root_xy)) continue;
+      const near = clusters.find(k => Math.hypot(k.xy[0] - c.root_xy[0], k.xy[1] - c.root_xy[1]) < 0.3);
+      if (near) { if ((c.n ?? 0) > near.n) { near.n = c.n ?? 0; near.xy = c.root_xy; } } else clusters.push({ xy: c.root_xy, n: c.n ?? 0 });
+    }
+    for (const k of clusters) {
+      const sph = new THREE.Mesh(new THREE.SphereGeometry(0.07 + Math.min(0.08, k.n / 1500), 16, 12), new THREE.MeshBasicMaterial({ color: C.red, transparent: true, opacity: 0.85 }));
+      sph.position.set(k.xy[0], k.xy[1], 0.5); sph.renderOrder = 7; D.rehearsalGroup.add(sph);
     }
     if (tr.contacts?.length) {
       const worst = tr.contacts.reduce((a, b) => (b.n > a.n ? b : a));
-      tag(`CONTACT ${Math.round(worst.n)} N (AT THE ROBOT)`, C.red, [worst.root_xy[0], worst.root_xy[1], 1.0], D.rehearsalGroup);
+      tag(`${which} run: contact ${Math.round(worst.n)} N, at the robot`, C.red, [worst.root_xy[0], worst.root_xy[1], 1.0], D.rehearsalGroup);
     }
     await robot(which, D.rehearsalGroup);
     if (gen !== D.rehearsalGen) return 0;
   }
-  D.rehearsalDuration = duration;
-  setRehearsalTime(duration);
+  let firstMove = duration;
+  for (const tr of Object.values(tracks)) {
+    if (!tr?.qpos?.length) continue;
+    const q0 = tr.qpos[0], i = tr.qpos.findIndex(q => Math.hypot(q[0] - q0[0], q[1] - q0[1]) > 0.05);
+    if (i >= 0) firstMove = Math.min(firstMove, tr.t[i] ?? duration);
+  }
+  D.rehearsalDuration = duration; D.rehearsalFirstMove = firstMove;
+  setRehearsalTime(firstMove);
   return duration;
 }
 export function setRehearsalTime(t) {
@@ -703,6 +720,7 @@ export function setRehearsalTime(t) {
   markDirty();
 }
 export const rehearsalDuration = () => D.rehearsalDuration ?? 0;
+export const rehearsalFirstMove = () => D.rehearsalFirstMove ?? 0;
 
 // ------------------------------------------------------------------------------------------------ scan pose ghost
 // The robot where it stood for the scan (scene origin) vs the robot now: the moved/turned anchor.
@@ -711,7 +729,7 @@ export async function setScanGhost(visible, moved = null) {
   const r = await robot('scanGhost', D.sceneOnly);
   if (r) { poseRobot(r, standQpos(0, 0, 0), standNames ?? D.modelNames); r.root.visible = visible && D.layers.robot; }
   disposeLabel(D.ghostLabel); D.ghostLabel = null;
-  if (visible) D.ghostLabel = tag(moved ? `SCAN POSE · ROBOT NOW ${moved}` : 'WHERE THE ROBOT STOOD FOR THE SCAN', COLORS.scanGhost, [-0.05, 0, 1.62], D.sceneOnly);
+  if (visible) D.ghostLabel = tag(moved ? `Scan pose · start check: ${moved}` : 'Where the robot stood for the scan', COLORS.scanGhost, [-0.05, 0, 1.62], D.sceneOnly);
   markDirty();
 }
 // Before any session: the robot drawn standing at its scan pose (scene origin), as it was scanned.
@@ -743,7 +761,7 @@ export function setAnchors(list, highlight = D.highlight) {
       fan.position.z = 0.015; fan.renderOrder = 3; D.robotAnchors.add(fan);
       const edge = new THREE.Mesh(new THREE.RingGeometry(r - 0.015, r, 40, 1, yaw - half, half * 2), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: strong ? 0.9 : 0.45, side: THREE.DoubleSide, depthWrite: false }));
       edge.position.z = 0.016; D.robotAnchors.add(edge);
-      tag(strong ? 'REAR BLIND: THE LIDAR CANNOT SEE HERE' : (a.label ?? 'rear blind'), col, [Math.cos(yaw) * r * 0.75, Math.sin(yaw) * r * 0.75, 0.25], D.robotAnchors);
+      tag(strong ? 'Rear blind: the lidar cannot see here' : (a.label ?? 'Rear blind'), col, [Math.cos(yaw) * r * 0.75, Math.sin(yaw) * r * 0.75, 0.25], D.robotAnchors);
     } else if (k === 'cells' && (a.anchor.cells_xy ?? a.anchor.cells)?.length) {
       const cells = a.anchor.cells_xy ?? a.anchor.cells, im = new THREE.InstancedMesh(unitBox, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: strong ? 0.8 : 0.4 }), cells.length);
       const m4 = new THREE.Matrix4(); cells.forEach((p, i) => { m4.makeScale(0.05, 0.05, p[2] ?? 0.06).setPosition(p[0], p[1], 0); im.setMatrixAt(i, m4); });
@@ -881,6 +899,15 @@ function followRobot() {
   if (D.tween) { D.tween.toT.add(d); D.tween.toP.add(d); }
   D.followAt = [...p]; markDirty();
 }
+export function ensureInView(p, radius = 2.2) {
+  if (!p || !D.free) return false;
+  const v = new THREE.Vector3(p[0], p[1], 0.8).project(view.camera), rect = view.renderer.domElement.getBoundingClientRect();
+  const x = (v.x + 1) / 2 * rect.width, y = (1 - v.y) / 2 * rect.height, { left, right, top, bottom } = D.insets;
+  if (v.z < 1 && x > left + 40 && x < rect.width - right - 40 && y > top + 40 && y < rect.height - bottom - 40) return false;
+  frame([p], { minRadius: radius, heading: p[2] ?? 0 });
+  return true;
+}
+export const liveOdomPoseScene = () => D.liveScenePose;
 export function flyToAnchor(anchor) {
   const t = anchorTarget(anchor); if (!t) return;
   const [x, y, z, r] = t, yaw = D.liveScenePose?.[2] ?? 0, back = yaw + Math.PI - 0.5;

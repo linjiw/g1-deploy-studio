@@ -838,6 +838,8 @@ async function initialize() {
   new ResizeObserver(([entry]) => $('viewport-shell').style.setProperty('--vp-top-h', `${Math.ceil(entry.target.getBoundingClientRect().height)}px`)).observe(document.querySelector('.vp-top'));
   focus = initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, cameraView, previewMarkers, sampleHealth });
   initDeploy({ csrf: async fresh => { if (fresh) state.catalog = null; return (await ensureCatalog()).csrf_token; }, sessions: () => state.sessions });
+  // With a deploy service, walks start from Deploy: Navigate's robot link says so instead of "g on the node console".
+  on('deploy:service', ok => { nav.deployService = !!ok; if (state.workspace === 'navigate' && nav.catalog) renderNavigate(); });
   // A view link or a session in the URL keeps Replay; otherwise Studio opens on Deploy when the deploy service answers.
   const deployFirst = view.get('workspace') === 'deploy' || (!view.has('session') && !view.has('workspace') ? probeDeploy().catch(() => false) : false);
   $('focus-details-close').addEventListener('click', () => setInspectorDrawer(false));

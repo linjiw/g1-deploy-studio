@@ -79,9 +79,10 @@ function setPoints(layer, points) {
 // A red marker (an unverified or rejected goal) gets a red pill and red text, so its warning reads at a glance.
 // Marker names stay upper case: tools find markers by name ('GOAL', 'START').
 const caption = text => text.toLowerCase().replace(/^./, c => c.toUpperCase()).replace(/\blio\b/gi, 'LIO');
-function label(text, color) {
+function label(text, color, { raw = false } = {}) {
+  // raw: the text as given (Deploy writes its labels in sentence case with units, e.g. "60 N")
   const canvas = document.createElement('canvas');
-  const font = '600 26px Inter, system-ui, sans-serif', shown = caption(text);
+  const font = '600 26px Inter, system-ui, sans-serif', shown = raw ? text : caption(text);
   const probe = canvas.getContext('2d'); probe.font = font;
   // Wide enough for the text: longer labels get a wider sprite at the same height (no clipping).
   const textWidth = Math.ceil(probe.measureText(shown).width), pill = textWidth + 60;

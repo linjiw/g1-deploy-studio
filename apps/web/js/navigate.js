@@ -136,7 +136,7 @@ function resolvePending() {
   else if (reply.cmd === 'stand' && navState()?.pending_stand) {
     nav.notice = { kind: 'warning', text: 'Stand requested; the node defers it here (see above).' };
   } else {
-    nav.notice = { kind: 'ok', text: { goal: isReal(nav.job) ? 'Goal staged on the node and read back. The operator starts the walk with g on the node console.' : 'Goal staged. Press Go to walk there.', go: 'Walking.', stand: 'Settling to a stand.', takeover: 'Taken over: standing now.', end: 'Ending the session…', clear: 'Goal cleared.' }[reply.cmd] ?? 'Done.' };
+    nav.notice = { kind: 'ok', text: { goal: isReal(nav.job) ? (nav.deployService ? 'Goal staged on the node and read back. Walks start from Deploy, which relays GO to the deploy kit\'s console.' : 'Goal staged on the node and read back. The operator starts the walk with g on the node console.') : 'Goal staged. Press Go to walk there.', go: 'Walking.', stand: 'Settling to a stand.', takeover: 'Taken over: standing now.', end: 'Ending the session…', clear: 'Goal cleared.' }[reply.cmd] ?? 'Done.' };
     if (reply.cmd === 'goal') nav.pick = null;
   }
   emit('navigate:overlay');
@@ -326,7 +326,7 @@ function realRobotCard() {
   const configured = link?.configured;
   return `<section class="panel-section">
     <h4>Real robot</h4>
-    <p class="tiny">Studio runs on the deploy PC next to <code>node.py</code>, the SONIC runner and the LIO bridge, and reads their loopback streams. It can stage a goal and ask for a stand. <strong>It never starts a walk</strong>: Go stays with the operator (<code>g</code> on the node console), and the remote and the physical E-stop stay in hand.</p>
+    <p class="tiny">Studio runs on the deploy PC next to <code>node.py</code>, the SONIC runner and the LIO bridge, and reads their loopback streams. It can stage a goal and ask for a stand. ${nav.deployService ? '<strong>Walk the robot from Deploy</strong>: it starts the session and relays Arm, Start SONIC, Clear map, Send goal and GO to the deploy kit\'s console. This card only observes.' : '<strong>It never starts a walk</strong>: Go stays with the operator (<code>g</code> on the node console)'}, and the remote and the physical E-stop stay in hand.</p>
     ${link === null ? '<p class="tiny">Checking the robot link configuration…</p>' : configured
       ? `<div class="nav-endpoints">${(link.endpoints ?? []).map(e => `<div><span>${escape(e.id)}</span><code>${escape(e.endpoint)}</code></div>`).join('')}</div>
          ${nav.notice ? `<div class="callout warning">${escape(nav.notice.text)}</div>` : ''}
@@ -464,7 +464,7 @@ function renderPanelLive() {
         ${real ? '' : `<button id="nav-go" class="go-action" ${can.go && !nav.busy && !pick ? '' : 'disabled'} ${pick && can.go ? 'title="Send the new goal first, or Clear it to go to the staged one"' : ''}>Go</button>`}
         <button id="nav-stand" ${can.stand && !nav.busy ? '' : 'disabled'} title="Settle to a stand (not an emergency stop)">Stand</button>
       </div>
-      ${real ? `<div class="callout">${escape(n?.go_note ?? 'Start the walk with g on the node console. Studio never sends Go to the robot.')}</div>` : ''}
+      ${real ? `<div class="callout">${escape(nav.deployService ? 'Walk the robot from Deploy: GO there relays the press to the deploy kit\'s console.' : n?.go_note ?? 'Start the walk with g on the node console. Studio never sends Go to the robot.')}</div>` : ''}
       ${nav.notice ? `<div class="callout ${nav.notice.kind === 'ok' ? 'ok' : 'warning'}">${escape(nav.notice.text)}</div>` : ''}
     </section>
     ${real ? readyList(n) : ''}
@@ -618,7 +618,7 @@ function stageModel() {
     return { real, step: verified ? 'go' : 'pick', icon: verified && n.ready_ok ? 'pass' : 'block', tone: verified && n.ready_ok ? 'ready' : 'block',
       title: verified ? `Goal staged at ${xyText(goal.xy)}` : 'The node goal is not verified',
       detail: !verified ? `The node holds a goal Studio could not read back: do not press g. ${tapWord()} the map to stage a new one.`
-        : n.ready_ok ? 'Ready: the operator may press g on the node console once the area is clear.' : 'Not ready, do not press g. The panel lists what blocks.', actions: '' };
+        : n.ready_ok ? (nav.deployService ? 'Ready: walk it from Deploy once the area is clear.' : 'Ready: the operator may press g on the node console once the area is clear.') : 'Not ready, do not press g. The panel lists what blocks.', actions: '' };
   }
   const last = (n.legs ?? []).filter(l => l.outcome).at(-1);
   const LAST = { arrived: 'arrived', stopped: 'was stopped', timeout: 'timed out', estop: 'ended in an E-stop', fell: 'fell' };

@@ -170,9 +170,9 @@ function stepState(id) {
 const pollers = {
   state: new Poller('state', 1000, pollState, () => S.visible || S.everOk || S.cachedLive),
   readiness: new Poller('readiness', 2000, pollReadiness, () => S.visible && S.stateOk),
-  scanLive: new Poller('scan', 500, pollScanLive, () => S.visible && (st().scan_job?.running || !!S.pendingScan)),
-  live: new Poller('live', 200, pollLive, () => S.visible && !!viewSlot()),
-  panel: new Poller('panel', 400, pollPanel, () => S.visible && !!session()),
+  scanLive: new Poller('scan', 500, pollScanLive, () => S.visible && S.stateOk !== false && (st().scan_job?.running || !!S.pendingScan)),
+  live: new Poller('live', 200, pollLive, () => S.visible && S.stateOk !== false && !!viewSlot()),
+  panel: new Poller('panel', 400, pollPanel, () => S.visible && S.stateOk !== false && !!session()),
   lease: new Poller('lease', 1000, renewLease, () => !!S.lease.id && !document.hidden),
 };
 // A view that answered 404 (the console ended between two state polls) is not asked again until the state names a
@@ -188,6 +188,7 @@ async function pollState() {
   const r = await api('/api/deploy/state');
   if (r.ok && r.data.api) {
     const before = S.state, wasScanning = before?.scan_job?.running;
+    if (!S.everOk) emit('deploy:service', true);
     S.state = r.data; S.stateAt = performance.now(); S.stateOk = true; S.everOk = true; S.stateError = null; S.cachedLive = false;
     onState(before, wasScanning);
   } else {
@@ -220,7 +221,7 @@ function onState(before, wasScanning) {
   const sess = session(), name = sess?.name ?? null;
   if (name !== S.sessionName) {
     if (S.sessionName && !name) { S.reviewName = S.sessionName; d3.clearLive(); S.view = null; S.panel = null; }
-    if (name) { d3.clearTrail(); S.cursors = { cloud: -1, mem: -1 }; S.view = null; S.sendResult = null; S.goResult = null; S.startCheck = null; S.autoCheckKey = null; S.clearedAt = null; S.ladderNote = {}; if (S.estop.state !== 'sending') S.estop = { state: null, targets: [], t0: 0, error: null }; }
+    if (name) { S.tagDraft = {}; S.attemptEnd = null; d3.clearTrail(); S.cursors = { cloud: -1, mem: -1 }; S.view = null; S.sendResult = null; S.goResult = null; S.startCheck = null; S.autoCheckKey = null; S.clearedAt = null; S.ladderNote = {}; if (!['sending', 'undelivered'].includes(S.estop.state)) { S.estopGen = (S.estopGen ?? 0) + 1; S.estop = { state: null, targets: [], t0: 0, error: null }; } }
     S.sessionName = name;
   }
   if (!viewSlot() && S.view) { S.view = null; d3.clearLive(); }
@@ -239,7 +240,7 @@ async function pollReadiness() {
   q.set('slot', sess?.slot ?? (isRobot() ? 'robot' : 'sim'));
   const r = await api(`/api/deploy/readiness?${q}`);
   if (r.ok && Array.isArray(r.data.checks)) {
-    S.readiness = r.data.checks; renderReadiness();
+    S.readiness = r.data.checks; S.readinessAt = performance.now(); renderReadiness();
     const anchors = anchoredChecks(), key = JSON.stringify([anchors, S.highlight]);
     if (key !== S.anchorKey) { S.anchorKey = key; d3.setAnchors(anchors, S.highlight); }  // the 3D changes only when they do
   }
@@ -274,7 +275,7 @@ async function pollLive() {
   // A rehearsal's drift run is never drawn in the scene (its estimate is in the drifted frame).
   const rec = rehearsalRunning(), which = rec?.running, rehearsal = slot === 'sim' && !session();
   await d3.setLive(v, { slot: rehearsal ? 'sim-rehearsal' : slot, hideRobot: rehearsal && which === 'drift',
-    label: rehearsal && which !== 'drift' ? `REHEARSAL · ${which} run (its own estimate)` : null });
+    label: rehearsal && which !== 'drift' ? `Rehearsal · ${which} run (its own estimate)` : null });
   d3.setLost(false);
   if (S.visible) { renderHud(); renderBanners(); maybeStartCheck(); }
 }
@@ -378,8 +379,8 @@ async function loadTracks(rec, key) {
   }));
   if (S.tracksFor !== key) return;
   S.tracks = out; S.tracksSet = rec.name;
-  const duration = await d3.setRehearsal(out);
-  S.timeline = { ...S.timeline, t: duration, duration, playing: false };
+  const duration = await d3.setRehearsal(out), first = d3.rehearsalFirstMove();
+  S.timeline = { ...S.timeline, t: first, t0: Math.max(0, first - 1), duration, playing: false };
   applyContext(); d3.setScanPoseRobot(!S.view && !S.scanLive?.running);
   renderAll();
 }
@@ -406,6 +407,7 @@ async function sendGoal() {
   const res = await act('send_goal', { scan: S.scanName, goal_scene: S.goal.xy, check_id: S.goal.check.check_id, expect: expectNow(['session']) }, { timeout: 12000 });
   S.sendResult = { ok: res.ok, text: res.ok ? null : res.reason, check: res.data.check ?? null, goalOdom: res.data.goal_odom ?? null, at: Date.now(), goal: [...S.goal.xy] };
   if (res.data.check) applyStartCheck(res.data.check);
+  if (res.ok) d3.clearTrail();
   pollPanel(); renderAll();
 }
 async function go() {
@@ -421,9 +423,9 @@ async function stopSession() {
   if (res.ok) { closeSheet(); S.reviewName = sess.name; setStep('review'); } else S.sheetError = res.reason;
   await pollState(); renderAll();
 }
-async function saveTag(n) {
-  const draft = S.tagDraft[n] ?? {}, sess = session();
-  if (!draft.tag) return;
+async function saveTag(key) {
+  const draft = S.tagDraft[key] ?? {}, sess = session(), n = Number(String(key).split(':').pop());
+  if (!draft.tag || !sess || !String(key).startsWith(`${sess.name}:`)) return;
   const res = await act('tag', { n, tag: draft.tag, note: draft.note ?? '' }, { slot: sess?.slot });
   draft.result = res.ok ? 'saved' : `not saved: ${res.reason}`;
   pollPanel(); renderAll();
@@ -452,8 +454,12 @@ export async function estop() {
   if (S.estop.state === 'sending' && performance.now() - S.estop.t0 < 600) return;
   for (const c of [...inflight]) c.abort();
   const gen = S.estopGen = (S.estopGen ?? 0) + 1;
-  S.estop = { state: 'sending', targets: [], t0: performance.now(), error: null };
+  S.estop = { state: 'sending', targets: [], t0: performance.now(), error: null, missing: [] };
   renderBar();
+  // A console counts as reached only when it answered ok or says the key went to the runner. Until every console is
+  // reached the pill is red, NOT DELIVERED, at once (the physical E-stop may be the only stop left); SENT means the
+  // key reached the runner but the runner has not confirmed; CONFIRMED means it has.
+  const reached = t => t.ok === true || t.key_sent === true;
   while (performance.now() - S.estop.t0 < ESTOP_GIVE_UP_MS && gen === S.estopGen) {
     const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 1200);
     let res = null, data = {};
@@ -461,24 +467,27 @@ export async function estop() {
       res = await fetch('/api/deploy/estop', { method: 'POST', cache: 'no-store', signal: ctl.signal, body: '{}',
         headers: { 'Content-Type': 'application/json', 'X-Studio-Estop': '1' } });
       try { data = await res.json(); } catch { data = {}; }
-    } catch (error) { S.estop.error = ctl.signal.aborted ? 'no answer within 1.2 s' : error.message; }
+    } catch (error) { S.estop.error = ctl.signal.aborted ? 'the gateway did not answer within 1.2 s' : error.message; }
     finally { clearTimeout(timer); }
+    if (gen !== S.estopGen) return;
     if (res && (res.status === 404 || res.status === 405)) {
-      S.estop = { ...S.estop, state: 'failed', error: 'this Studio gateway has no E-STOP path' }; renderBar(); return;
+      S.estop = { ...S.estop, state: 'failed', error: 'this Studio gateway has no E-STOP path', missing: [] }; renderBar(); return;
     }
     const targets = Array.isArray(data.targets) ? data.targets : [];
-    if (res?.ok) {
-      S.estop.targets = targets;
-      // No console known to the gateway while the bar believed one live: nothing was stopped. Say so plainly.
-      if (!targets.length) { S.estop = { ...S.estop, state: 'failed', error: data.error ?? 'Studio knows no live console' }; renderBar(); return; }
-      if (targets.every(t => t.ok)) { S.estop.state = targets.every(t => t.confirmed) ? 'confirmed' : 'acked'; S.estop.retrying = false; renderBar(); break; }
-      S.estop.state = 'sent'; S.estop.retrying = true; S.estop.error = targets.filter(t => !t.ok).map(t => `${t.slot}: ${t.error ?? 'no answer'}`).join('; ');
-    } else if (res) S.estop.error = data.error ?? `refused (${res.status})`;
+    S.estop.targets = targets;
+    const missing = targets.filter(t => !reached(t));
+    if (res?.ok && targets.length && !missing.length) {
+      S.estop.state = targets.every(t => t.confirmed) ? 'confirmed' : 'sent'; S.estop.missing = []; S.estop.error = null;
+      renderBar(); break;
+    }
+    S.estop.state = 'undelivered';
+    S.estop.missing = targets.length ? missing.map(t => t.slot) : [];
+    S.estop.error = targets.length ? missing.map(t => `${t.slot}: ${t.error ?? 'no answer'}`).join('; ') : (data.error ?? S.estop.error ?? `the gateway answered ${res?.status ?? 'nothing'}`);
     renderBar();
     await new Promise(r => setTimeout(r, 300));
   }
   if (gen !== S.estopGen) return;
-  if (!['confirmed', 'acked'].includes(S.estop.state)) S.estop.state = 'failed';
+  if (!['confirmed', 'sent'].includes(S.estop.state)) S.estop.state = 'failed';
   renderBar(); pollState();
 }
 async function direct(actName) {
@@ -488,7 +497,7 @@ async function direct(actName) {
   let res = r;
   if (r.status === 405) res = (await act(actName, {}, { slot: sess.slot, timeout: 3000 })).r;
   const ok = res.ok && res.data.ok !== false;
-  S.directNote = { act: actName, ok, text: ok ? (actName === 'h' ? 'Stand sent' : 'Takeover sent') : `${actName === 'h' ? 'Stand' : 'Takeover'} failed: ${reason(res)}`, at: Date.now() };
+  S.directNote = { act: actName, ok, text: ok ? (actName === 'h' ? 'Stand sent' : 'Takeover sent') : `${actName === 'h' ? 'Stand' : 'Takeover'} NOT DELIVERED — use the remote or the physical E-stop`, error: ok ? null : reason(res), at: Date.now() };
   renderBar(); pollPanel();
 }
 
@@ -508,7 +517,7 @@ async function selectScan(name, frame = true) {
   d3.setScanScene(r.data);
   d3.setScanPoseRobot(!S.view && !S.scanLive?.running);
   // A new scan makes the goal check stale: check the same goal again on this scan (a computation, not a press).
-  if (S.goal?.xy && S.goal.check?.scan !== name) checkGoal(S.goal.xy);
+  if (S.goal?.xy && S.goal.check?.scan !== name) { const from = S.goal.check?.scan; await checkGoal(S.goal.xy); if (S.goal && from) S.goal.carriedFrom = from; renderAll(); }
   if (frame && S.visible) frameStep(true);
   renderAll();
 }
@@ -532,7 +541,7 @@ function drawGoal() {
   if (!g) { d3.setGoal(null); return; }
   const dist = Math.hypot(g.xy[0], g.xy[1]);
   d3.setGoal({ xy: g.xy, status: goalStatus(), path: check?.path_xy ?? null, gap: check?.gap ?? null, blocking: check?.blocking_xy ?? [],
-    label: goalStatus() === 'block' ? 'NOT HERE' : `GOAL · ${dist.toFixed(1)} M` });
+    label: goalStatus() === 'block' ? 'Not here' : `Goal · ${dist.toFixed(1)} m` });
 }
 function clearGoal() { S.pickToken++; S.goal = null; store.set('goal', null); d3.setGoal(null); renderAll(); }
 
@@ -627,7 +636,8 @@ function renderAll() {
 function barModel() {
   const live = Object.entries(st().live ?? {}).filter(([, v]) => v?.running).map(([slot, v]) => ({ slot, ...v }));
   const unreachable = S.stateOk === false && (S.everOk || S.visible || S.cachedLive);
-  if (!live.length && !unreachable && !['sending', 'sent', 'failed'].includes(S.estop.state)) return null;
+  // A positive "no console running" hides it, unless an E-STOP is still being retried.
+  if (!live.length && !unreachable && !['sending', 'undelivered'].includes(S.estop.state)) return null;
   const robot = live.find(l => l.slot === 'robot' && !l.practice);
   const kind = robot ? 'robot' : live.length ? (live[0].practice ? 'practice' : 'rehearsal') : 'unknown';
   return { live, unreachable, kind, robot };
@@ -666,14 +676,17 @@ function renderBar() {
   $('dpe-sub').textContent = m.unreachable ? 'A console may still be running: Studio cannot see it.'
     : `${sess?.name ?? ''}${sess?.panel?.phase ? ` · ${PHASE[sess.panel.phase] ?? sess.panel.phase}` : ''}`;
   $('dpe-alarm').hidden = !age.some(a => a > 1);
-  const es = S.estop, text = { sending: 'SENDING…', sent: `SENT · retrying: ${es.error ?? 'a console has not answered'}`, acked: 'SENT · every console acknowledged',
-    confirmed: 'CONFIRMED · E-STOP in the runner', failed: `FAILED · ${es.error ?? 'no acknowledgement'} — use the physical E-stop` }[es.state] ?? '';
+  const es = S.estop, some = es.missing?.length && es.targets?.length > es.missing.length ? ` to ${es.missing.join(', ')}` : '';
+  const text = { sending: 'SENDING…', undelivered: `NOT DELIVERED${some} — use the physical E-stop · retrying`,
+    failed: `NOT DELIVERED${some} — use the physical E-stop`, sent: 'SENT · the runner has not confirmed yet',
+    confirmed: 'CONFIRMED · E-STOP in the runner' }[es.state] ?? '';
   const status = $('dpe-status'); status.hidden = !text; status.textContent = text; status.dataset.state = es.state ?? '';
+  status.title = es.error ? `What the gateway said: ${es.error}` : '';
   $('dp-estop').dataset.state = es.state ?? '';
   const mine = !!session();
   for (const id of ['dp-stand', 'dp-takeover']) { $(id).disabled = !mine; $(id).title = mine ? (id === 'dp-stand' ? 'Stand: the robot stops walking and stands (direct to the console)' : 'Take over: the runner leaves the policy and holds a stand (direct to the console)') : 'No session of yours is running'; }
   const dn = $('dpe-direct'), showDirect = S.directNote && Date.now() - S.directNote.at < 6000;
-  dn.hidden = !showDirect; if (showDirect) { dn.textContent = S.directNote.text; dn.dataset.state = S.directNote.ok ? 'sent' : 'failed'; }
+  dn.hidden = !showDirect; if (showDirect) { dn.textContent = S.directNote.text; dn.dataset.state = S.directNote.ok ? 'confirmed' : 'failed'; dn.title = S.directNote.error ? `What the gateway said: ${S.directNote.error}` : ''; }
 }
 
 // ------------------------------------------------------------------------------------------------ top bar context
@@ -708,12 +721,19 @@ function renderPanel(force = false) {
   lastPanelKey = key;
   const focused = document.activeElement?.id, sel = focused && document.activeElement.selectionStart;
   const scroller = root.querySelector('.dp-body'), scroll = scroller?.scrollTop ?? 0;
-  const idx = STEPS.findIndex(s => s.id === S.step) + 1;
+  const idx = STEPS.findIndex(s => s.id === S.step) + 1, block = S.stateOk === true ? firstBlock() : null;
+  const top = S.stateOk === false
+    ? `<div class="callout danger dp-top-callout" role="alert" title="${escape(S.stateError ?? '')}"><strong>The deploy service does not answer.</strong> A console may still be running: watch the robot. E-STOP above goes straight to the console. Start the service on the deploy PC: <code>./g1 lab --headless</code></div>`
+    : block ? `<div class="dp-block-line" role="status" title="${escape(block.detail ?? '')}">${statusIcon('block')}<span>${escape(blockText(block))}</span></div>` : '';
+  const attention = body.attention ?? (S.stateOk === false ? 'service' : null);
   root.innerHTML = `
     <header class="dp-head"><span class="eyebrow">Step ${idx} of ${STEPS.length}${isRobot() ? ' · real robot' : ' · practice'}</span><h2>${escape(body.title)}</h2>${body.lead ? `<p>${escape(body.lead)}</p>` : ''}</header>
+    ${top}
     <div class="dp-body">${body.html}${S.notice ? `<div class="callout ${S.notice.kind === 'ok' ? 'ok' : 'warning'}" role="status">${escape(S.notice.text)}</div>` : ''}</div>
     <footer class="dp-foot">${body.primary ? primaryButton(body.primary) : ''}${body.secondary ?? ''}</footer>`;
-  root.querySelector('.dp-body').scrollTop = scroll;
+  // Something that needs the operator now (an ended attempt's tag, an E-STOP, a lost view) scrolls into sight once.
+  root.querySelector('.dp-body').scrollTop = attention && attention !== S.lastAttention ? 0 : scroll;
+  S.lastAttention = attention;
   if (focused && root.contains(document.getElementById(focused))) { const el = document.getElementById(focused); el.focus({ preventScroll: true }); try { if (sel !== null && sel !== undefined) el.setSelectionRange(sel, sel); } catch { /* not a text input */ } }
   bindPanel(root);
 }
@@ -733,7 +753,8 @@ function panelBody() {
 }
 
 function tile(t) {
-  return `<div class="dp-tile ${t.status}">${statusIcon(t.status)}<div><span>${escape(t.label)}</span><strong>${escape(t.value)}</strong>${t.hint ? `<small>${escape(t.hint)}</small>` : ''}</div>${t.ev ? evChip(t.ev) : ''}${t.button ?? ''}</div>`;
+  const chipHtml = t.value === 'Unavailable' ? '<span class="chip chip-unavailable" title="Not captured now: the deploy service does not report it.">Unavailable</span>' : t.ev ? evChip(t.ev) : '';
+  return `<div class="dp-tile ${t.status}">${statusIcon(t.status)}<div><span>${escape(t.label)}</span><strong>${escape(t.value)}</strong>${t.hint ? `<small>${escape(t.hint)}</small>` : ''}</div>${chipHtml}${t.button ?? ''}</div>`;
 }
 function connectTiles() {
   const s = st(), link = s.robot_link ?? {}, pc = s.pc ?? {}, gpu = s.gpu ?? {}, robot = isRobot(), odom = odomName();
@@ -824,12 +845,14 @@ function goalBody() {
     title: 'Pick a goal', lead: 'Click the floor in 3D. The disc is the robot\'s footprint; its colour is a first look at the cells under it.',
     html: `
       ${hover && !g ? `<p class="tiny">Under the pointer: ${escape(hover.text)}</p>` : ''}
+      ${g?.carriedFrom ? `<div class="callout warning">This goal was carried over from ${escape(g.carriedFrom)} at the same place relative to the scan pose. Check it in 3D, or click a new one.</div>` : ''}
       ${g ? `<div class="dp-goal ${status}">${statusIcon(status === 'pending' ? 'unknown' : status)}<div><strong>(${num(g.xy[0], 2)}, ${num(g.xy[1], 2)}) m</strong><span>${escape(goalWords(g.xy))}</span></div><button class="link-button" data-action="clear-goal">Clear</button></div>` : '<div class="dp-empty"><b>No goal yet.</b> Point at the floor: green is clear, amber needs a look, red is blocked. A click on an obstacle lands on it and is refused there.</div>'}
       ${check && !check.unavailable ? `<ul class="nav-checks dp-checks">${checks.map(c => `<li class="${escape(c.status)}"><i>${ICON[c.status] ?? '?'}</i><span><strong>${escape(c.label)}</strong>${c.detail ? `<small>${escape(c.detail)}</small>` : ''}</span></li>`).join('')}</ul>
         <p class="tiny">Straight ${num(check.straight_m, 2)} m · route ${num(check.path_m, 2)} m${finite(check.unknown_fraction) ? ` · ${Math.round(check.unknown_fraction * 100)} % of it unseen` : ''}${check.gap ? ` · narrowest gap ${num(check.gap.width_m, 2)} m` : ''}</p>` : ''}
       ${check?.unavailable ? `<div class="callout warning">${escape(check.reason)}. The quick look says: ${escape(S.goal.quick?.text ?? 'unknown')}.</div>` : ''}
       <div class="dp-legend-inline"><span><i class="sw-route"></i>Route + 0.35 m margin</span><span><i class="sw-gap"></i>Gap the route passes</span><span><i class="sw-block"></i>Blocking cells</span><span><i class="sw-unseen"></i>Unseen route</span></div>`,
-    primary: { label: 'Next: rehearse this goal', action: 'step:rehearse', locked },
+    primary: session() ? { label: `Back to the session: send this goal${rehearsalFor()?.verdict ? '' : ' (not rehearsed)'}`, action: 'step:deploy', locked }
+      : { label: 'Next: rehearse this goal', action: 'step:rehearse', locked },
   };
 }
 
@@ -837,7 +860,7 @@ function runRow(which, label, sub, rec, track) {
   const running = rec?.running === which, result = track ? (track.arrived ? 'pass' : 'block') : running ? 'live' : rec && !rec.running ? 'unknown' : 'later';
   const detail = track ? `${track.arrived ? 'Arrived' : 'Did not arrive'} · ${num(track.duration_s, 1)} s${finite(track.final_dist_m) ? ` · ${num(track.final_dist_m, 2)} m from the goal` : ''}${track.contacts?.length ? ` · ${track.contacts.length} contact${track.contacts.length === 1 ? '' : 's'}, max ${Math.round(track.contact_max_n ?? 0)} N` : ''}`
     : running ? 'Running in the simulator…' : rec?.running ? 'Waiting' : 'Not run';
-  return `<li class="dp-run ${result}"><i class="dp-run-sw" style="--c:${{ exact: '#0f9e94', drift: '#e0a030', offset: '#8a63d2' }[which]}"></i><div><strong>${escape(label)}</strong><small>${escape(sub)}</small><span>${running ? '<i class="dp-spin" aria-hidden="true"></i>' : ''}${escape(detail)}</span></div></li>`;
+  return `<li class="dp-run ${result}"><i class="dp-run-sw" style="--c:${{ exact: '#3d6fb5', drift: '#c2408f', offset: '#7d8794' }[which]}"></i><div><strong>${escape(label)}</strong><small>${escape(sub)}</small><span>${running ? '<i class="dp-spin" aria-hidden="true"></i>' : ''}${escape(detail)}</span></div></li>`;
 }
 function rehearseBody() {
   const rec = rehearsalFor(), running = rehearsalRunning(), gpu = st().gpu ?? {}, sess = session(), robotWalking = liveSlot('robot')?.panel && ['PRESCAN', 'RUN'].includes(liveSlot('robot').panel.phase);
@@ -879,13 +902,38 @@ function goalSentStale() {
   const d = Math.hypot(held[0] - S.goal.xy[0], held[1] - S.goal.xy[1]);
   return d > 0.15 ? `The goal moved ${d.toFixed(2)} m since it was sent: Send goal again` : null;
 }
+// Where the robot starts, in words. The rehearsal's start-offset envelope covers the first walk from the scan pose; after
+// a walk the kit sends within_offset_envelope = null with closed_attempts > 0, and the page says where it starts from.
+function startWords(sc, { short = false } = {}) {
+  if (!sc) return 'not run';
+  const moved = `${num(sc.moved_m, 2)} m, ${num(sc.turned_deg, 0)}°`;
+  if (sc.within_offset_envelope === null && sc.closed_attempts > 0) return `starts from where attempt ${sc.closed_attempts} ended (${moved} from the scan pose)`;
+  if (sc.within_offset_envelope === true) return `${moved} from the scan pose · inside the rehearsed start offset`;
+  if (sc.within_offset_envelope === false) return `${moved} from the scan pose · outside the rehearsed start offset${short ? '' : ' (20° / 0.2 m)'}`;
+  return `${moved} from the scan pose`;
+}
+// What the operator should know before GO although the console has no lock: shown in amber, and on the real robot
+// acknowledged with one tick.
+function goCautions() {
+  const rec = rehearsalFor(), v = verdictText(rec), sc = S.startCheck ?? S.sendResult?.check, out = [];
+  if (!rec?.verdict) out.push('This goal has no rehearsal for this policy and scan');
+  else if (v?.tone === 'block') out.push(`The rehearsal says: ${v.title.toLowerCase()}`);
+  if (sc?.within_offset_envelope === false) out.push('The robot stands outside the start offset the rehearsal covered');
+  return out;
+}
+function firstBlock(groups = null) {
+  return (S.readiness ?? []).find(c => (!groups || groups.includes(c.group)) && checkShown(c).status === 'block') ?? null;
+}
+const blockText = c => `${c.label}${c.detail ? ` — ${c.detail}` : ''}${c.fix?.hint ? ` · ${c.fix.hint}` : ''}`;
+// On the real robot a Link or Robot block (lidar, FAST-LIO, the link, temperatures) locks Start session and Arm.
+const blockLock = () => { if (!isRobot()) return null; const c = firstBlock(['link', 'robot']); return c ? blockText(c) : null; };
 function ladderRows() {
   const p = S.panel, ladder = p?.ladder ?? [], locks = p?.go_locks ?? [], lost = !!S.view && liveState() === 'lost';
   const byKey = Object.fromEntries(ladder.map(l => [l.key, l]));
-  const rows = [
-    { key: 'arm', label: 'Arm', sub: 'The runner initialises the motors; the planner node starts.' },
-    { key: 'sonic', label: 'Start SONIC', sub: 'SONIC holds the robot standing.' },
-    { key: 'map', label: 'Clear map', sub: 'The planner forgets the old map and rescans for 10 s.' },
+  const robot = isRobot(), rows = [
+    { key: 'arm', label: 'Arm', sub: robot ? 'The runner takes the motors and ramps the robot to its stand pose (about 25 s); the gantry carries the weight.' : 'The runner takes the simulated motors and ramps to the stand pose; the planner node starts.' },
+    { key: 'sonic', label: 'Start SONIC', sub: robot ? 'SONIC holds the robot standing. Then lower the gantry until the feet take the weight.' : 'SONIC holds the practice robot standing.' },
+    { key: 'map', label: 'Clear map', sub: robot ? 'The planner forgets the old map and rescans for 10 s: spotter to the side, rope held high.' : 'The planner forgets the old map and rescans for 10 s.' },
     { key: 'goal', label: 'Send goal', sub: 'Start check, then the goal converted to the robot\'s frame now.' },
     { key: 'go', label: 'GO', sub: 'The robot walks to the goal.' },
   ];
@@ -894,6 +942,7 @@ function ladderRows() {
     const l = byKey[r.key] ?? { state: 'todo' };
     let lock = null;
     if (p?.runner === 'E-STOP') lock = 'E-STOP is active: end the session';
+    else if (r.key === 'arm' && robot && blockLock()) lock = blockLock();
     else if (lost && ['arm', 'goal', 'go'].includes(r.key)) lock = 'Live view lost: watch the robot';
     else if (r.key === 'go') lock = locks[0] ?? goalSentStale();
     else if (r.key === 'goal' && !goalUsable()) lock = S.goal ? 'The goal is not checked on this scan (Goal)' : 'Pick a goal first (Goal)';
@@ -908,7 +957,7 @@ function deployBody() {
   const sess = session(), rec = rehearsalFor(), v = verdictText(rec);
   if (!sess) {
     const stale = scanStale(), locked = !holdsLease() ? 'Take the controls first (Connect)' : S.stateOk !== true ? 'The deploy service does not answer'
-      : isRobot() && !st().robot_link?.carrier ? 'No robot link' : !S.scanName ? 'Scan first' : isRobot() && stale ? `Rescan first: ${stale}` : rehearsalRunning() ? 'A rehearsal is running' : null;
+      : isRobot() && !st().robot_link?.carrier ? 'No robot link' : !S.scanName ? 'Scan first' : isRobot() && stale ? `Rescan first: ${stale}` : rehearsalRunning() ? 'A rehearsal is running' : blockLock();
     const ended = S.reviewName && S.attempts[S.reviewName];
     return {
       title: isRobot() ? 'Deploy on the robot' : 'Deploy on the practice robot',
@@ -927,41 +976,58 @@ function deployBody() {
     };
   }
   const rows = ladderRows(), p = S.panel ?? {}, moved = goalSentStale();
+  const estopped = p.runner === 'E-STOP', lostNow = !!S.view && liveState() === 'lost';
   // A goal moved after Send goal makes Send goal the step to do again.
-  if (moved) { const g = rows.find(r => r.key === 'goal'); if (g?.state === 'done' && !walking()) { g.state = 'now'; g.detail = moved; rows.find(r => r.key === 'go').state = 'todo'; } }
-  const nowRow = rows.find(r => r.state === 'now') ?? rows.find(r => r.state !== 'done');
-  const attempts = panelAttempts(), last = attempts.at(-1), untagged = attempts.filter(a => a.outcome && !a.tag);
-  const sc = S.startCheck, envelope = sc ? (sc.within_offset_envelope ? 'inside the rehearsed start-offset envelope' : 'outside the rehearsed start-offset envelope') : null;
-  let primary = null;
-  const estopped = p.runner === 'E-STOP';
+  if (moved) { const g = rows.find(r => r.key === 'goal'); if (g?.state === 'done' && !walking()) { g.state = 'now'; g.note = moved; rows.find(r => r.key === 'go').state = 'todo'; } }
+  const attempts = panelAttempts(), lastA = attempts.at(-1), untagged = attempts.filter(a => a.outcome && !a.tag);
+  // After an attempt ends: tag it, then pick the next goal (or send the same goal again). Not once a new goal was
+  // picked (Send goal is the step then) or sent.
+  const endKey = lastA?.outcome ? `${sess.name}:${lastA.n}` : null;
+  if (endKey && S.attemptEnd?.key !== endKey) S.attemptEnd = { key: endKey, at: Date.now() };
+  const sentAfter = S.sendResult?.ok && S.attemptEnd?.key === endKey && S.sendResult.at > S.attemptEnd.at;
+  const afterAttempt = !!endKey && !walking() && !estopped && !moved && !sentAfter;
+  const nowRow = estopped || afterAttempt ? null : rows.find(r => r.state === 'now') ?? rows.find(r => r.state !== 'done');
+  const sc = S.startCheck, lastKey = lastA ? `${sess.name}:${lastA.n}` : null, lastDraft = lastKey ? (S.tagDraft[lastKey] ??= { tag: null, note: '' }) : null;
+  let primary = null, secondary = '';
+  const endButton = `<button class="dp-secondary" data-action="sheet:end" ${walking() ? 'disabled title="The robot is walking: Stand or E-STOP first"' : ''}>End session…</button>${walking() ? lockLine('End session is locked while the robot walks') : ''}`;
   if (estopped) primary = { label: 'End session…', action: 'sheet:end', locked: null };
-  else if (walking()) primary = { label: 'Walking…', action: 'none', locked: 'Stand or E-STOP from the bar above; the remote and the physical E-stop stay in hand' };
-  else if (nowRow) {
+  else if (walking()) { primary = { label: 'Walking…', action: 'none', locked: 'Stand or E-STOP from the bar above; the remote and the physical E-stop stay in hand' }; secondary = endButton; }
+  else if (afterAttempt || !nowRow) {
+    const tagged = !lastA?.outcome || lastA.tag;
+    primary = tagged ? { label: 'Pick the next goal', action: 'step:goal', locked: null }
+      : { label: 'Save tag', action: `tag:${lastKey}`, locked: lastDraft?.tag ? null : `Pick a tag for attempt ${lastA.n} above (clean, touched, stumble…)`, busyText: 'Saving…' };
+    secondary = `<button class="dp-secondary" data-action="send-goal" ${goalUsable() && !S.busy ? '' : 'disabled'} title="${goalUsable() ? 'The same goal: the robot walks from where it stands now' : 'The goal is not checked on this scan'}">Send this goal again</button>${endButton}`;
+  } else {
     const action = { arm: 'sheet:arm', sonic: 'ladder:sonic', map: 'ladder:map', goal: 'send-goal', go: 'sheet:go' }[nowRow.key];
     const label = { arm: 'Arm…', sonic: 'Start SONIC', map: 'Clear map', goal: 'Send goal', go: isRobot() ? 'GO…' : 'GO (practice)…' }[nowRow.key];
     primary = { label, action, locked: nowRow.lock, tone: nowRow.key === 'go' ? (isRobot() ? 'robot' : 'practice') : '', busyText: 'Sending…' };
+    secondary = endButton;
   }
+  // The card for the attempt that just ended goes first; older untagged attempts follow it.
+  const cards = untagged.slice().reverse().map(a => tagCard(a, sess.name, afterAttempt && a === lastA)).join('');
+  const attention = estopped ? `estop:${sess.name}` : afterAttempt && !lastA.tag ? `tag:${lastKey}` : lostNow ? `lost:${sess.name}` : null;
   return {
-    title: walking() ? 'Walking' : `${isRobot() ? 'Robot' : 'Practice'} session`,
-    lead: `${sess.name} · ${PHASE[p.phase] ?? p.phase ?? 'starting'}${p.runner ? ` · runner ${p.runner}` : ''}`,
+    title: lostNow ? 'Live view lost' : walking() ? 'Walking' : afterAttempt ? `Attempt ${lastA.n} ended` : `${isRobot() ? 'Robot' : 'Practice'} session`,
+    lead: lostNow ? `${sess.name} · last seen ${Math.round(liveAge())} s ago` : `${sess.name} · ${PHASE[p.phase] ?? p.phase ?? 'starting'}`,
+    attention,
     html: `
       ${estopped ? '<div class="callout danger" role="alert"><strong>E-STOP is active.</strong> The runner holds the robot in its safe mode and the console refuses every other press. End the session; start a new one to try again.</div>' : ''}
-      <ol class="dp-ladder${estopped ? ' stopped' : ''}">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}">${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.detail || r.sub)}</small>${r === nowRow && r.lock && !estopped ? `<em>${escape(r.lock)}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' && !estopped ? `<em class="${S.ladderNote[r.key].kind}">${escape(S.ladderNote[r.key].text)}</em>` : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}${r.state === 'done' && r.key === 'goal' && !walking() && goalUsable() ? '<button class="link-button" data-action="send-goal">Resend</button>' : ''}</li>`).join('')}</ol>
-      ${S.sendResult ? `<div class="callout ${S.sendResult.ok ? 'ok' : 'warning'}" role="status">${S.sendResult.ok ? `Goal confirmed by the node${S.sendResult.check ? `. Start check: moved ${num(S.sendResult.check.moved_m, 2)} m, turned ${num(S.sendResult.check.turned_deg, 0)}° (${escape(S.sendResult.check.within_offset_envelope ? 'inside the rehearsed envelope' : 'outside the rehearsed envelope')})` : ''}.` : `Send goal refused: ${escape(S.sendResult.text)}`}</div>` : ''}
+      ${cards}
+      <ol class="dp-ladder${estopped ? ' stopped' : ''}${afterAttempt ? ' resting' : ''}">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}" ${r.detail ? `title="${escape(`The console: ${r.detail}`)}"` : ''}>${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.sub)}</small>${r.note ? `<em>${escape(r.note)}</em>` : ''}${r === nowRow && r.lock && !estopped ? `<em>${escape(r.lock)}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' && !estopped && r.state !== 'done' ? `<em class="${S.ladderNote[r.key].kind}">${escape(S.ladderNote[r.key].text)}</em>` : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() && !estopped ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}</li>`).join('')}</ol>
+      ${S.sendResult && !afterAttempt ? `<div class="callout ${S.sendResult.ok ? 'ok' : 'warning'}" role="status">${S.sendResult.ok ? `Goal confirmed by the node${S.sendResult.check ? `. Start: ${escape(startWords(S.sendResult.check, { short: true }))}` : ''}.` : `Send goal refused: ${escape(S.sendResult.text)}`}</div>` : ''}
       ${S.goResult && !S.goResult.ok ? `<div class="callout warning" role="status">GO refused by the console: ${escape(S.goResult.text)}</div>` : ''}
-      ${sc ? `<p class="tiny">Robot now vs its scan pose: ${num(sc.moved_m, 2)} m, ${num(sc.turned_deg, 0)}° · ${escape(envelope)} (grey ghost in 3D).</p>` : ''}
-      ${untagged.map(a => tagCard(a)).join('')}
-      ${attempts.length ? `<h4>Attempts</h4><ol class="dp-attempts">${attempts.map(a => `<li><strong>${a.n}</strong><span class="outcome ${a.outcome === 'arrived' ? 'outcome-good' : a.outcome ? 'outcome-warn' : 'outcome-live'}">${escape(a.outcome ?? 'walking')}</span>${finite(a.final_dist_m) ? `<small>${num(a.final_dist_m, 2)} m from the goal</small>` : ''}${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : ''}</li>`).join('')}</ol>` : ''}`,
+      ${sc ? `<p class="tiny">Start check: ${escape(startWords(sc, { short: true }))} (the grey ghost in 3D is the scan pose).</p>` : ''}
+      ${attempts.length ? `<h4>Attempts</h4><ol class="dp-attempts">${attempts.map(a => `<li><strong>${a.n}</strong><span class="outcome ${a.outcome === 'arrived' ? 'outcome-good' : a.outcome ? 'outcome-warn' : 'outcome-live'}">${escape(a.outcome ?? 'walking')}</span>${finite(a.final_dist_m) ? `<small>${num(a.final_dist_m, 2)} m from the goal</small>` : ''}${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : a.outcome ? '<small>untagged</small>' : ''}</li>`).join('')}</ol>` : ''}`,
     primary,
-    secondary: estopped ? '' : `<button class="dp-secondary" data-action="sheet:end" ${walking() ? 'disabled title="The robot is walking: Stand or E-STOP first"' : ''}>End session…</button>${walking() ? lockLine('End session is locked while the robot walks') : ''}`,
+    secondary,
   };
 }
-function tagCard(a) {
-  const draft = S.tagDraft[a.n] ??= { tag: null, note: '' };
-  return `<div class="dp-tagcard"><strong>Attempt ${a.n} ended: ${escape(a.outcome)}${finite(a.final_dist_m) ? ` (${num(a.final_dist_m, 2)} m from the goal)` : ''}</strong><p class="tiny">Tag it before the next try.</p>
-    <div class="dp-tags">${(S.panel?.tags ?? TAGS).map(t => `<button data-tag="${escape(t)}" data-n="${a.n}" aria-pressed="${draft.tag === t}">${escape(t)}</button>`).join('')}</div>
-    <input type="text" id="dp-note-${a.n}" data-note="${a.n}" placeholder="Note (optional)" value="${escape(draft.note)}">
-    <button class="dp-secondary" data-action="tag:${a.n}" ${draft.tag ? '' : 'disabled'}>Save tag</button>${draft.result ? `<small>${escape(draft.result)}</small>` : ''}</div>`;
+function tagCard(a, sessionName, viaPrimary = false) {
+  const key = `${sessionName}:${a.n}`, draft = S.tagDraft[key] ??= { tag: null, note: '' };
+  return `<div class="dp-tagcard${viaPrimary ? ' first' : ''}"><strong>Attempt ${a.n} ended: ${escape(a.outcome)}${finite(a.final_dist_m) ? ` (${num(a.final_dist_m, 2)} m from the goal)` : ''}</strong><p class="tiny">${viaPrimary ? 'Tag it, then pick the next goal.' : 'Not tagged yet.'}</p>
+    <div class="dp-tags">${(S.panel?.tags ?? TAGS).map(t => `<button data-tag="${escape(t)}" data-key="${escape(key)}" aria-pressed="${draft.tag === t}">${escape(t)}</button>`).join('')}</div>
+    <input type="text" id="dp-note-${a.n}" data-note="${escape(key)}" placeholder="Note (optional)" value="${escape(draft.note)}">
+    ${viaPrimary ? '' : `<button class="dp-secondary" data-action="tag:${escape(key)}" ${draft.tag ? '' : 'disabled'}>Save tag</button>`}${draft.result ? `<small>${escape(draft.result)}</small>` : ''}</div>`;
 }
 
 function reviewBody() {
@@ -969,16 +1035,17 @@ function reviewBody() {
   const name = S.reviewName ?? list[0]?.name ?? null, row = list.find(s => s.name === name);
   if (name && S.manifestFor !== name) loadManifest(name);
   const m = S.manifestFor === name ? S.manifest : null, attempts = S.attempts[name] ?? (session()?.name === name ? panelAttempts() : null);
-  const present = m?.items?.filter(i => i.status === 'present').length ?? 0, missing = m?.items?.filter(i => i.status === 'missing') ?? [];
+  const empty = i => i.status === 'present' && !(i.bytes > 0);
+  const present = m?.items?.filter(i => i.status === 'present' && !empty(i)).length ?? 0, missing = m?.items?.filter(i => i.status === 'missing' || empty(i)) ?? [];
   const size = b => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(0)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} kB` : `${b} B`);
   return {
     title: 'Review', lead: 'Everything the session recorded, collected by the kit in the session directory.',
     html: `
       <label class="field"><span>Session</span><select id="dp-review">${list.map(s => `<option value="${escape(s.name)}" ${s.name === name ? 'selected' : ''}>${escape(s.name)}${s.practice ? ' (practice)' : ''}${s.started ? ` · ${new Date(s.started * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</option>`).join('') || '<option>No sessions today</option>'}</select></label>
       ${name ? `<h4>Attempts</h4>${attempts?.length ? `<ol class="dp-attempts">${attempts.map(a => `<li><strong>${a.n}</strong><span class="outcome ${a.outcome === 'arrived' ? 'outcome-good' : 'outcome-warn'}">${escape(a.outcome ?? 'open')}</span>${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : '<small>untagged</small>'}${a.note ? `<small>${escape(a.note)}</small>` : ''}${a.rehearsal?.verdict ? `<small>rehearsal: ${escape(a.rehearsal.verdict)}</small>` : ''}${a.start_check ? `<small>start ${num(a.start_check.moved_m, 2)} m / ${num(a.start_check.turned_deg, 0)}°</small>` : ''}</li>`).join('')}</ol>` : `<p class="tiny">${attempts ? 'No attempts.' : 'Attempts are in the session\'s attempts.jsonl (recorded, not shown here for an ended session).'}</p>`}
-        <h4>Evidence ${m ? `<span class="tiny">${present} of ${m.items.length} present${m.complete ? ' · complete' : ''}</span>` : ''}</h4>
-        ${m ? `<table class="dp-manifest"><tbody>${m.items.map(i => `<tr class="${escape(i.status.replace('/', ''))}"><td>${statusIcon(i.status === 'present' ? 'pass' : i.status === 'missing' ? 'block' : 'later')}</td><td>${escape(i.id.replaceAll('_', ' '))}</td><td>${i.status === 'present' ? escape(size(i.bytes ?? 0)) : escape(i.status)}</td><td>${escape(i.reason ?? '')}</td></tr>`).join('')}</tbody></table>
-          ${missing.length ? `<p class="tiny">${missing.length} missing: ${escape(missing.map(i => i.id).join(', '))}.</p>` : ''}` : '<p class="tiny">Loading the manifest…</p>'}` : ''}`,
+        <h4>Evidence ${m ? `<span class="tiny">${present} of ${m.items.length} present${m.complete && !missing.length ? ' · complete' : missing.length ? ` · ${missing.length} missing or empty` : ''}</span>` : ''}</h4>
+        ${m ? `<table class="dp-manifest"><tbody>${m.items.map(i => `<tr class="${empty(i) ? 'missing' : escape(i.status.replace('/', ''))}"><td>${statusIcon(empty(i) ? 'warn' : i.status === 'present' ? 'pass' : i.status === 'missing' ? 'block' : 'later')}</td><td>${escape(i.id.replaceAll('_', ' '))}</td><td>${empty(i) ? 'empty' : i.status === 'present' ? escape(size(i.bytes ?? 0)) : escape(i.status)}</td><td>${escape(i.reason ?? '')}</td></tr>`).join('')}</tbody></table>
+          ${missing.length ? `<p class="tiny">${missing.length} missing or empty: ${escape(missing.map(i => i.id.replaceAll('_', ' ')).join(', '))}.</p>` : ''}` : '<p class="tiny">Loading the manifest…</p>'}` : ''}`,
     primary: { label: 'Open in Replay', action: 'replay', locked: !name ? 'No session yet' : replayId(name) ? null : 'Not in Studio\'s run list yet: it appears once the session has ended and Studio\'s catalog lists it' },
     secondary: name ? `<button class="dp-secondary" data-action="manifest">Refresh evidence</button>` : '',
   };
@@ -1009,7 +1076,7 @@ function bindPanel(root) {
   root.querySelector('#dp-room')?.addEventListener('change', e => { S.room = e.target.value; store.set('room', S.room); renderPanel(true); });
   root.querySelector('#dp-seconds')?.addEventListener('change', e => { S.seconds = Math.max(3, Math.min(30, Number(e.target.value) || 8)); renderPanel(true); });
   root.querySelector('#dp-review')?.addEventListener('change', e => { S.reviewName = e.target.value; renderPanel(true); });
-  root.querySelectorAll('[data-tag]').forEach(b => b.addEventListener('click', () => { const d = S.tagDraft[b.dataset.n] ??= {}; d.tag = b.dataset.tag; d.result = null; renderPanel(true); }));
+  root.querySelectorAll('[data-tag]').forEach(b => b.addEventListener('click', () => { const d = S.tagDraft[b.dataset.key] ??= {}; d.tag = b.dataset.tag; d.result = null; renderPanel(true); }));
   root.querySelectorAll('[data-note]').forEach(i => i.addEventListener('input', e => { (S.tagDraft[i.dataset.note] ??= {}).note = e.target.value; }));
   root.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', () => doAction(b.dataset.action)));
 }
@@ -1018,7 +1085,7 @@ function doAction(a) {
   if (a.startsWith('step:')) return setStep(a.slice(5));
   if (a.startsWith('sheet:')) return openSheet(a.slice(6));
   if (a.startsWith('ladder:')) return ladderAct(a.slice(7));
-  if (a.startsWith('tag:')) return saveTag(Number(a.slice(4)));
+  if (a.startsWith('tag:')) return saveTag(a.slice(4));
   switch (a) {
     case 'lease': return takeLease(false);
     case 'lease-takeover': return takeLease(true);
@@ -1050,13 +1117,13 @@ function sheetModel() {
       body: `<p>${robot ? 'The kit starts the console on the real robot: the runner, the planner node and the recorder. Nothing moves until you Arm.' : 'The kit starts a simulated robot on this scan\'s twin, 0.2 m and 20° off the scan pose, with the same console and recorder.'}</p>
         <div class="dp-summary"><div><span>Scan</span><strong>${escape(S.scanName ?? '')}</strong></div><div><span>Policy</span><strong>${escape(profileLabel(profileName()))}</strong></div><div><span>Odometry</span><strong>${escape(ODOMETRY[odomName()]?.label ?? '')}</strong></div><div><span>Operator</span><strong>${escape(S.operator.trim())}</strong></div></div>
         <fieldset class="dp-confirm"><legend>Confirm, as on every robot day${robot ? '' : ' (practised here too)'}</legend>${CONFIRM.map(([id, text]) => `<label><input type="checkbox" data-confirm="${id}" ${c[id] ? 'checked' : ''}><span>${escape(text)}</span></label>`).join('')}</fieldset>`,
-      ok: robot ? 'Start robot session' : 'Start practice session', locked: all ? null : 'Tick every item: they are stored with the session', run: () => startSession({ ...Object.fromEntries(CONFIRM.map(([id]) => [id, true])) }) };
+      ok: robot ? 'Start robot session' : 'Start practice session', locked: blockLock() ?? (all ? null : 'Tick every item: they are stored with the session'), run: () => startSession({ ...Object.fromEntries(CONFIRM.map(([id]) => [id, true])) }) };
   }
   if (k === 'arm') {
     return { title: 'Arm', tone: robot ? 'robot' : 'practice',
       body: `<p>Arming starts the runner's motor control and the planner node. ${robot ? '<strong>The gantry carries the weight</strong>: the robot may sag or twitch while the motors take over.' : 'The practice robot does the same in the simulator.'}</p>
         <label class="dp-confirm-one"><input type="checkbox" data-armed ${S.sheet.armed ? 'checked' : ''}><span>${robot ? 'The gantry carries the robot\'s weight and nobody is within 1 m' : 'I am practising the robot-day ladder'}</span></label>`,
-      ok: 'Arm', locked: S.sheet.armed ? (liveState() === 'lost' && S.view ? 'Live view lost' : null) : 'Confirm first', run: () => ladderAct('arm') };
+      ok: 'Arm', locked: blockLock() ?? (S.sheet.armed ? (liveState() === 'lost' && S.view ? 'Live view lost' : null) : 'Confirm first'), run: () => ladderAct('arm') };
   }
   if (k === 'go') {
     const rec = rehearsalFor(), v = verdictText(rec), locks = S.panel?.go_locks ?? [], sc = S.startCheck ?? S.sendResult?.check;
@@ -1064,6 +1131,9 @@ function sheetModel() {
     const lost = liveState() === 'lost';
     const moved = goalSentStale();
     const items = [...locks.map(l => `Console: ${l}`), ...(moved ? [moved] : []), ...blocking.map(b => `Readiness: ${b}`), ...(lost ? ['Live view lost'] : [])];
+    const cautions = goCautions(), needAck = robot && cautions.length && !items.length;
+    const cautionHtml = !items.length && cautions.length ? `<div class="dp-caution"><strong>No console lock, but:</strong><ul>${cautions.map(c => `<li>${statusIcon('warn')}${escape(c)}</li>`).join('')}</ul>
+        ${robot ? `<label class="dp-confirm-one"><input type="checkbox" data-ack ${S.sheet.ack ? 'checked' : ''}><span>I walk this goal anyway: the area is clear and the remote is in hand</span></label>` : '<p class="tiny">Practice: go ahead and see what happens; on the robot this needs a tick.</p>'}</div>` : '';
     return { title: robot ? 'GO · the real robot walks' : 'GO · practice robot', tone: robot ? 'robot' : 'practice',
       body: `<div class="dp-summary">
           <div><span>Goal</span><strong>(${num(S.goal?.xy?.[0], 2)}, ${num(S.goal?.xy?.[1], 2)}) · ${escape(goalWords(S.goal?.xy))}</strong></div>
@@ -1071,10 +1141,13 @@ function sheetModel() {
           <div><span>Policy</span><strong>${escape(profileLabel(profileName()))}</strong></div>
           <div><span>Odometry</span><strong>${escape(ODOMETRY[odomName()]?.label ?? '')}</strong></div>
           <div><span>Rehearsal</span><strong class="${v?.tone ?? 'warn'}">${escape(v ? `${v.title}: ${v.text}` : 'not rehearsed for this goal')}</strong></div>
-          <div><span>Start check</span><strong>${sc ? `${num(sc.moved_m, 2)} m, ${num(sc.turned_deg, 0)}° · ${sc.within_offset_envelope ? 'inside' : 'outside'} the rehearsed envelope` : 'not run'}</strong></div>
+          <div><span>Start</span><strong class="${sc?.within_offset_envelope === false ? 'warn' : ''}">${escape(startWords(sc))}</strong></div>
         </div>
-        ${items.length ? `<div class="dp-before"><strong>Before GO</strong><ul>${items.map(i => `<li>${statusIcon('block')}${escape(i)}</li>`).join('')}</ul></div>` : '<p class="tiny ok">The console reports no lock. Watch the robot, remote in hand.</p>'}`,
-      ok: robot ? 'GO — the robot walks' : 'GO — practice robot walks', locked: items[0] ?? null, run: () => go() };
+        ${items.length ? `<div class="dp-before"><strong>Before GO</strong><ul>${items.map(i => `<li>${statusIcon('block')}${escape(i)}</li>`).join('')}</ul></div>`
+          : cautionHtml || '<p class="tiny ok">The console reports no lock, and the goal was rehearsed from this start. Watch the robot, remote in hand.</p>'}`,
+      ok: robot ? 'GO — the robot walks' : 'GO — practice robot walks',
+      locked: items[0] ?? (needAck && !S.sheet.ack ? 'Tick the line above: this walk has no matching rehearsal' : null), run: () => go(),
+      caution: !items.length && cautions.length > 0 };
   }
   if (k === 'end') {
     const attempts = panelAttempts(), untagged = attempts.filter(a => a.outcome && !a.tag).length;
@@ -1094,7 +1167,7 @@ function renderSheet() {
   const key = JSON.stringify([m.title, m.body, m.ok, m.locked, S.busy, S.sheetError]);
   if (key === lastSheetKey || (S.pointerHeld && host.innerHTML)) return;
   lastSheetKey = key;
-  host.innerHTML = `<div class="dp-sheet" role="dialog" aria-modal="true" aria-labelledby="dp-sheet-title" data-tone="${m.tone}">
+  host.innerHTML = `<div class="dp-sheet" role="dialog" aria-modal="true" aria-labelledby="dp-sheet-title" data-tone="${m.tone}" ${m.caution ? 'data-caution="1"' : ''}>
     <header><span class="dp-sheet-mode">${m.tone === 'robot' ? 'REAL ROBOT' : 'PRACTICE'}</span><h3 id="dp-sheet-title">${escape(m.title)}</h3></header>
     <div class="dp-sheet-body">${m.body}${S.sheetError ? `<div class="callout danger" role="alert">${escape(S.sheetError)}</div>` : ''}</div>
     <footer><button class="dp-sheet-ok ${m.tone}" id="dp-sheet-ok" ${m.locked || S.busy ? 'disabled' : ''}>${escape(S.busy ? 'Sending…' : m.ok)}</button>${lockLine(m.locked)}<button class="dp-secondary" id="dp-sheet-cancel">Cancel</button></footer></div>`;
@@ -1102,6 +1175,7 @@ function renderSheet() {
   host.querySelector('#dp-sheet-ok').addEventListener('click', () => { if (!m.locked && !S.busy) { S.sheetError = null; m.run(); } });
   host.querySelectorAll('[data-confirm]').forEach(i => i.addEventListener('change', () => { S.sheet.confirm[i.dataset.confirm] = i.checked; renderSheet(); }));
   host.querySelector('[data-armed]')?.addEventListener('change', e => { S.sheet.armed = e.target.checked; renderSheet(); });
+  host.querySelector('[data-ack]')?.addEventListener('change', e => { S.sheet.ack = e.target.checked; renderSheet(); });
   if (!host.contains(document.activeElement)) host.querySelector('input, #dp-sheet-cancel')?.focus({ preventScroll: true });
 }
 
@@ -1128,9 +1202,7 @@ function renderCamera(mode, L) {
 function renderBanners() {
   const el = $('dp-banners'); if (!el) return;
   const out = [], sess = session(), ls = S.view ? liveState() : null;
-  if (S.stateOk === false) out.push(['danger', `The deploy service does not answer: ${S.stateError}. A console may still be running.`]);
-  if (sess && ls === 'lost') out.push(['danger', `LIVE VIEW LOST — the robot may still be walking. Watch the robot. E-STOP above (direct path) · physical E-stop.`]);
-  else if (sess && ls === 'stale') out.push(['warning', `Live view ${liveAge().toFixed(1)} s old`]);
+  renderLost(sess && ls);
   if (S.view && !d3.isAligned() && sess) out.push(['neutral', 'Not aligned yet: the robot\'s own frame only. The start check aligns it with the scan (it runs once the planner stands ready).']);
   if (S.lease.lost && S.step !== 'connect') out.push(['warning', `You lost the controls: ${S.lease.lost}. Take them again in Connect.`]);
   if (S.step === 'goal' && !S.goal && S.scene) out.push(['hint', 'Click the floor to place a goal · Esc cancels']);
@@ -1138,7 +1210,36 @@ function renderBanners() {
   const key = JSON.stringify(out);
   if (key !== el.dataset.key) { el.dataset.key = key; el.innerHTML = out.map(([k, t]) => `<div class="dp-banner ${k}" role="${k === 'danger' ? 'alert' : 'status'}">${escape(t)}</div>`).join(''); updateInsets(); }
 }
-function hudItem(label, value, tone = '', big = false) { return `<div class="dp-hud-item ${tone}${big ? ' big' : ''}"><span>${escape(label)}</span><strong>${value}</strong></div>`; }
+// The one LIVE VIEW LOST banner, at the bottom of the stage, with a red stage border; stale is a quiet line there.
+function renderLost(ls) {
+  const el = $('dp-lost'), stage = $('deploy-stage'); if (!el) return;
+  const lost = ls === 'lost', stale = ls === 'stale', age = liveAge();
+  stage.toggleAttribute('data-lost', lost);
+  el.hidden = !lost && !stale;
+  el.className = `dp-lost ${lost ? 'lost' : 'stale'}`;
+  const text = lost ? `LIVE VIEW LOST ${Math.round(age)} s — the robot may still be walking · watch it · E-STOP above · physical E-stop`
+    : stale ? `Live view ${age.toFixed(1)} s old` : '';
+  if (el.textContent !== text) { el.textContent = text; updateInsets(); }
+  if (lost && !S.lostFramed) { S.lostFramed = true; d3.ensureInView(d3.liveScenePose()); }
+  if (!lost && !stale) S.lostFramed = false;
+}
+function hudItem(label, value, tone = '', big = false, tip = '') { return `<div class="dp-hud-item ${tone}${big ? ' big' : ''}" ${tip ? `title="${escape(tip)}"` : ''}><span>${escape(label)}</span><strong>${value}</strong></div>`; }
+// What drives the robot, in the operator's words (the console's own text is the tooltip). A remote D-pad set other than
+// standing is called out: on 10-27 the boxing set was read as a planner pose.
+function drivingWords(p) {
+  if (!p) return { text: null, tone: '' };
+  if (p.runner === 'E-STOP') return { text: 'E-STOP · runner safe mode', tone: 'bad' };
+  const raw = String(p.driving ?? ''), key = p.driving_source ?? (/student/i.test(raw) ? 'student' : /recorded/i.test(raw) ? 'replay'
+    : /SONIC planner/i.test(raw) ? 'sonic_planner' : /SONIC reference/i.test(raw) ? 'sonic_reference' : /Unitree/i.test(raw) ? 'unitree' : null);
+  const set = p.motion_set ?? raw.match(/\(([^)]+?) set\)/)?.[1] ?? null;
+  if (key === 'student') return walking() ? { text: 'Policy walking', tone: 'live' } : { text: 'Policy holding (standing)', tone: '' };
+  if (key === 'replay') return { text: 'Recorded reference', tone: 'live' };
+  if (key === 'sonic_planner') return set && set !== 'standing' ? { text: `SONIC · ${set} set (remote D-pad)`, tone: 'warn' } : { text: 'Standing (SONIC)', tone: '' };
+  if (key === 'sonic_reference') return { text: 'Stand hold (policy off)', tone: '' };
+  if (key === 'unitree') return { text: 'Unitree controller (not armed)', tone: '' };
+  return { text: raw || null, tone: '' };
+}
+const ODOM_MODE = { fused: 'FAST-LIO + legs', zmq: 'FAST-LIO', lio: 'FAST-LIO', leg: 'Legs', dds: 'Simulator' };
 function renderHud() {
   const el = $('dp-hud'); if (!el) return;
   const sess = session(), v = S.view, p = S.panel;
@@ -1148,11 +1249,15 @@ function renderHud() {
   const trail = S.poseTrail ?? [], hist = v.pose_hist ?? [];
   const speed = trail.length > 1 && trail.at(-1).t - trail[0].t >= 0.3 ? Math.hypot(trail.at(-1).x - trail[0].x, trail.at(-1).y - trail[0].y) / (trail.at(-1).t - trail[0].t)
     : hist.length > 1 ? Math.hypot(hist.at(-1)[1] - hist[0][1], hist.at(-1)[2] - hist[0][2]) / Math.max(0.05, hist.at(-1)[0] - hist[0][0]) : null;
-  const odom = v.odom ?? p?.odom ?? {}, odomTone = odom.lost ? 'bad' : odom.doubt ? 'warn' : '';
-  const odomText = odom.lost ? `LOST · ${odom.lost}` : odom.doubt ? 'LIO doubt' : odom.watchdog ? `watchdog: ${odom.watchdog}` : `${odom.mode ?? '?'}${finite(odom.lio_age_s) ? ` · LIO ${Math.round(odom.lio_age_s * 1000)} ms` : ''}`;
+  // The mode and the LIO age; the watchdog only when it is not "ok" (then in warn tone).
+  const odom = v.odom ?? p?.odom ?? {}, wd = odom.watchdog && !['ok', 'off'].includes(odom.watchdog) ? odom.watchdog : null;
+  const odomTone = odom.lost ? 'bad' : odom.doubt || wd ? 'warn' : '', mode = ODOM_MODE[odom.mode] ?? odom.mode ?? 'Unavailable';
+  const odomText = odom.lost ? `LOST · ${odom.lost}` : odom.doubt ? `LIO doubt${wd ? ` · ${wd}` : ''}` : wd ? `${mode} · ${wd}`
+    : `${mode}${finite(odom.lio_age_s) ? ` · LIO ${Math.round(odom.lio_age_s * 1000)} ms` : ''}`;
+  const drive = drivingWords(p);
   const temp = p?.temps?.max_c, sonic = p?.standing_s, lidar = st().robot_link?.lidar_hz;
   el.innerHTML = [
-    hudItem('Driving', val(p?.driving, x => escape(x)), walking() ? 'live' : '', true),
+    hudItem('Driving', val(drive.text, x => escape(x)), drive.tone, true, p?.driving ? `The console: ${p.driving}` : ''),
     hudItem('Phase', val(v.phase, x => escape(PHASE[x] ?? x))),
     hudItem('To goal', val(v.goal_dist_m, x => `${x.toFixed(2)}<em>m</em>${odom.mode === 'leg' ? '<small>leg odometry under-counts 25-40 %</small>' : ''}`)),
     hudItem('Speed', val(speed, x => `${x.toFixed(2)}<em>m/s</em>`)),
@@ -1166,11 +1271,20 @@ function renderHud() {
   el.dataset.state = ls;
   updateInsets();
 }
+// The console's events in the operator's words: Studio's own echoes ("studio: g ok"), the lease heartbeat and goal
+// sequence numbers are hidden unless the Console log is opened.
+const quietLine = e => /\bstudio:\s*[\w-]+\s+ok\b/i.test(e) || /:\s*lease\b/i.test(e);
+const plainLine = e => e.replace(/\bgoal\s+\d{5,}\b/gi, 'goal').replace(/\s*\(seq \d+\)/gi, '').replace(/\s{2,}/g, ' ').trim();
 function renderTicker() {
-  const el = $('dp-ticker'); if (!el) return;
-  const events = session() ? (S.panel?.events ?? []).filter(e => !/:\s*lease\b/.test(String(e))).slice(0, 4) : [];
-  el.innerHTML = events.map(e => `<li>${escape(String(e).trim())}</li>`).join('');
-  el.hidden = !events.length;
+  const el = $('dp-ticker'); if (!el || S.pointerHeld) return;
+  const all = session() ? (S.panel?.events ?? []).map(e => String(e).trim()) : [];
+  const lines = S.logAll ? all.slice(0, 12) : all.filter(e => !quietLine(e)).map(plainLine).slice(0, 4);
+  el.hidden = !all.length;
+  const key = JSON.stringify([lines, S.logAll]);
+  if (key === el.dataset.key) return;
+  el.dataset.key = key;
+  el.innerHTML = `<li class="dp-ticker-head"><span>Console</span><button type="button" id="dp-log-toggle" aria-pressed="${!!S.logAll}">${S.logAll ? 'Fewer lines' : 'Console log'}</button></li>${lines.map(e => `<li>${escape(e)}</li>`).join('')}`;
+  $('dp-log-toggle').addEventListener('click', () => { S.logAll = !S.logAll; el.dataset.key = ''; renderTicker(); updateInsets(); });
 }
 function renderTimeline() {
   const el = $('dp-timeline'); if (!el) return;
@@ -1179,22 +1293,22 @@ function renderTimeline() {
   if (!show) return;
   const t = S.timeline;
   el.innerHTML = `<button id="dp-tl-play" aria-label="${t.playing ? 'Pause' : 'Play'}">${t.playing ? '❚❚' : '▶'}</button>
-    <input id="dp-tl" type="range" min="0" max="${t.duration}" step="0.02" value="${t.t}" aria-label="Rehearsal time">
-    <span>${t.t.toFixed(1)} / ${t.duration.toFixed(1)} s</span>
-    <span class="dp-tl-key"><i style="--c:#0f9e94"></i>exact<i style="--c:#e0a030"></i>drift<i style="--c:#8a63d2"></i>offset</span>`;
+    <input id="dp-tl" type="range" min="${t.t0 ?? 0}" max="${t.duration}" step="0.02" value="${t.t}" aria-label="Rehearsal time (from the first move)">
+    <span>${(t.t - (t.t0 ?? 0)).toFixed(1)} / ${(t.duration - (t.t0 ?? 0)).toFixed(1)} s</span>
+    <span class="dp-tl-key"><i style="--c:#3d6fb5"></i>exact<i style="--c:#c2408f"></i>leg drift<i style="--c:#7d8794"></i>offset</span>`;
   $('dp-tl-play').addEventListener('click', () => playTimeline(!S.timeline.playing));
-  $('dp-tl').addEventListener('input', e => { playTimeline(false); S.timeline.t = Number(e.target.value); d3.setRehearsalTime(S.timeline.t); el.querySelector('span').textContent = `${S.timeline.t.toFixed(1)} / ${t.duration.toFixed(1)} s`; });
+  $('dp-tl').addEventListener('input', e => { playTimeline(false); S.timeline.t = Number(e.target.value); d3.setRehearsalTime(S.timeline.t); el.querySelector('span').textContent = `${(S.timeline.t - (t.t0 ?? 0)).toFixed(1)} / ${(t.duration - (t.t0 ?? 0)).toFixed(1)} s`; });
 }
 function playTimeline(on) {
   const t = S.timeline; t.playing = on; cancelAnimationFrame(t.raf);
   if (on) {
-    if (t.t >= t.duration - 0.05) t.t = 0;
+    if (t.t >= t.duration - 0.05) t.t = t.t0 ?? 0;
     let last = performance.now();
     const loop = now => {
       if (!S.timeline.playing) return;
       t.t = Math.min(t.duration, t.t + (now - last) / 1000); last = now;
       d3.setRehearsalTime(t.t);
-      const range = $('dp-tl'); if (range) { range.value = String(t.t); range.nextElementSibling.textContent = `${t.t.toFixed(1)} / ${t.duration.toFixed(1)} s`; }
+      const range = $('dp-tl'); if (range) { range.value = String(t.t); range.nextElementSibling.textContent = `${(t.t - (t.t0 ?? 0)).toFixed(1)} / ${(t.duration - (t.t0 ?? 0)).toFixed(1)} s`; }
       if (t.t >= t.duration) { t.playing = false; renderTimeline(); return; }
       t.raf = requestAnimationFrame(loop);
     };
@@ -1205,7 +1319,7 @@ function playTimeline(on) {
 function renderLegend() {
   const el = $('dp-legend'); if (!el) return;
   const live = !!S.view;
-  el.innerHTML = `<span><i class="sw-ob"></i>Obstacle (by height)</span><span><i class="sw-st"></i>Step-over</span><span><i class="sw-oh"></i>Overhead</span><span><i class="sw-floor"></i>Seen floor</span>${live || S.scanLive?.running ? '<span><i class="sw-pt"></i>Lidar</span><span><i class="sw-ign"></i>Ignored by the planner</span>' : ''}${S.goal ? '<span><i class="sw-route"></i>Route</span>' : ''}${d3.hasTrail() ? '<span><i class="sw-walked"></i>Walked</span>' : ''}`;
+  el.innerHTML = `<span><i class="sw-ob"></i>Obstacle (by height)</span><span><i class="sw-st"></i>Step-over</span><span><i class="sw-oh"></i>Overhead</span><span><i class="sw-floor"></i>Seen floor</span>${live || S.scanLive?.running ? '<span><i class="sw-pt"></i>Lidar</span><span><i class="sw-ign"></i>Ignored by the planner</span>' : ''}${S.goal ? '<span><i class="sw-route"></i>Route</span>' : ''}${d3.hasTrail() ? '<span><i class="sw-walked"></i>Walked</span>' : ''}${live && d3.liveCounts()?.near ? '<span><i class="sw-near"></i>Near the robot\'s body (ignored)</span>' : ''}`;
 }
 // The overlays' footprint on the canvas: the camera centres the free area (deploy3d.setInsets).
 function updateInsets() {
@@ -1240,10 +1354,11 @@ function checkShown(c) {
 }
 const anchoredChecks = () => (S.readiness ?? []).filter(c => c.anchor).map(c => ({ id: c.id, status: checkShown(c).status, anchor: c.anchor, label: c.label }));
 function renderReadiness() {
-  const el = $('dp-readiness'); if (!el || !S.visible) return;
+  const el = $('dp-readiness'); if (!el || !S.visible || S.pointerHeld) return;
   const checks = S.readiness ?? [], shown = checks.map(c => ({ c, s: checkShown(c) }));
   const count = k => shown.filter(x => x.s.status === k).length;
-  const summary = `${count('pass')} ✓ · ${count('warn')} ! · ${count('block')} ✕ · ${count('later')} later`;
+  const old = S.readinessAt ? (performance.now() - S.readinessAt) / 1000 : 0;
+  const summary = `${count('pass')} ✓ · ${count('warn')} ! · ${count('block')} ✕ · ${count('later')} later${old > 6 ? ` (last seen ${Math.round(old)} s ago)` : ''}`;
   el.dataset.open = String(S.readinessOpen);
   el.innerHTML = `<button class="dp-ready-head" id="dp-ready-toggle" aria-expanded="${S.readinessOpen}"><strong>Readiness</strong><span class="${count('block') ? 'block' : count('warn') ? 'warn' : 'pass'}">${checks.length ? summary : 'waiting for the service'}</span><i aria-hidden="true">${S.readinessOpen ? '‹' : '›'}</i></button>
     ${S.readinessOpen ? `<div class="dp-ready-body">${GROUPS.map(([g, label]) => {
@@ -1280,6 +1395,7 @@ function bindPointer() {
     if (S.step !== 'goal' || S.sheet) return;
     if (!S.scene) return;
     const hit = d3.pickAt(e.clientX, e.clientY); if (!hit) return;
+    cancelAnimationFrame(hoverRaf); hoverRaf = 0;
     const tip = $('dp-hover-tip'); if (tip) tip.hidden = true;
     S.hover = null; d3.setHover(null); S.clickAt = [e.clientX, e.clientY];
     const quick = d3.quickCheck(d3.scanLookup(), hit.xy);
@@ -1333,8 +1449,9 @@ function uiTick() {
     if (ls !== S.lastLiveState) { S.lastLiveState = ls; renderPanel(); renderSheet(); }
   }
   if (S.clearedAt && performance.now() - S.clearedAt < 11000) renderPanel();
+  if (S.readinessAt && performance.now() - S.readinessAt > 6000 && Math.floor(performance.now() / 1000) !== S.readinessTick) { S.readinessTick = Math.floor(performance.now() / 1000); renderReadiness(); }
   // The scan ghost vs robot now: shown once a session is aligned with the scan.
-  const sc = S.startCheck, sess = session(), ghost = [!!(sess && d3.isAligned()), sc ? `MOVED ${num(sc.moved_m, 2)} M, TURNED ${num(sc.turned_deg, 0)}°` : null];
+  const sc = S.startCheck, sess = session(), ghost = [!!(sess && d3.isAligned()), sc ? `moved ${num(sc.moved_m, 2)} m, turned ${num(sc.turned_deg, 0)}°` : null];
   const poseRobot = !S.view && !S.scanLive?.running;
   const ghostKey = JSON.stringify([ghost, poseRobot, d3.hasModel(), S.step]);
   if (ghostKey !== S.ghostKey) { S.ghostKey = ghostKey; d3.setScanGhost(...ghost); d3.setScanPoseRobot(poseRobot); }
@@ -1361,7 +1478,7 @@ const STAGE_HTML = `
   <div class="dp-layers" id="dp-layers" hidden></div>
   <div class="dp-banners" id="dp-banners" aria-live="polite"></div>
   <aside class="dp-readiness" id="dp-readiness" aria-label="Readiness"></aside>
-  <div class="dp-bottom" id="dp-bottom"><div class="dp-timeline" id="dp-timeline" hidden></div><div class="dp-hud" id="dp-hud" aria-live="off"></div><div class="dp-side"><ol class="dp-ticker" id="dp-ticker" aria-label="Console events" hidden></ol><div class="dp-legend" id="dp-legend"></div></div></div>
+  <div class="dp-bottom" id="dp-bottom"><div class="dp-lost" id="dp-lost" role="alert" hidden></div><div class="dp-timeline" id="dp-timeline" hidden></div><div class="dp-hud" id="dp-hud" aria-live="off"></div><div class="dp-side"><ol class="dp-ticker" id="dp-ticker" aria-label="Console events" hidden></ol><div class="dp-legend" id="dp-legend"></div></div></div>
   <div class="dp-hover-tip" id="dp-hover-tip" hidden></div>`;
 export function initDeploy(ctx) {
   S.ctx = ctx;
@@ -1384,7 +1501,7 @@ export function initDeploy(ctx) {
 // The service answers the v1 API: Studio opens on Deploy (app.js).
 export async function probe() {
   const r = await api('/api/deploy/state', { timeout: 1500 });
-  if (r.ok && r.data.api) { S.state = r.data; S.stateOk = true; S.everOk = true; return true; }
+  if (r.ok && r.data.api) { S.state = r.data; S.stateOk = true; S.everOk = true; emit('deploy:service', true); return true; }
   return false;
 }
 export async function enter() {
