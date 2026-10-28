@@ -37,6 +37,7 @@ of requests to fail (-1: until cleared); `{"reset": true}` clears everything:
   freeze_view BOOL         the hub serves the node view frozen (t_mono stays; served_age_s grows)
   hang_console BOOL|SLOT   the console's panel stops answering (GET /state, /act, /act_result, E-STOP); the hub runs
   manifest_fail N / recording_fail N / track_fail N / session_fail N   503 for the next N requests of that kind
+  track_fail_name RUN      track_fail applies to this run's track only
   manifest_mode ok|failing         failing: a required stream partial (gaps), complete false
   recording_mode ok|degraded       degraded: a required stream stalled, low disk, recorder errors
   rehearsal_fail_run exact|drift|offset    that run errors: the set ends "failed"
@@ -242,7 +243,7 @@ class Faults:
     """The fake's fault switches (module docstring). Counters: > 0 fail that many more requests, -1 until cleared."""
     DEFAULTS = {"console_drop_reply": 0, "console_drop_acts": None, "hub_drop_reply": 0, "act_delay_s": 0.0,
                 "hub_delay_s": 0.0, "hub_down_s": 0.0, "freeze_panel": False, "freeze_view": False,
-                "hang_console": False, "manifest_fail": 0, "recording_fail": 0, "track_fail": 0, "session_fail": 0,
+                "hang_console": False, "manifest_fail": 0, "recording_fail": 0, "track_fail": 0, "track_fail_name": None, "session_fail": 0,
                 "manifest_mode": "ok", "recording_mode": "ok", "rehearsal_fail_run": None,
                 "rehearsal_stop_after": None}
 
@@ -1154,7 +1155,8 @@ class FakeHub:
         return {"ok": True, "seeded": made}
 
     def track(self, name):
-        if self.faults.take("track_fail"):
+        only = self.faults.get("track_fail_name")
+        if (only is None or only == name) and self.faults.take("track_fail"):
             return 503, {"ok": False, "error": "fake fault: the track is not readable right now"}
         for r in self.rehearsals.values():
             for which, run in r["runs"].items():

@@ -782,7 +782,7 @@ class UncertainActTests(GatewayCase):
         self.assertIn("act_unknown", [json.loads(l)["kind"] for l in self.audit.read_text().splitlines()])
 
     def test_a_reply_the_service_lost_or_never_sent_in_time_is_unknown(self):
-        robot = self.start_robot()
+        self.start_robot()
         self.hub.faults.set(hub_drop_reply=1)                         # applied, then the connection closed
         status, out = self.deploy.act({"act": "note", "slot": "robot", "operator": "x"})
         self.assertEqual((status, out["state"]), (202, "unknown"))
@@ -1036,7 +1036,7 @@ class OldServiceTests(GatewayCase):
         robot = self.start_robot()
         self.call("GET", "/api/deploy/state")
         self.assertEqual(set(self.call("GET", "/api/deploy/link")[1]["capabilities"].values()), {False})
-        for path, cap in ((f"/api/deploy/rehearsal/match?scan=scan-fake&x=1&y=0", "rehearsal_match"),
+        for path, cap in (("/api/deploy/rehearsal/match?scan=scan-fake&x=1&y=0", "rehearsal_match"),
                           (f"/api/deploy/recording?name={robot.name}", "recording_health"),
                           (f"/api/deploy/session/receipt?name={robot.name}", "session_receipt"),
                           ("/api/deploy/profile/route?name=deploy", "profile_route"),
