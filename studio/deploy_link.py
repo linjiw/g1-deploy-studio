@@ -111,10 +111,12 @@ V3_CAPABILITY = {"/api/deploy/rehearsal/match": "rehearsal_match", "/api/deploy/
                  "/api/deploy/tag": "session_tag"}
 V3_CAPABILITIES = ("session_receipt", "rehearsal_match", "rehearsal_identity", "passage", "act_status",
                    "session_detail", "session_tag", "profile_route", "recording_health", "manifest_v2")
-# Where the gateway adds `source_age_s` (now - the source's own monotonic time; the deploy service, its consoles and
-# this gateway share one host and one monotonic clock: loopback only).
+# Where the gateway adds `source_age_s`: now - the source's own time, a host monotonic one (`t_mono`, the console's
+# `console_t_mono`) or the wall clock (the recording health's `at`). The deploy service, its consoles and this gateway
+# share one host and its clocks (loopback only).
 SOURCE_CLOCK = {"/api/deploy/state": "t_mono", "/api/deploy/live": "t_mono", "/api/deploy/panel": "console_t_mono",
-                "/api/deploy/recording": "t_mono"}
+                "/api/deploy/recording": "at"}
+WALL_CLOCK_KEYS = ("at",)
 # Studio's POST /api/deploy/act {act, ...}: act -> hub path. Console acts go through /api/v1/act.
 HUB_ACTS = {
     "start": "/api/v1/start", "stop": "/api/v1/stop", "scan": "/api/v1/scan", "practice_scan": "/api/v1/practice/scan",
@@ -157,10 +159,12 @@ def unsupported(status, obj):
 
 
 def source_age(obj, key):
-    """now - obj[key] (a host monotonic time), rounded; None when absent."""
+    """now - obj[key] (a host monotonic time, or a wall time for the keys in WALL_CLOCK_KEYS), rounded; None when
+    absent."""
     t = obj.get(key) if isinstance(obj, dict) else None
     if isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t):
-        return round(max(0.0, time.monotonic() - t), 3)
+        now = time.time() if key in WALL_CLOCK_KEYS else time.monotonic()
+        return round(max(0.0, now - t), 3)
     return None
 
 

@@ -196,9 +196,17 @@ G1_PANEL_TOKEN=fake-token .venv/bin/python -m studio.server --port 8792 --data-r
 | `freeze_panel`, `freeze_view` | The service serves the panel state / the node view frozen while the console runs on. |
 | `hang_console: true \| "robot" \| "sim"` | The console's panel stops answering (state, acts, act records, E-STOP) while the service runs. |
 | `manifest_fail`, `recording_fail`, `track_fail`, `session_fail: N` | 503 for the next N requests, then recovery (`track_fail_name`: only that run's track). |
-| `manifest_mode: "failing"`, `recording_mode: "degraded"` | A required stream partial with gaps / stalled, low disk, recorder errors. |
+| `manifest_mode: "failing"`, `recording_mode: "degraded" \| "stalled"` | A required stream partial with gaps / a stream stalled, low disk, recorder errors / the recorder's heartbeat stopped (recording state `stalled`). |
 | `rehearsal_fail_run`, `rehearsal_stop_after` | A rehearsal run errors (set `failed`) / the set stops after a run (`partial`). |
 
+`POST /api/fake/end {slot, abrupt: true}` ends a session as killed (recording `not finalized`, manifest `lost`);
+`POST /api/fake/previous_day {}` seeds an ended session in an earlier day's directory (resolved by name, as the kit
+resolves Review links across lab-day-* directories). The fake follows the kit where defects once hid behind it:
+recording health and manifest shaped as the kit's `evidence.py` (recording state `recording | stalled | finalized |
+not finalized`, stream state `active | waiting | stalled | stopped | off | absent | n/a`), the robot GO rehearsal gate
+(a robot `g` needs a robust matching set or `rehearsal_override {operator, reason}`; 409 `rehearsal_required`),
+session-bound acts (409 `session_mismatch`, stops excepted), the start-offset envelope of the set in force for that
+goal, and passage `n/a` ("started past the gate") for an attempt that starts beyond the gate.
 `POST /api/fake/rehearsals {preset: "f02"}` seeds the review's rehearsal cases (an older pass, a newer failure, a rerun in
 progress, other odometry, changed profile contents, another start, a missing identity field); `POST /api/fake/profile
 {name, params}` changes a profile's contents under the same name (its sha changes).

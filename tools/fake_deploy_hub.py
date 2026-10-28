@@ -25,6 +25,18 @@ ended); GET /api/v1/profile/<name>/route (profiles deploy, low-margin and near d
 manifest v2. `--v1-only` serves the v1 service alone (v3 paths answer 404 "unknown endpoint", as the kit's service
 before v3 does).
 
+Where it follows the kit's newer behaviour (an independent verification found defects hiding where the fake differed):
+recording health and manifest shaped as g1deploy/evidence.py (recording state recording | stalled | finalized |
+not finalized; stream state active | waiting | stalled | stopped | off | absent | n/a; manifest state recording | ended |
+lost); the robot GO rehearsal gate (`go_rehearsal_gate`: a robot `g` is refused, 409 `rehearsal_required`, unless the
+complete set in force for the goal sent through send_goal and the session's profile and odometry is ROBUST, or the act
+carries `rehearsal_override {operator, reason}`, which goes to the attempt; Practice: recorded, never refused); acts
+bound to their session (`session_bound_acts`: 409 `session_mismatch`, stops excepted); the start check's
+within_offset_envelope from the set in force for that goal, only when its offset case passed (else null); an attempt
+that starts past the passage gate (its straight start-goal segment does not cross the gate's line) scores passage "n/a",
+"started past the gate"; session names resolve in earlier days too (POST /api/fake/previous_day seeds one; unknown
+names answer the kit's 404 naming the lab-day-* directories).
+
 Fault switches (GET/POST /api/fake/faults?t=TOKEN, JSON; in process: `hub.faults.set(...)`). Counters are the number
 of requests to fail (-1: until cleared); `{"reset": true}` clears everything:
   console_drop_reply N     the console applies the next N acts and drops the HTTP reply (the hub answers 502)
@@ -39,7 +51,10 @@ of requests to fail (-1: until cleared); `{"reset": true}` clears everything:
   manifest_fail N / recording_fail N / track_fail N / session_fail N   503 for the next N requests of that kind
   track_fail_name RUN      track_fail applies to this run's track only
   manifest_mode ok|failing         failing: a required stream partial (gaps), complete false
-  recording_mode ok|degraded       degraded: a required stream stalled, low disk, recorder errors
+  recording_mode ok|degraded|stalled   degraded: lidar_raw stalled, drops, low disk, recorder errors; stalled: the
+                                   recorder's heartbeat stopped while its process runs (state "stalled")
+POST /api/fake/end {slot, abrupt}: end the session; abrupt: killed / power loss (recording "not finalized", manifest
+"lost").
   rehearsal_fail_run exact|drift|offset    that run errors: the set ends "failed"
   rehearsal_stop_after exact|drift         the set stops after that run: "partial"
 POST /api/fake/rehearsals {preset: "f02", scan?, goal_scene?, profile?, odom?} seeds rehearsal sets for Astra's F02
@@ -103,11 +118,25 @@ V1_CAPABILITIES = ["state", "readiness", "sessions", "scan", "scan_live", "scan_
                    "start_check", "send_goal", "rehearse", "track", "live_view", "act", "panel_state", "manifest",
                    "doctor", "confirm"]
 V3_CAPABILITIES = ["session_receipt", "rehearsal_match", "rehearsal_identity", "passage", "act_status",
-                   "session_detail", "session_tag", "profile_route", "recording_health", "manifest_v2"]
+                   "session_detail", "session_tag", "profile_route", "recording_health", "manifest_v2",
+                   "session_bound_acts", "go_rehearsal_gate"]
+STOP_ACTS = ("estop", "h", "t", "o")  # the kit's hub never refuses these for a session mismatch
+ENVELOPE_SLACK_M, ENVELOPE_SLACK_DEG = 0.15, 6.0  # the kit: the registration's own slack around a rehearsed offset
 BUNDLE_MANIFEST_SHA = hashlib.sha256(b"fake bundle MANIFEST.json").hexdigest()
 ROBOT_STREAMS = ["lowstate", "lowcmd", "lidar_raw", "node_status", "node_events", "plans", "console_events", "attempts"]
 LIO_STREAMS = ["lio_odom", "lio_cloud"]
 OPTIONAL_STREAMS = ["video", "runner_log", "report"]
+# as the kit's g1deploy/evidence.py
+ITEMS = ("lowstate", "lowcmd", "lidar_raw", "lio_cloud", "lio_odom", "node_status", "node_events", "plans",
+         "node_memory", "console_events", "attempts", "start_checks", "scan", "rehearsal", "identity",
+         "operator_confirmations", "runner_log", "report", "video")
+REQUIRED_WHERE_THEY_APPLY = ("node_memory", "start_checks", "scan", "identity", "operator_confirmations")
+HEALTH_STREAMS = (("lowstate", "lowstate"), ("lowcmd", "lowcmd"), ("lidar_raw", "lidar"), ("lio_odom", "zmq_odom"),
+                  ("lio_cloud", "zmq_cloud"), ("node_status", "node_status"), ("sim_truth", "odostate"),
+                  ("secondary_imu", "secondary_imu"), ("lidar_imu", "lidar_imu"), ("student_stream", "zmq_pose"),
+                  ("runner_debug", "zmq_debug"))
+RECORDING_STATES = ("recording", "stalled", "finalized", "not finalized", "absent")  # evidence.recorder_state
+STREAM_STATES = ("active", "waiting", "stalled", "stopped", "off", "absent", "n/a")   # evidence.recording_health
 EXPECTED_HZ = {"lowstate": 500.0, "lowcmd": 50.0, "lidar_raw": 10.0, "node_status": 5.0, "node_events": None,
                "plans": 5.0, "console_events": None, "attempts": None, "lio_odom": 10.0, "lio_cloud": 10.0,
                "sim_truth": 50.0, "runner_log": None, "video": None, "report": None}
@@ -170,6 +199,13 @@ def crosses(walk_xy, a, b):
         if d1 * d2 <= 0 and d3 * d4 <= 0 and (d1 != 0 or d2 != 0):
             return True
     return False
+
+
+def crosses_line(p, q, a, b):
+    """Whether the segment p-q crosses the (infinite) line through a and b: p and q on opposite sides of it."""
+    def side(r):
+        return (b[0] - a[0]) * (r[1] - a[1]) - (b[1] - a[1]) * (r[0] - a[0])
+    return side(p) * side(q) < 0
 
 
 def profile_sha(name):
@@ -352,7 +388,7 @@ class FakeConsole:
 
     def __init__(self, hub, slot, world, start_scene=(0.0, 0.0, 0.0), odom_start_yaw=ODOM_START_YAW, profile="deploy",
                  odom="fused", practice=False, scripted_goal_scene=None, drift_deg=None, name=None, operator=None,
-                 confirm=None, scan=None, rehearsal=None):
+                 confirm=None, scan=None, rehearsal=None, day=None, panel_port=None):
         self.hub, self.slot, self.world = hub, slot, world
         self.t0 = time.monotonic()
         self.started_wall = time.time()
@@ -375,10 +411,12 @@ class FakeConsole:
             "robot" if slot == "robot" else "practice"
         self.lease = None
         self.ended = False
+        self.abrupt = False  # ended without the console closing it or the recorder finalizing (killed, power loss)
         self.ended_wall = None
         self.name = name or f"{'robot' if slot == 'robot' and not practice else 'practice' if practice else 'rehearse'}-" \
                             f"{time.strftime('%H%M%S')}-{profile}"
-        self.dir = Path(hub.day) / self.name
+        self.day = Path(day or hub.day)  # a session of an earlier day lives in that day's directory
+        self.dir = self.day / self.name
         self.dir.mkdir(parents=True, exist_ok=True)
         self.receipt = hub.make_receipt(self, operator=operator, confirm=confirm, scan=scan,
                                         start_offset=list(start_scene) if practice else None)
@@ -386,7 +424,9 @@ class FakeConsole:
         self.write_session_files()
         self.panel_delay_s = 0.0
         self.samples = []  # (t_mono, joints, yaw, x, y) at 20 Hz for the recording
-        self.panel = panel_server(self, hub.args.panel_port if slot == "robot" else 0, hub.args.token)
+        self.previous_day = False
+        self.panel = panel_server(self, panel_port if panel_port is not None else
+                                  hub.args.panel_port if slot == "robot" else 0, hub.args.token)
         self.panel_port = self.panel.server_address[1]
         (self.dir / "panel_url.txt").write_text(f"http://127.0.0.1:{self.panel_port}/?t={hub.args.token}\n")
         self.script = scripted_goal_scene
@@ -530,9 +570,12 @@ class FakeConsole:
                                   "outcome": None, "result": None, "tag": None, "note": None, "tag_history": [],
                                   "check_id": getattr(self, "check_id", None),
                                   "start_check": meta.get("start_check") or self.hub.last_check.get(self.slot),
-                                  "rehearsal": meta.get("rehearsal") or self.hub.rehearsal_for_goal(self),
+                                  "rehearsal": msg.get("rehearsal") or meta.get("rehearsal")
+                                  or self.hub.rehearsal_for_goal(self),
+                                  "rehearsal_override": (msg.get("rehearsal") or {}).get("override"),
                                   "scan": meta.get("scan"), "goal_scene": meta.get("goal_scene"),
-                                  "passage_ab": meta.get("passage"), "passage": None,
+                                  "passage_ab": meta.get("passage"), "passage_gate": meta.get("passage"),
+                                  "passage": None, "passage_basis": None,
                                   "profile": self.profile, "odom": self.odom, "walk_from": len(self.walk_scene)})
             self.event("GO", "node")
             return True, ""
@@ -563,17 +606,26 @@ class FakeConsole:
             a = self.attempts[-1]
             dist = round(float(np.hypot(*(self.goal_odom - self.pose_odom()[:2]))), 2)
             walk = [p[:2] for p in self.walk_scene[a.get("walk_from", 0):]]
-            passage = None
-            if a.get("passage_ab"):
-                passage = "crossed" if len(walk) > 1 and crosses(walk, a["passage_ab"]["a"], a["passage_ab"]["b"]) \
-                    else "missed"
+            passage = basis = None
+            gate = a.get("passage_ab")
+            if gate:
+                goal = a.get("goal_scene") or apply(inverse(self.odom_from_scene), self.goal_odom).tolist()
+                if not crosses_line(a["start_scene"][:2], goal, gate["a"], gate["b"]):
+                    # a repeated trial from beyond the gate (the straight start-goal segment does not cross the gate's
+                    # line): the passage says nothing about this attempt
+                    passage, basis = "n/a", "started past the gate"
+                else:
+                    passage = "crossed" if len(walk) > 1 and crosses(walk, gate["a"], gate["b"]) else "missed"
+                    basis = "odometry estimate" if self.kind == "robot" else "sim truth"
             # the console's own field names (g1deploy/attempts.py: result, end_goal_dist_m) beside the older ones
             a.update(outcome=outcome, result=outcome, t_end=round(self.t(), 2), end_odom=self.pose_odom(),
-                     final_dist_m=dist, end_goal_dist_m=dist, passage=passage)
+                     final_dist_m=dist, end_goal_dist_m=dist, passage=passage, passage_basis=basis)
 
-    def end(self):
-        """The session ends (stop, the hub's end, or a rehearsal run's arrival): its recording is finalized."""
+    def end(self, abrupt=False):
+        """The session ends (stop, the hub's end, or a rehearsal run's arrival): its recording is finalized. abrupt:
+        killed or a power loss: no console_summary.json, no rec/finalized.json (the kit's "not finalized" / "lost")."""
         if not self.ended:
+            self.abrupt = bool(abrupt)
             self.ended = True
             self.ended_wall = time.time()
 
@@ -612,8 +664,11 @@ class FakeConsole:
                 for r in s[::10]:
                     f.write(json.dumps({"t": r[0], "status": {"xy": [r[2], r[3]], "pelvis_z_m": PELVIS_Z,
                                                               "yaw_rad": r[4], "phase": None}}) + "\n")
-            (self.dir / "console_summary.json").write_text(json.dumps({"ended": self.ended_wall,
-                                                                       "attempts": len(self.attempts)}))
+            if not self.abrupt:  # a killed console closes nothing; its recorder finalizes nothing
+                (self.dir / "console_summary.json").write_text(json.dumps({"ended": self.ended_wall,
+                                                                           "attempts": len(self.attempts)}))
+                (rec / "finalized.json").write_text(json.dumps({"reason": "stopped (session end)", "clean": True,
+                                                                "t": self.ended_wall}))
         except OSError:
             pass
 
@@ -782,21 +837,56 @@ class FakeHub:
         self.scans = [self.scan_row(self.world.name)]
         self.rehearsals = {}
         self.last_check = {}
+        self.goal_ctx = {}  # slot -> the goal last sent through send_goal {session, scan, goal_scene, seq, passage}
         self.actions, self.sessions = [], []
         self.doctor = None
         self.goal_last = None
         self.frozen = {}  # what freeze_panel / freeze_view / hang_console hold: key -> (monotonic, snapshot)
         self.server = None
+        self.linked_days = set()  # day directory names linked into Studio's robot-sessions
         self.studio_link = self.link_studio(args.studio_data) if args.studio_data else None
 
-    def link_studio(self, studio_data):
-        """The day directory under Studio's robot-sessions (as the kit's hub.link_studio)."""
+    def link_studio(self, studio_data, day=None):
+        """A day directory under Studio's robot-sessions (as the kit's hub.link_studio): this hub's day by default."""
+        day = Path(day or self.day)
         base = Path(studio_data) / "robot-sessions"
         base.mkdir(parents=True, exist_ok=True)
-        link = base / Path(self.day).name
+        link = base / day.name
         if not link.exists():
-            link.symlink_to(self.day, target_is_directory=True)
+            link.symlink_to(day, target_is_directory=True)
+        self.linked_days.add(day.name)
         return str(link)
+
+    def no_session(self, name):
+        """The kit's 404 for a session name it finds in no lab-day-* directory."""
+        return 404, {"ok": False, "error": f"no session {name!r} in {Path(self.day).name} or the other lab-day-* "
+                                          "directories beside it", "session": str(name)}
+
+    def seed_previous_day(self, req):
+        """POST /api/fake/previous_day: an ended robot session with one tagged attempt in an earlier day's directory
+        (as the kit resolves a Review link from an earlier lab-day-*). It is not in the state's session list."""
+        day = Path(tempfile.mkdtemp(prefix="fake-day-prev-"))
+        profile = req.get("profile") or "deploy"
+        c = FakeConsole(self, "robot", self.world, start_scene=OFFSET_SCENE, profile=profile,
+                        odom=req.get("odom") or "fused", operator=req.get("operator") or "Linji",
+                        confirm={"gantry": True, "estop": True, "remote": True, "rope": True},
+                        scan=self.scans[-1]["name"], name=req.get("name") or f"robot-090000-{profile}", day=day,
+                        panel_port=0)
+        c.previous_day = True
+        c.attempts.append({"n": 1, "t_go": 2.0, "t_end": 9.5, "outcome": "arrived", "result": "arrived",
+                           "end_goal_dist_m": 0.21, "final_dist_m": 0.21, "goal_scene": [2.4, 0.0],
+                           "scan": self.scans[-1]["name"], "tag": "clean", "note": "seeded from an earlier day",
+                           "tag_history": [{"tag": "clean", "note": "seeded from an earlier day", "operator": "Linji",
+                                            "wall": round(time.time() - 86400, 3), "via": "console"}],
+                           "passage": None, "passage_basis": None, "passage_gate": None, "rehearsal": None,
+                           "rehearsal_override": None, "start_check": None, "check_id": None, "profile": profile,
+                           "odom": c.odom})
+        self.consoles[c.name] = c
+        c.end()
+        studio = req.get("studio_data") or self.args.studio_data
+        if studio:
+            self.link_studio(studio, day)
+        return {"ok": True, "name": c.name, "day": day.name, "dir": str(c.dir)}
 
     def scan_row(self, name, practice=False):
         return {"name": name, "time": time.strftime("%Y-%m-%dT%H:%M:%S"), "verdict": "CHECK", "practice": practice,
@@ -881,10 +971,11 @@ class FakeHub:
         return {"name": c.name, "dir": str(c.dir), "mode": "robot" if c.kind == "robot" else "sim", "kind": c.kind,
                 "practice": c.practice, "started": round(c.started_wall, 3), "profile": c.profile, "odom": c.odom,
                 "attempts": [{k: a.get(k) for k in ("n", "result", "tag", "note")} for a in c.attempts],
-                "studio": studio_id(Path(self.day), c.name), "ended": c.ended}
+                "studio": studio_id(c.day, c.name), "ended": c.ended}
 
     def sessions_v1(self, offset=0, limit=40):
-        rows = [self.session_row(c) for c in reversed(self.consoles.values())]  # newest first, as the kit
+        rows = [self.session_row(c) for c in reversed(self.consoles.values())  # newest first, as the kit
+                if not c.previous_day]  # the kit lists its own day only
         robot = [r for r in rows if r["mode"] == "robot"]
         other = [r for r in rows if r["mode"] != "robot"]
         return {"robot": robot, "other": other[offset:offset + limit], "other_total": len(other), "offset": offset,
@@ -957,7 +1048,11 @@ class FakeHub:
                 "confirmed at session start" if c else "", "session"),
         ]}
 
-    def start_check(self, slot, scan):
+    def start_check(self, slot, scan, goal=None, passage=None):
+        """As the kit's hub._start_check: the robot now against the scan (the fake's registration is perfect), and
+        within_offset_envelope from the rehearsal set in force for that goal (scan + goal + the session's profile and
+        odometry), only when its offset case passed and before the first walk; else None. `goal`: the goal it is for,
+        else the goal last sent through send_goal in this session on this scan."""
         c = self.live(slot)
         if c is None or c.phase is None:
             return {"ok": False, "error": "the planner node is not up (Arm)", "reason": "the planner node is not up (Arm)"}
@@ -969,20 +1064,30 @@ class FakeHub:
         chk = {"ok": True, "overlap": 0.81, "theta": theta, "t": t, "P_c": c.pose_odom(),
                "scene_from_odom": [round(v, 5) for v in inverse(c.odom_from_scene)], "moved_m": round(moved, 3),
                "turned_deg": round(math.degrees(q[2]), 1), "at": time.time(), "warn": moved > 0.1 or abs(q[2]) > 0.087,
-               "within_offset_envelope": moved <= 0.25 and abs(math.degrees(q[2])) <= 25, "scan": scan}
-        # as the kit (hub.start_check): the envelope covers the first walk from the scan pose; after a walk, None
+               "scan": scan, "slot": slot, "session": c.name}
+        ctx = self.goal_ctx.get(slot) or {}
+        if goal is None and ctx.get("session") == c.name and ctx.get("scan") == scan:
+            goal = ctx.get("goal_scene")
+        if passage is None and goal is not None and ctx.get("goal_scene") == goal:
+            passage = ctx.get("passage")
+        env = self.rehearsal_in_force(scan, goal, slot, passage=passage).get("envelope") if goal is not None else None
+        chk["offset_envelope"], chk["goal_scene"] = env, goal
+        # the envelope covers the first walk from the scan pose; after a walk, None
         chk["closed_attempts"] = sum(1 for a in c.attempts if a.get("outcome") is not None)
-        if chk["closed_attempts"]:
+        if env and not chk["closed_attempts"]:
+            chk["within_offset_envelope"] = bool(moved <= env["moved_m"] + ENVELOPE_SLACK_M
+                                                 and abs(chk["turned_deg"]) <= env["turned_deg"] + ENVELOPE_SLACK_DEG)
+        else:
             chk["within_offset_envelope"] = None
         self.last_check[slot] = chk
         return chk
 
     # -- rehearsal sets (contract v3 B)
-    def identity_now(self, scan, goal_scene, profile, odom):
-        """The identity a set rehearsed now for these inputs would carry."""
+    def identity_now(self, scan, goal_scene, profile, odom, profile_sha_=None):
+        """The identity a set rehearsed now for these inputs would carry (profile_sha_: a session's receipt's)."""
         return {"scan": scan, "scan_memory_sha": self.world.memory_sha,
                 "goal_scene": [round(float(v), 4) for v in goal_scene], "profile": profile,
-                "profile_sha": profile_sha(profile) if profile in PROFILES else None,
+                "profile_sha": profile_sha_ or (profile_sha(profile) if profile in PROFILES else None),
                 "bundle_sha": BUNDLE_MANIFEST_SHA, "rules_sha": None, "odom": odom,
                 "starts": copy.deepcopy(STARTS), "drift_model": DRIFT_MODEL}
 
@@ -997,8 +1102,8 @@ class FakeHub:
                "runs": {k: {"name": f"{base}-{k}", "state": "pending", "result_node": None, "arrival": None,
                             "final_dist_m": None, "passage": None, "contact_max_n": None, "timing_valid": None,
                             "timing_note": None} for k in RUN_KINDS},
-               "passage": passage, "verdict": None, "apart_m": None, "offset_ok": None, "current": None,
-               "_results": {}}
+               "passage": passage, "verdict": None, "apart_m": None, "offset_ok": None, "envelope": None,
+               "current": None, "_results": {}}
         self.rehearsals[base] = rec
         return rec
 
@@ -1058,6 +1163,7 @@ class FakeHub:
             missed = passage is not None and any(runs[k]["passage"] != "crossed" for k in ("exact", "drift"))
             rec["apart_m"] = round(apart, 2)
             rec["offset_ok"] = arrived["offset"] and (passage is None or runs["offset"]["passage"] == "crossed")
+            rec["envelope"] = self.envelope_of(OFFSET_SCENE) if rec["offset_ok"] else None
             rec["verdict"] = ("missed passage" if missed and arrived["exact"] else
                               "robust" if arrived["exact"] and arrived["drift"] and apart <= 0.5 else
                               "other way" if arrived["exact"] and arrived["drift"] else
@@ -1067,10 +1173,23 @@ class FakeHub:
         threading.Thread(target=run, daemon=True).start()
         return dict(self.public_set(rec), ok=True)
 
-    def match(self, scan, x, y, profile, odom):
+    @staticmethod
+    def envelope_of(offset):
+        """The kit's frames.offset_envelope: how far from the scan pose a passed start-offset case covers."""
+        return {"moved_m": round(math.hypot(offset[0], offset[1]), 3), "turned_deg": round(abs(math.degrees(offset[2])), 1)}
+
+    def match(self, scan, x, y, profile=None, odom=None, session=None, passage=None):
         """GET /api/v1/rehearsal/match: the newest complete set whose identity matches, the newest running one, and
-        every other set of that scan with what differs (an empty mismatch: superseded by a newer matching set)."""
-        want = self.identity_now(scan, [x, y], profile, odom)
+        every other set of that scan with what differs and why (an empty mismatch: superseded or not complete). With a
+        session, its receipt's profile (by contents) and odometry, as the kit."""
+        c = self.consoles.get(session) if session else None
+        if session and c is None:
+            return {"ok": False, "error": f"no session {session}"}
+        if c is not None:
+            prof = c.receipt.get("profile") or {}
+            want = self.identity_now(scan, [x, y], prof.get("name"), odom or c.odom, profile_sha_=prof.get("sha"))
+        else:
+            want = self.identity_now(scan, [x, y], profile or "deploy", odom or "fused")
         complete = running = None
         others = []
         for r in sorted(self.rehearsals.values(), key=lambda r: (r["started"], r["name"]), reverse=True):
@@ -1079,9 +1198,18 @@ class FakeHub:
             ident = r.get("identity") or {}
             missing = [k for k in want if k not in ident]
             mismatch = [k for k in want if k in ident and k != "goal_scene" and ident[k] != want[k]]
+            reasons = [f"{k} missing from the set's identity" for k in missing] + [f"{k} differs" for k in mismatch]
             g = ident.get("goal_scene")
             if "goal_scene" in ident and (not g or math.hypot(g[0] - x, g[1] - y) > MATCH_GOAL_M):
                 mismatch.append("goal_scene")
+                reasons.append(f"goal more than {MATCH_GOAL_M} m from the set's")
+            if passage is not None:
+                sp = r.get("passage")
+                near = lambda p_, q_: math.hypot(p_[0] - q_[0], p_[1] - q_[1]) <= 0.1  # noqa: E731
+                if not sp or not ((near(sp["a"], passage["a"]) and near(sp["b"], passage["b"]))
+                                  or (near(sp["a"], passage["b"]) and near(sp["b"], passage["a"]))):
+                    mismatch.append("passage")
+                    reasons.append("not scored on this passage gate")
             if not missing and not mismatch:
                 if r["state"] == "complete" and complete is None:
                     complete = self.public_set(r)
@@ -1089,21 +1217,85 @@ class FakeHub:
                 if r["state"] == "running" and running is None:
                     running = self.public_set(r)
                     continue
-            others.append({"name": r["name"], "state": r["state"], "mismatch": mismatch + missing, "missing": missing})
-        return {"complete": complete, "running": running, "others": others, "identity": want,
+                reasons = [f"older than {complete['name']}" if complete and r["state"] == "complete" else
+                           f"{r['state']}: a set counts only when its three runs are done"]
+            others.append({"name": r["name"], "state": r["state"], "started": r["started"],
+                           "mismatch": mismatch + missing, "missing": missing, "reasons": reasons})
+        return {"ok": True, "complete": complete, "running": running, "others": others, "identity": want,
+                "want": dict(want, session=session), "order": "newest first by start time",
                 "goal_tolerance_m": MATCH_GOAL_M}
 
+    def rehearsal_in_force(self, scan, goal_scene, slot=None, passage=None):
+        """As the kit: the matching complete set for this goal and the live session's profile and odometry, compactly
+        ({match: false, reason} when none), with its offset envelope when its offset case passed."""
+        if not scan or goal_scene is None:
+            return {"match": False, "reason": "no scan or goal"}
+        cur = self.live(slot) if slot else None
+        m = self.match(scan, float(goal_scene[0]), float(goal_scene[1]), session=cur.name if cur else None,
+                       passage=passage)
+        if not m.get("ok"):
+            return {"match": False, "reason": m.get("error")}
+        c = m["complete"]
+        out = {"match": bool(c), "running": (m.get("running") or {}).get("name")}
+        if not c:
+            close = next((o for o in m["others"] if o["state"] == "complete" and o["mismatch"]), None)
+            out["reason"] = "no complete rehearsal set matches" + (
+                f" ({close['name']}: {'; '.join(close['reasons'])})" if close else "")
+            return out
+        runs = c["runs"]
+        out.update({k: c.get(k) for k in ("name", "state", "verdict", "offset_ok", "apart_m", "profile", "odom",
+                                          "started", "passage")},
+                   all_passed=c.get("verdict") == "robust" and bool(c.get("offset_ok")),
+                   timing_valid=all(runs[k].get("timing_valid") for k in RUN_KINDS),
+                   runs={k: runs[k].get("name") for k in RUN_KINDS},
+                   per_run={k: {kk: runs[k].get(kk) for kk in ("arrival", "passage", "timing_valid", "final_dist_m")}
+                            for k in RUN_KINDS},
+                   identity_sha=hashlib.sha256(json.dumps(c["identity"], sort_keys=True).encode()).hexdigest(),
+                   envelope=dict(c["envelope"], set=c["name"]) if c.get("offset_ok") and c.get("envelope") else None)
+        return out
+
     def rehearsal_for_goal(self, console):
-        """The rehearsal set in force for the console's goal (stored with the attempt)."""
+        """The rehearsal set in force for the console's goal (stored with the attempt when no gate result came)."""
         meta = console.goal_meta or {}
         goal = meta.get("goal_scene") if meta.get("goal_scene") is not None else (
             self.goal_last.tolist() if self.goal_last is not None else None)
         scan = meta.get("scan") or (console.receipt.get("scan") or {}).get("name")
-        if goal is None or scan is None:
+        if goal is None or scan is None or console.kind == "rehearsal":
             return None
-        m = self.match(scan, float(goal[0]), float(goal[1]), console.profile, console.odom)
-        r = m["complete"]
-        return {k: r.get(k) for k in ("name", "verdict", "state", "offset_ok", "apart_m", "profile")} if r else None
+        return self.rehearsal_in_force(scan, goal, console.slot, passage=meta.get("passage"))
+
+    def go_gate(self, slot, c, msg):
+        """The kit's GO rehearsal gate (capability go_rehearsal_gate): a robot session's GO needs a complete set
+        matching the goal sent through send_goal and the live session's profile (by contents) and odometry, WHOSE
+        VERDICT IS ROBUST; anything else needs the operator's override (`rehearsal_override {operator, reason}` with the
+        act), which then goes with the act to the attempt. Practice: advisory (recorded, never refused)."""
+        ctx = self.goal_ctx.get(slot)
+        reh, why = None, None
+        if not ctx or ctx.get("session") != c.name:
+            why = "no goal was sent through the deploy service in this session (send_goal)"
+        elif c.goal_seq != ctx.get("seq"):
+            why = "the goal in force was not sent through the deploy service (it was set elsewhere)"
+        else:
+            reh = self.rehearsal_in_force(ctx.get("scan"), ctx.get("goal_scene"), slot, passage=ctx.get("passage"))
+            if not reh.get("match"):
+                why = reh.get("reason") or "no complete rehearsal set matches this goal"
+            elif reh.get("verdict") != "robust":  # whatever the odometry
+                why = f"the rehearsal set in force ({reh.get('name')}) is not robust: {reh.get('verdict')}"
+        robot = slot == "robot" and not c.practice
+        rec = dict(reh or {"match": False}, **({"reason": why} if why else {}))
+        ov = msg.get("rehearsal_override")
+        if ov:
+            o = ov if isinstance(ov, dict) else {}
+            who = str(o.get("operator") or msg.get("operator") or "").strip()[:60]
+            if not who:
+                return {"refuse": robot, "reason": "a rehearsal override needs the operator's name", "rehearsal": rec}
+            rec["override"] = {"operator": who, "reason": str(o.get("reason") or "")[:300] or None, "at": time.time(),
+                               "without": why}
+            return {"refuse": False, "reason": None, "rehearsal": rec}
+        if why and robot:
+            why = (f"GO needs a robust complete rehearsal set for this goal: {why}. Rehearse it, or tick the override "
+                   "(stored with the attempt)")
+        return {"refuse": bool(robot and why), "reason": why, "rehearsal": rec}
 
     def seed_rehearsals(self, req):
         """POST /api/fake/rehearsals: canned sets for Astra's F02 cases (newest first in the state)."""
@@ -1138,6 +1330,7 @@ class FakeHub:
             rec.update(state=state, verdict=verdict if state == "complete" else None,
                        apart_m=0.2 if state == "complete" else None,
                        offset_ok=ok if state == "complete" else None,
+                       envelope=self.envelope_of(OFFSET_SCENE) if state == "complete" and ok else None,
                        finished=round(started + 90, 3) if state != "running" else None,
                        current="drift" if state == "running" else None)
             made.append(rec["name"])
@@ -1178,71 +1371,171 @@ class FakeHub:
 
     # -- evidence (contract v3 G)
     @staticmethod
-    def required_streams(c):
-        req = list(ROBOT_STREAMS)
+    def policy(c):
+        """The kit's evidence.policy: id -> required | optional for this session's kind and odometry."""
+        req = set(ROBOT_STREAMS) | set(REQUIRED_WHERE_THEY_APPLY)
         if c.odom in ("zmq", "fused", "lio"):
-            req += LIO_STREAMS
-        if c.kind == "rehearsal":
-            req.append("sim_truth")
-        return req
+            req |= set(LIO_STREAMS)
+        if c.kind in ("robot", "rehearsal"):  # robot: the rehearsal set in force (or the override); rehearsal: truth
+            req.add("rehearsal")
+        return {i: "required" if i in req else "optional" for i in ITEMS}
+
+    def recorder_state(self, c):
+        """The kit's evidence.recorder_state: recording | stalled | finalized | not finalized (gone without finalizing)."""
+        if not c.ended:
+            return "stalled" if self.faults.get("recording_mode") == "stalled" else "recording"
+        return "not finalized" if c.abrupt else "finalized"
 
     def recording(self, c):
+        """GET /api/v1/session/<name>/recording, shaped as the kit's evidence.recording_health. Top-level state:
+        recording | stalled | finalized | not finalized; per stream: active | waiting | stalled | stopped | off |
+        absent | n/a. recording_mode: degraded (lidar_raw stalled, drops, low disk, errors) | stalled (the recorder's
+        heartbeat stopped while its process runs)."""
         mode = self.faults.get("recording_mode")
-        req = self.required_streams(c)
-        age = time.monotonic() - c.t0
-        span = (c.ended_wall or time.time()) - c.started_wall
-        streams = []
-        for sid in req + ["runner_log"]:
-            hz = EXPECTED_HZ.get(sid)
-            active = not c.ended
-            row = {"id": sid, "required": sid in req, "active": active, "rate_hz": hz if (active and hz) else 0.0 if hz else None,
-                   "expected_hz": hz, "last_write_age_s": 0.1 if active else round(time.time() - (c.ended_wall or 0), 1),
-                   "dropped": 0, "gaps": 0, "bytes": int(max(1.0, span) * (hz or 1.0) * 200)}
-            if mode == "degraded" and sid == "lidar_raw":
-                row.update(active=False, rate_hz=0.0, last_write_age_s=12.0, gaps=3, dropped=41)
+        rstate = self.recorder_state(c)
+        recording = rstate in ("recording", "stalled")
+        pol = self.policy(c)
+        sim = c.kind != "robot"
+        lio = c.odom in ("zmq", "fused", "lio")
+        now = time.time()
+        hb_age = 15.0 if rstate == "stalled" else 0.4 if recording else round(now - (c.ended_wall or now), 1)
+        span = max(1.0, (c.ended_wall or now) - c.started_wall)
+        streams, problems = [], []
+        for id_, stream in HEALTH_STREAMS:
+            policy_ = pol.get(id_) or ("required" if id_ == "sim_truth" and c.kind == "rehearsal" else "optional")
+            applies = not ((id_ == "lowcmd" and c.armed_t is None) or (id_ == "node_status" and c.armed_t is None)
+                           or (id_ in LIO_STREAMS and not lio) or (id_ == "sim_truth" and not sim))
+            required = policy_ == "required" and applies
+            expected = {"lowstate": 200.0 if sim else 500.0, "lowcmd": 50.0, "lidar": 10.0, "zmq_odom": 10.0,
+                        "zmq_cloud": 10.0, "node_status": 5.0, "odostate": 50.0, "secondary_imu": 200.0,
+                        "lidar_imu": 200.0, "zmq_pose": 50.0, "zmq_debug": 50.0}.get(stream)
+            seen = applies and id_ not in ("lidar_imu",) and not (id_ in ("student_stream", "runner_debug")
+                                                                   and c.armed_t is None)
+            samples = int(span * (expected or 1.0)) if seen else 0
+            age = 0.05 + (hb_age if rstate == "stalled" else 0.0)
+            stalled_here = rstate == "stalled" or (mode == "degraded" and id_ == "lidar_raw")
+            if not applies:
+                state = "n/a"
+            elif not recording:
+                state = "stopped" if samples else "absent"
+            elif not samples:
+                state = "waiting" if required else "absent"
+            else:
+                state = "stalled" if stalled_here else "active"
+            if mode == "degraded" and id_ == "lidar_raw" and recording:
+                age = 12.0
+            row = {"id": id_, "stream": stream, "required": required, "policy": policy_, "active": state == "active",
+                   "state": state, "rate_hz": (expected if state == "active" else 0.0) if expected else None,
+                   "expected_hz": expected, "last_write_age_s": round(age if recording else hb_age, 2) if samples else None,
+                   "last_sample_age_s": round(age if recording else hb_age, 2) if samples else None,
+                   "samples": samples, "dropped": 41 if mode == "degraded" and id_ == "lidar_raw" else 0,
+                   "gaps": 3 if mode == "degraded" and id_ == "lidar_raw" else 0, "gap_total_s": 0.0,
+                   "max_gap_s": None, "bytes": samples * 120, "chunks": max(1, samples // 400) if samples else None,
+                   "write_errors": 0, "pending": 0, "reason": None}
             streams.append(row)
-        errors = []
-        disk = 812.0
-        if mode == "degraded":
+            if required and state == "stalled":
+                problems.append(f"{id_}: no sample for {round(age, 1)} s (expected {expected or '-'} Hz)")
+            if row["dropped"]:
+                problems.append(f"{id_}: {row['dropped']} samples dropped (queue full 41)")
+        errors, disk = [], 812.0
+        if rstate == "not finalized":
+            problems.append("the recorder stopped without finalizing (killed, crashed or power loss): the data up to its "
+                            "last whole chunk is on disk")
+        elif rstate == "stalled":
+            problems.append(f"no recorder heartbeat for {hb_age:.0f} s while its process runs (disk stalled?)")
+        if mode == "degraded" and recording:
             disk = 0.4
             errors = ["lidar_raw: no write for 12.0 s (3 gaps)", "disk free 0.4 GB, below the 2 GB floor"]
-        return {"session": c.name, "streams": streams, "disk_free_gb": disk, "errors": errors,
-                "finalized": c.ended, "recorder_alive": not c.ended, "t_mono": round(time.monotonic(), 3),
-                "age_s": round(age, 1)}
+            problems.append("disk free 0.4 GB")
+        finalized = rstate == "finalized"
+        return {"dir": str(c.dir), "name": c.name, "session": c.name, "at": round(now, 3), "kind": c.kind,
+                "mode": "robot" if c.kind == "robot" else "sim", "odom": c.odom, "state": rstate,
+                "recorder_alive": rstate == "recording", "finalized": finalized,
+                "finalized_reason": "stopped (session end)" if finalized else None, "clean": True if finalized else None,
+                "recorder": {"pid": None, "pid_alive": recording, "heartbeat_age_s": round(hb_age, 2),
+                             "state": rstate, "elapsed_s": round(span, 1), "writer_busy_s": None, "paused": None,
+                             "format": "g1deploy.recording.stats.v2"},
+                "disk_free_gb": disk, "quota_gb": None, "bytes_total": sum(r["bytes"] for r in streams),
+                "dropped_total": sum(r["dropped"] for r in streams), "errors": errors, "error_log": [],
+                "problems": problems, "ok": rstate in ("recording", "finalized") and not problems and not errors,
+                "streams": streams, "supported": True}
 
     def manifest(self, c):
+        """GET /api/v1/session/<name>/manifest, shaped as the kit's evidence.manifest (v2) with its summary. state:
+        recording | ended | lost (the console did not close the session)."""
         mode = self.faults.get("manifest_mode")
-        req = self.required_streams(c)
+        pol = self.policy(c)
+        rstate = self.recorder_state(c)
+        running = not c.ended
+        closed = c.ended and not c.abrupt
+        lio = c.odom in ("zmq", "fused", "lio")
         span = round((c.ended_wall or time.time()) - c.started_wall, 1)
-        ids = list(dict.fromkeys(req + ["node_memory", "start_checks", "scan", "rehearsal", "identity",
-                                        "operator_confirmations"] + LIO_STREAMS + OPTIONAL_STREAMS))
         items = []
-        for i in ids:
-            row = {"id": i, "required": i in req, "status": "present", "bytes": 1000 + 10 * len(i), "span_s": span,
-                   "gaps": 0, "reason": None}
-            if i in LIO_STREAMS and i not in req:
-                row.update(status="n/a", bytes=0, span_s=None, reason=f"odometry {c.odom}: no LIO streams")
+        for i in ITEMS:
+            status, reason, extra = "present", None, {}
+            if i in LIO_STREAMS and not lio:
+                status, reason = "n/a", f"odometry {c.odom}: no LIO stream"
+            elif i in ("lowcmd", "runner_log") and c.armed_t is None:
+                status, reason = "n/a", "the session ended before Arm (the runner never ran)"
             elif i == "video":
-                row.update(status="n/a", bytes=0, span_s=None, reason="no camera configured")
+                status, reason = "n/a", "no video is recorded in v1"
+            elif i == "operator_confirmations" and c.kind != "robot":
+                status, reason = "n/a", "simulation: no robot checklist"
             elif i == "report":
-                row.update(status="present" if c.ended else "missing", bytes=4000 if c.ended else 0,
-                           span_s=None, reason=None if c.ended else "written when the session ends")
-            elif i == "rehearsal" and c.kind != "rehearsal" and not any(a.get("rehearsal") for a in c.attempts):
-                row.update(status="n/a", bytes=0, span_s=None, reason="no rehearsal set in force")
+                status, reason = (("present", None) if closed else ("n/a", "written when the session ends") if running
+                                  else ("missing", "the console did not close the session (no report)"))
+            elif i == "rehearsal" and c.kind == "practice":
+                status, reason = "n/a", "practice: the rehearsal is advisory"
+            if i in ("lowstate", "lowcmd", "lidar_raw", "lio_cloud", "lio_odom") and status == "present":
+                extra = {"span_s": span, "gaps": 0, "dropped": 0, "chunks": 3, "unreadable": None}
             if mode == "failing" and i == "lidar_raw":
-                row.update(status="partial", gaps=3, reason="3 gaps (12.0 s without a frame); last chunk truncated")
-            items.append(row)
-        complete = c.ended and all(r["status"] == "present" for r in items if r["required"])
-        return {"name": c.name, "version": 2, "kind": c.kind, "odom": c.odom, "finalized": c.ended,
-                "complete": complete, "items": items,
-                "missing_required": [r["id"] for r in items if r["required"] and r["status"] != "present"]}
+                status, reason = "partial", "3 gaps (12.0 s without a frame); last chunk truncated"
+                extra.update(gaps=3)
+            items.append(dict({"id": i, "required": pol[i] == "required" and status != "n/a", "policy": pol[i],
+                               "status": status, "bytes": 1000 + 10 * len(i) if status in ("present", "partial") else None,
+                               "path": str(c.dir / i), "reason": reason, "span_s": None, "gaps": None, "dropped": None},
+                              **extra))
+        missing = [r["id"] for r in items if r["required"] and r["status"] == "missing"]
+        partial = [r["id"] for r in items if r["required"] and r["status"] == "partial"]
+        why = []
+        if running:
+            state = "recording"
+            why.append("the session is still running")
+        else:
+            state = "ended" if closed else "lost"
+            if not closed:
+                why += ["the console did not close the session (no console_summary.json): it was killed or lost power",
+                        "the recording was not finalized (no rec/finalized.json): the recorder was killed or lost "
+                        "power; everything up to its last whole chunk is usable"]
+        if missing:
+            why.append("required records missing: " + ", ".join(missing))
+        if partial:
+            why.append("required records partial: " + ", ".join(partial))
+        complete = closed and rstate == "finalized" and not missing and not partial
+        by = {}
+        for r in items:
+            by.setdefault(r["status"], []).append(r["id"])
+        summary = {"version": 2, "complete": complete, "finalized": rstate == "finalized",
+                   "present": len(by.get("present", [])), "n_a": len(by.get("n/a", [])),
+                   "missing": by.get("missing", []), "partial": by.get("partial", []), "required_missing": missing + partial}
+        return dict({"version": 2, "name": c.name, "dir": str(c.dir), "t": round(time.time(), 3), "complete": complete,
+                     "state": state, "kind": c.kind, "mode": "robot" if c.kind == "robot" else "sim", "odom": c.odom,
+                     "finalized": rstate == "finalized", "finalized_reason": "stopped (session end)"
+                     if rstate == "finalized" else None, "recorder": rstate, "console_closed": closed,
+                     "missing_required": missing, "partial_required": partial, "incomplete_reasons": why,
+                     "items": items, "summary": summary},
+                    **{k: summary[k] for k in ("present", "n_a", "missing", "partial", "required_missing")})
 
     def session_detail(self, c):
-        return {"name": c.name, "dir": str(c.dir), "receipt": c.receipt, "ended": c.ended,
+        slot = next((k for k, v in self.slots.items() if v is c and not c.ended), None)
+        return {"ok": True, "name": c.name, "dir": str(c.dir), "day": c.day.name, "receipt": c.receipt,
+                "ended": c.ended, "live_slot": slot, "summary_ended": (c.dir / "console_summary.json").exists(),
                 "started": round(c.started_wall, 3), "ended_at": round(c.ended_wall, 3) if c.ended_wall else None,
-                "attempts": [self.attempt_row(c, a) for a in c.attempts],
-                "replay": {"studio_id": studio_id(Path(self.day), c.name), "linked": self.studio_link is not None},
-                "manifest": self.manifest(c), "recording": self.recording(c)}
+                "attempts": [self.attempt_row(c, a) for a in c.attempts], "rehearsal_run": None,
+                "replay": {"studio_id": studio_id(c.day, c.name), "linked": c.day.name in self.linked_days},
+                "manifest": self.manifest(c), "recording": self.recording(c),
+                "report": (not c.abrupt) and c.ended, "tags": ["clean", "touched", "stumble", "caught", "aborted",
+                                                              "setup issue"]}
 
     @staticmethod
     def attempt_row(c, a):
@@ -1255,7 +1548,7 @@ class FakeHub:
     def tag(self, name, body):
         c = self.consoles.get(name)
         if c is None:
-            return 404, {"ok": False, "error": "no such session"}
+            return self.no_session(name)
         try:
             n = int(body.get("n"))
         except (TypeError, ValueError):
@@ -1343,7 +1636,7 @@ class FakeHub:
     def act_status(self, slot, aid, session=None):
         c = self.consoles.get(session) if session else self.live(slot)
         if c is None:
-            return 404, {"ok": False, "error": f"no {slot} session is live" if not session else "no such session"}
+            return (404, {"ok": False, "error": f"no {slot} session is live"}) if not session else self.no_session(session)
         if c.ended:
             return 200, dict(c.act_result(aid), session=c.name, slot=c.slot)
         code, rec = self.console_get(c, "/act_result", {"id": aid})
@@ -1401,7 +1694,9 @@ class FakeHub:
                 c.end()
             return 200, {"ok": True}
         if path == "/api/v1/start_check":
-            return 200, self.start_check(body.get("slot", "robot"), body.get("scan"))
+            goal = body.get("goal_scene")
+            return 200, self.start_check(body.get("slot") or "robot", body.get("scan"),
+                                         goal=[round(float(v), 4) for v in goal] if goal is not None else None)
         if path == "/api/v1/send_goal":
             slot = body.get("slot", "robot")
             c = self.live(slot)
@@ -1409,7 +1704,9 @@ class FakeHub:
                 return self.refuse("no session running")
             if not body.get("check_id"):
                 return self.refuse("send_goal needs the goal check's check_id")
-            chk = self.start_check(slot, body.get("scan"))
+            goal = [round(float(v), 4) for v in body["goal_scene"]]
+            passage = body.get("passage") or None
+            chk = self.start_check(slot, body.get("scan"), goal=goal, passage=passage)
             if not chk.get("ok"):
                 return self.refuse(chk.get("error"), check=chk)
             goal_odom = apply(inverse(chk["scene_from_odom"]), body["goal_scene"]).tolist()
@@ -1419,12 +1716,17 @@ class FakeHub:
                    "source": body.get("source") or "studio", "operator": body.get("operator"),
                    "scan": body.get("scan"), "goal_scene": [round(float(v), 4) for v in body["goal_scene"]],
                    "start_check": {k: chk.get(k) for k in ("ok", "moved_m", "turned_deg", "overlap", "at",
-                                                           "within_offset_envelope")},
-                   "passage": body.get("passage"), "goal_check": body.get("goal_check")}
+                                                           "scene_from_odom", "within_offset_envelope")},
+                   "passage": passage, "goal_check": body.get("goal_check"),
+                   "rehearsal": self.rehearsal_in_force(body.get("scan"), goal, slot, passage=passage)}
             code, res = self.relay(c, act)
             ok = code == 200 and bool(res.get("ok")) and res.get("result") != "refused"
+            if ok:
+                self.goal_ctx[slot] = {"session": c.name, "scan": body.get("scan"), "goal_scene": goal,
+                                       "seq": act["seq"], "passage": passage}
             return 200, {"ok": ok, "reason": None if ok else (res.get("reason") or res.get("error") or f"HTTP {code}"),
-                         "check": chk, "goal_odom": {"x": goal_odom[0], "y": goal_odom[1]}, "act": res}
+                         "check": chk, "goal_odom": {"x": goal_odom[0], "y": goal_odom[1]}, "act": res,
+                         "session": c.name, "rehearsal": act["rehearsal"], "passage": passage}
         if path == "/api/v1/rehearse":
             r = self.live("robot")
             if r and r.phase in ("PRESCAN", "RUN"):
@@ -1439,9 +1741,24 @@ class FakeHub:
                 return 404, {"ok": False, "error": f"no {slot} session is live"}
             msg = {k: v for k, v in body.items() if k != "slot"}
             msg.setdefault("source", "studio")
+            act = msg.get("act")
+            want = msg.get("session") or ((msg.get("expect") or {}).get("session")
+                                          if isinstance(msg.get("expect"), dict) else None)
+            if self.v3 and act not in STOP_ACTS and want and want != c.name:
+                why = f"this was meant for session {want}; the live {slot} session is {c.name}"
+                return 409, {"ok": False, "id": msg.get("id"), "act": act, "result": "refused", "reason": why,
+                             "error": why, "session_mismatch": True, "session": c.name}
+            if self.v3 and act == "g" and c.kind != "rehearsal":
+                gate = self.go_gate(slot, c, msg)
+                if gate["refuse"]:
+                    return 409, {"ok": False, "id": msg.get("id"), "act": "g", "result": "refused",
+                                 "reason": gate["reason"], "error": gate["reason"], "rehearsal": gate["rehearsal"],
+                                 "rehearsal_required": True, "session": c.name}
+                msg["rehearsal"] = gate["rehearsal"]  # the set in force (and the override) goes to the attempt
             code, reply = self.relay(c, msg)
             if code != 200:
                 reply.setdefault("ok", False)
+            reply.setdefault("session", c.name)
             return code, reply
         if path == "/api/v1/doctor":
             self.doctor = {"t": time.time(), "exit": 0, "text": "all checks passed (fake)", "running": False}
@@ -1471,11 +1788,13 @@ class FakeHub:
                 return 404, {"ok": False, "error": "no such profile"}
             PROFILES[name]["params"].update(body.get("params") or {})
             return 200, {"ok": True, "profile": name, "sha": profile_sha(name), "params": PROFILES[name]["params"]}
-        if path == "/api/fake/end":
+        if path == "/api/fake/end":  # {slot, abrupt}: abrupt = killed / power loss (not closed, not finalized)
             c = self.live(body.get("slot", "robot"))
             if c:
-                c.end()
-            return 200, {"ok": True}
+                c.end(abrupt=bool(body.get("abrupt")))
+            return 200, {"ok": True, "name": c.name if c else None}
+        if path == "/api/fake/previous_day":
+            return 200, self.seed_previous_day(body)
         return 404, {"ok": False, "error": "unknown fake endpoint"}
 
     def go_down(self, seconds):
@@ -1522,7 +1841,7 @@ class FakeHub:
             if self.faults.take("manifest_fail"):
                 return 503, {"ok": False, "error": "fake fault: the manifest could not be written"}
             c = self.consoles.get(parts[4])
-            return (200, self.manifest(c)) if c else (404, {"ok": False, "error": "no such session"})
+            return (200, self.manifest(c)) if c else self.no_session(parts[4])
         if not self.v3:
             return 404, {"ok": False, "error": "unknown endpoint"}
         # ------------------------------------------------------------------ v3
@@ -1531,16 +1850,26 @@ class FakeHub:
                 x, y = float(q.get("x")), float(q.get("y"))
             except (TypeError, ValueError):
                 return 400, {"ok": False, "error": "x and y must be numbers (scene frame)"}
-            return 200, self.match(q.get("scan"), x, y, q.get("profile") or "deploy", q.get("odom") or "fused")
+            session = q.get("session")
+            if not session and q.get("slot") in self.slots and self.live(q["slot"]):
+                session = self.live(q["slot"]).name
+            passage = None
+            if q.get("pa") and q.get("pb"):
+                try:
+                    passage = {"a": [float(v) for v in q["pa"].split(",")], "b": [float(v) for v in q["pb"].split(",")]}
+                except ValueError:
+                    return 400, {"ok": False, "error": "pa and pb are x,y"}
+            m = self.match(q.get("scan"), x, y, q.get("profile"), q.get("odom"), session=session, passage=passage)
+            return (200, m) if m.get("ok") else (404, m)
         if len(parts) == 5 and path.startswith("/api/v1/session/"):
             if self.faults.take("session_fail"):
                 return 503, {"ok": False, "error": "fake fault: the session could not be read"}
             c = self.consoles.get(parts[4])
-            return (200, self.session_detail(c)) if c else (404, {"ok": False, "error": "no such session"})
+            return (200, self.session_detail(c)) if c else self.no_session(parts[4])
         if len(parts) == 6 and path.startswith("/api/v1/session/") and parts[5] in ("receipt", "recording"):
             c = self.consoles.get(parts[4])
             if c is None:
-                return 404, {"ok": False, "error": "no such session"}
+                return self.no_session(parts[4])
             if parts[5] == "receipt":
                 return 200, c.receipt
             if self.faults.take("recording_fail"):

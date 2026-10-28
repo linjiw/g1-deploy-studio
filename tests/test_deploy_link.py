@@ -874,6 +874,40 @@ class ReviewTests(GatewayCase):
         self.assertIn(("tag", "Viewer"), [(r["kind"], r.get("operator")) for r in rows])
         self.assertEqual(self.call("POST", "/api/deploy/tag", dict(body, n=0, operator="V"), self.csrf())[0], 400)
 
+    def test_a_session_from_an_earlier_day_opens_in_replay(self):
+        seeded = self.hub.seed_previous_day({"studio_data": str(Path(self.tmp.name) / "data")})
+        self.addCleanup(shutil.rmtree, str(Path(seeded["dir"]).parent), True)
+        self.assertTrue(wait_for(lambda: (Path(seeded["dir"]) / "console_summary.json").is_file()))
+        status, d = self.call("GET", f"/api/deploy/session?name={seeded['name']}")
+        self.assertEqual((status, d["day"], d["replay"]["state"]), (200, seeded["day"], "registered"))
+        self.assertEqual(d["replay"]["catalog_id"], fake.studio_id(Path(seeded["dir"]).parent, seeded["name"]))
+        self.assertEqual(d["recording"]["state"], "finalized")
+        status, rec = self.call("GET", f"/api/deploy/recording?name={seeded['name']}")
+        self.assertEqual((status, rec["state"]), (200, "finalized"))
+        self.assertLess(rec["source_age_s"], 5.0)                       # aged from the kit's `at` (wall clock)
+        status, out = self.call("GET", "/api/deploy/session?name=robot-000000-nowhere")
+        self.assertEqual(status, 404)
+        self.assertIn("lab-day-*", out["error"])
+
+
+class GoGateTests(GatewayCase):
+    """The kit's GO rehearsal gate through the gateway: a refusal is an answer (409), never "unknown"."""
+
+    def test_the_gate_refusal_passes_through_and_the_override_reaches_the_console(self):
+        robot = self.start_robot()
+        lease = self.call("POST", "/api/deploy/lease", {"operator": "Linji"}, self.csrf())[1]["lease_id"]
+        body = {"act": "g", "slot": "robot", "lease_id": lease, "expect": {"session": robot.name}}
+        status, out = self.call("POST", "/api/deploy/act", body, self.csrf())
+        self.assertEqual((status, out["result"], out["rehearsal_required"]), (409, "refused", True))
+        self.assertIn("rehearsal set", out["reason"])
+        self.assertFalse([a for a in robot.acts if a["act"] == "g"])     # the console never saw it
+        status, out = self.call("POST", "/api/deploy/act", dict(body, rehearsal_override={
+            "operator": "Linji", "reason": "rehearsed by hand"}), self.csrf())
+        self.assertEqual((status, out["result"]), (200, "refused"))      # past the gate: the console's own locks
+        self.assertEqual([a["act"] for a in robot.acts if a["act"] == "g"], ["g"])
+        status, out = self.call("POST", "/api/deploy/act", dict(body, act="arm", expect={"session": "old"}), self.csrf())
+        self.assertEqual((status, out["session_mismatch"]), (409, True))
+
 
 class GoalCheckConfigTests(FakeHubCase):
     """F / F06: the profile's route configuration, receipts bound to scan, memory, goal and configuration, a TTL."""
@@ -1155,8 +1189,9 @@ class RealServiceFixtureTests(unittest.TestCase):
         self.assertLessEqual(set(real["/api/v1/sessions"]), set(hub.sessions_v1()))
         self.assertLessEqual(set(real["/api/v1/scan/live"]), set(hub.scan_live()))
         self.assertEqual(hub.get("/api/v1/scan/no-such-scan/scene", {}), (404, real["/api/v1/scan/no-such-scan/scene"]))
-        self.assertEqual(hub.get("/api/v1/session/no-such-session/manifest", {}),
-                         (404, real["/api/v1/session/no-such-session/manifest"]))
+        status, body = hub.get("/api/v1/session/no-such-session/manifest", {})  # the kit now names the days it looked in
+        self.assertEqual((status, body["ok"]), (404, False))
+        self.assertLessEqual(set(real["/api/v1/session/no-such-session/manifest"]), set(body))
         self.assertEqual(hub.track("no-such-run"), (404, real["/api/v1/rehearsal/no-such-run/track"]))
         self.assertEqual(hub.get("/api/v1/live/bogus/view", {}), (404, real["/api/v1/live/bogus/view"]))
 

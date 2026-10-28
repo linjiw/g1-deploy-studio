@@ -3,6 +3,7 @@ ordering and its answers follow the kit's deploy service (newest first; 200 with
 switches reproduce Astra's review cases. In process, loopback ephemeral ports; nothing here talks to a robot."""
 import http.client
 import json
+import math
 import shutil
 import sys
 import time
@@ -170,7 +171,8 @@ class ContractTests(HubCase):
         self.post("/api/fake/faults", {"manifest_fail": 1, "recording_mode": "degraded", "manifest_mode": "failing"})
         self.assertEqual(self.get(f"/api/v1/session/{c.name}/manifest")[0], 503)
         _, m = self.get(f"/api/v1/session/{c.name}/manifest")                   # recovered
-        self.assertIn("lidar_raw", m["missing_required"])
+        self.assertIn("lidar_raw", m["partial_required"])
+        self.assertIn("required records partial: lidar_raw", m["incomplete_reasons"])
         _, h = self.get(f"/api/v1/session/{c.name}/recording")
         self.assertEqual(len(h["errors"]), 2)
         self.assertFalse(next(s for s in h["streams"] if s["id"] == "lidar_raw")["active"])
@@ -221,6 +223,166 @@ class ContractTests(HubCase):
                 time.sleep(0.1)
         self.assertEqual(self.hub.server.server_address[1], port)
         self.assertEqual(self.get("/api/v1/state")[0], 200)
+
+
+class KitFidelityTests(HubCase):
+    """Where the fake once differed from the kit and two defects hid (an independent verification, D2-D4, D11, D1):
+    recording states, the robot GO rehearsal gate, the start-offset envelope, passage on a repeated trial, and
+    session names from an earlier day."""
+
+    def ready_robot(self, practice=False):
+        """A session standing in CONTROL, settled, with a goal sent through the service: GO passes the console's
+        gates; only the service's rehearsal gate remains."""
+        if practice:
+            code, out = self.post("/api/v1/start", {"mode": "sim", "practice": True, "confirm": CONFIRM, "scan": "scan-fake",
+                                                    "operator": "Linji"})
+            c = self.hub.slots["sim"]
+        else:
+            c = self.start_robot()
+        slot = c.slot
+        self.post("/api/v1/act", {"slot": slot, "act": "arm", "id": f"arm-{c.name}"})
+        deadline = time.monotonic() + 6
+        while c.phase != "WAIT" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.post("/api/v1/act", {"slot": slot, "act": "s", "id": f"s-{c.name}"})
+        time.sleep(2.1)
+        _, out = self.post("/api/v1/send_goal", {"slot": slot, "scan": "scan-fake", "goal_scene": [1.0, 0.0],
+                                                 "check_id": "chk", "id": f"goal-{c.name}"})
+        self.assertTrue(out["ok"], out)
+        return c
+
+    def go(self, c, **kw):
+        return self.post("/api/v1/act", dict({"slot": c.slot, "act": "g", "id": uuid_hex(), "expect": {"session": c.name}},
+                                             **kw))
+
+    def test_recording_health_states_like_the_kits(self):
+        c = self.start_robot(odom="fused")
+        _, h = self.get(f"/api/v1/session/{c.name}/recording")
+        state = {r["id"]: r["state"] for r in h["streams"]}
+        self.assertEqual((h["state"], h["recorder_alive"], h["finalized"]), ("recording", True, False))
+        self.assertEqual((state["lowstate"], state["lowcmd"], state["sim_truth"], state["lio_odom"], state["lidar_imu"]),
+                         ("active", "n/a", "n/a", "active", "absent"))     # lowcmd before Arm; no truth on a robot
+        self.assertLessEqual(set(state.values()), set(fake.STREAM_STATES))
+        self.post("/api/fake/faults", {"recording_mode": "stalled"})
+        _, h = self.get(f"/api/v1/session/{c.name}/recording")
+        self.assertEqual((h["state"], h["recorder_alive"], h["ok"]), ("stalled", False, False))
+        self.assertEqual(next(r for r in h["streams"] if r["id"] == "lowstate")["state"], "stalled")
+        self.assertIn("no recorder heartbeat", " ".join(h["problems"]))
+        self.post("/api/fake/faults", {"reset": True})
+        self.post("/api/v1/stop", {"slot": "robot"})
+        _, h = self.get(f"/api/v1/session/{c.name}/recording")
+        self.assertEqual((h["state"], h["finalized"], h["ok"]), ("finalized", True, True))
+        self.assertEqual(next(r for r in h["streams"] if r["id"] == "lowstate")["state"], "stopped")
+        _, m = self.get(f"/api/v1/session/{c.name}/manifest")
+        self.assertEqual((m["state"], m["complete"], m["console_closed"]), ("ended", True, True))
+        lost = self.start_robot()                                           # killed: not closed, not finalized
+        self.post("/api/fake/end", {"slot": "robot", "abrupt": True})
+        _, h = self.get(f"/api/v1/session/{lost.name}/recording")
+        self.assertEqual((h["state"], h["finalized"]), ("not finalized", False))
+        self.assertIn("without finalizing", " ".join(h["problems"]))
+        _, m = self.get(f"/api/v1/session/{lost.name}/manifest")
+        self.assertEqual((m["state"], m["complete"]), ("lost", False))
+        self.assertEqual(next(i for i in m["items"] if i["id"] == "report")["status"], "missing")
+
+    def test_robot_go_needs_a_robust_matching_set_or_the_override(self):
+        c = self.ready_robot()
+        code, out = self.go(c)
+        self.assertEqual((code, out["result"], out["rehearsal_required"]), (409, "refused", True))
+        self.assertIn("GO needs a robust complete rehearsal set", out["reason"])
+        self.assertEqual(c.phase, "WAIT")                                  # never reached the console
+        self.post("/api/fake/rehearsals", {"goal_scene": [1.0, 0.0], "sets": [
+            {"minutes_ago": 2, "verdict": "fails with drift", "label": "failing"}]})
+        code, out = self.go(c)                                             # a complete matching set that is not robust
+        self.assertEqual(code, 409)
+        self.assertIn("is not robust: fails with drift", out["reason"])
+        self.assertEqual(out["rehearsal"]["match"], True)
+        code, out = self.go(c, rehearsal_override={"reason": "no name"})
+        self.assertIn("needs the operator's name", out["reason"])
+        code, out = self.go(c, rehearsal_override={"operator": "Linji", "reason": "rehearsed by hand"})
+        self.assertEqual((code, out["result"]), (200, "done"))
+        a = c.attempts[-1]
+        self.assertEqual((a["rehearsal_override"]["operator"], a["rehearsal"]["verdict"]), ("Linji", "fails with drift"))
+        self.assertIn("not robust", a["rehearsal_override"]["without"])
+        self.assertIn("go_rehearsal_gate", self.get("/api/v1/state")[1]["capabilities"])
+
+    def test_robot_go_with_a_robust_set_and_practice_never_refused(self):
+        self.post("/api/fake/rehearsals", {"goal_scene": [1.0, 0.0], "sets": [{"minutes_ago": 1, "verdict": "robust"}]})
+        c = self.ready_robot()
+        code, out = self.go(c)
+        self.assertEqual((code, out["result"]), (200, "done"))
+        self.assertEqual((c.attempts[-1]["rehearsal"]["verdict"], c.attempts[-1]["rehearsal_override"]), ("robust", None))
+        self.post("/api/v1/act", {"slot": "robot", "act": "h", "id": "stand"})
+        self.post("/api/fake/end", {"slot": "robot"})
+        self.hub.rehearsals.clear()
+        p = self.ready_robot(practice=True)                                 # Practice: recorded, never refused
+        code, out = self.go(p)
+        self.assertEqual((code, out["result"]), (200, "done"))
+        self.assertEqual(p.attempts[-1]["rehearsal"]["match"], False)
+
+    def test_the_start_check_envelope_is_the_set_in_force_for_that_goal(self):
+        c = self.start_robot()                                              # 0.2 m / 20 deg off the scan pose
+        self.post("/api/v1/act", {"slot": "robot", "act": "arm", "id": "arm"})
+        check = lambda goal: self.post("/api/v1/start_check", {"slot": "robot", "scan": "scan-fake",
+                                                               "goal_scene": goal})[1]
+        self.assertIsNone(check([1.0, 0.0])["within_offset_envelope"])     # no set for this goal
+        self.post("/api/fake/rehearsals", {"goal_scene": [1.0, 0.0], "sets": [{"minutes_ago": 9, "verdict": "robust"}]})
+        chk = check([1.0, 0.0])
+        self.assertIs(chk["within_offset_envelope"], True)
+        self.assertTrue(chk["offset_envelope"]["set"].endswith("-seeded"))
+        self.assertEqual(chk["offset_envelope"]["moved_m"], round(math.hypot(*fake.OFFSET_SCENE[:2]), 3))
+        self.assertIsNone(check([2.4, 0.0])["within_offset_envelope"])     # another goal: that set says nothing
+        self.post("/api/fake/rehearsals", {"goal_scene": [1.0, 0.0], "sets": [{"minutes_ago": 1, "verdict": "fails"}]})
+        self.assertIsNone(check([1.0, 0.0])["within_offset_envelope"])     # the set in force: its offset case failed
+        self.assertTrue(c.name)
+
+    def test_a_repeated_trial_from_past_the_gate_is_passage_na(self):
+        c = self.start_robot()
+        gate = {"a": [2.0, -0.35], "b": [2.0, 0.35]}
+        goal_scene = [2.4, 0.0]
+        c.goal_odom = fake.apply(c.odom_from_scene, goal_scene)
+
+        def attempt(start, walk):
+            c.robot_scene = list(start)
+            c.walk_scene += [[x, y, 0.0] for x, y in walk]
+            c.attempts.append({"n": len(c.attempts) + 1, "t_go": 1.0, "outcome": None, "start_scene": list(start),
+                               "goal_scene": goal_scene, "passage_ab": gate, "walk_from": len(c.walk_scene) - len(walk),
+                               "tag_history": []})
+            c._close("arrived")
+            return c.attempts[-1]
+        first = attempt((0.19, -0.07, 0.0), [(0.5, 0.0), (1.5, 0.0), (2.4, 0.0)])
+        self.assertEqual((first["passage"], first["passage_basis"]), ("crossed", "odometry estimate"))
+        detour = attempt((0.19, -0.07, 0.0), [(1.0, 1.5), (2.4, 1.5), (2.4, 0.0)])
+        self.assertEqual(detour["passage"], "missed")                       # around the gate: no task pass
+        again = attempt((2.35, 0.02, 0.0), [(2.4, 0.0)])                    # "Send this goal again" from the arrival
+        self.assertEqual((again["passage"], again["passage_basis"]), ("n/a", "started past the gate"))
+
+    def test_a_session_from_an_earlier_day_resolves_by_name(self):
+        _, seeded = self.post("/api/fake/previous_day", {})
+        self.addCleanup(shutil.rmtree, str(Path(seeded["dir"]).parent), True)
+        _, state = self.get("/api/v1/state")
+        self.assertNotIn(seeded["name"], json.dumps(state["sessions"]))     # the kit lists its own day only
+        code, d = self.get(f"/api/v1/session/{seeded['name']}")
+        self.assertEqual((code, d["day"], d["ended"], d["attempts"][0]["tag"]), (200, seeded["day"], True, "clean"))
+        self.assertEqual(d["replay"]["studio_id"], fake.studio_id(Path(seeded["dir"]).parent, seeded["name"]))
+        _, out = self.post(f"/api/v1/session/{seeded['name']}/tag", {"n": 1, "tag": "touched", "operator": "Joe"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(self.get(f"/api/v1/session/{seeded['name']}/manifest")[1]["state"], "ended")
+        code, out = self.get("/api/v1/session/robot-000000-nowhere")
+        self.assertEqual((code, out["session"]), (404, "robot-000000-nowhere"))
+        self.assertIn("lab-day-*", out["error"])
+
+    def test_an_act_for_another_session_is_refused_by_the_service_but_a_stop_never(self):
+        c = self.start_robot()
+        code, out = self.post("/api/v1/act", {"slot": "robot", "act": "arm", "id": "a1", "expect": {"session": "old"}})
+        self.assertEqual((code, out["session_mismatch"], out["session"]), (409, True, c.name))
+        code, out = self.post("/api/v1/act", {"slot": "robot", "act": "h", "id": "h1", "expect": {"session": "old"}})
+        self.assertEqual((code, "session_mismatch" in out), (200, False))  # the service passes a stop on (the console
+        self.assertEqual(out["session"], c.name)                              # applies its own expect, as the kit's)
+
+
+def uuid_hex():
+    import uuid
+    return uuid.uuid4().hex
 
 
 class RehearsalRunTests(HubCase):
