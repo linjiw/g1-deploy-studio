@@ -255,6 +255,10 @@ async function pollLive() {
   if (v.cloud?.seq !== undefined) S.cursors.cloud = v.cloud.seq;
   if (v.memory?.seq !== undefined) S.cursors.mem = v.memory.seq;
   S.view = { ...v, memEpoch: v.memory?.epoch ?? S.view?.memEpoch, slot }; S.viewAt = performance.now(); S.viewStaleUntilFresh = false; S.viewSlot = slot;
+  if (Array.isArray(v.qpos) && Number.isFinite(v.t_mono)) {
+    const h = S.poseTrail = (S.poseTrail ?? []).filter(e => e.slot === slot && v.t_mono - e.t < 1.2 && e.t < v.t_mono);
+    h.push({ t: v.t_mono, x: v.qpos[0], y: v.qpos[1], slot });
+  }
   // A rehearsal's drift run is never drawn in the scene (its estimate is in the drifted frame).
   const rec = rehearsalRunning(), which = rec?.running, rehearsal = slot === 'sim' && !session();
   await d3.setLive(v, { slot: rehearsal ? 'sim-rehearsal' : slot, hideRobot: rehearsal && which === 'drift',
@@ -833,6 +837,17 @@ function rehearseBody() {
   };
 }
 
+// The goal the node holds, in the scene (view.goal is in odom; the align maps it), vs the goal on the page.
+function goalSentStale() {
+  if (!S.goal?.xy) return null;
+  const v = S.view, sc = v?.align?.scene_from_odom;
+  let held = null;
+  if (Array.isArray(v?.goal) && sc) { const c = Math.cos(sc[2]), s = Math.sin(sc[2]); held = [sc[0] + c * v.goal[0] - s * v.goal[1], sc[1] + s * v.goal[0] + c * v.goal[1]]; }
+  else if (S.sendResult?.ok) held = S.sendResult.goal;
+  if (!held) return null;
+  const d = Math.hypot(held[0] - S.goal.xy[0], held[1] - S.goal.xy[1]);
+  return d > 0.15 ? `The goal moved ${d.toFixed(2)} m since it was sent: Send goal again` : null;
+}
 function ladderRows() {
   const p = S.panel, ladder = p?.ladder ?? [], locks = p?.go_locks ?? [], lost = !!S.view && liveState() === 'lost';
   const byKey = Object.fromEntries(ladder.map(l => [l.key, l]));
@@ -849,7 +864,7 @@ function ladderRows() {
     let lock = null;
     if (p?.runner === 'E-STOP') lock = 'E-STOP is active: end the session';
     else if (lost && ['arm', 'goal', 'go'].includes(r.key)) lock = 'Live view lost: watch the robot';
-    else if (r.key === 'go') lock = locks[0] ?? null;
+    else if (r.key === 'go') lock = locks[0] ?? goalSentStale();
     else if (r.key === 'goal' && !goalUsable()) lock = S.goal ? 'The goal is not checked on this scan (Goal)' : 'Pick a goal first (Goal)';
     else if (r.key === 'map' && cleared > 0) lock = `Rescanning: ${Math.ceil(cleared)} s`;
     else if (['sonic', 'map'].includes(r.key) && (p?.phase === 'BOOT' || !p?.phase)) lock = 'The planner node is starting (about 3-20 s after Arm)';
@@ -878,7 +893,10 @@ function deployBody() {
       primary: { label: isRobot() ? 'Start robot session…' : 'Start practice session…', action: 'sheet:start', locked, tone: isRobot() ? 'robot' : 'practice' },
     };
   }
-  const rows = ladderRows(), nowRow = rows.find(r => r.state === 'now') ?? rows.find(r => r.state !== 'done'), p = S.panel ?? {};
+  const rows = ladderRows(), p = S.panel ?? {}, moved = goalSentStale();
+  // A goal moved after Send goal makes Send goal the step to do again.
+  if (moved) { const g = rows.find(r => r.key === 'goal'); if (g?.state === 'done' && !walking()) { g.state = 'now'; g.detail = moved; rows.find(r => r.key === 'go').state = 'todo'; } }
+  const nowRow = rows.find(r => r.state === 'now') ?? rows.find(r => r.state !== 'done');
   const attempts = panelAttempts(), last = attempts.at(-1), untagged = attempts.filter(a => a.outcome && !a.tag);
   const sc = S.startCheck, envelope = sc ? (sc.within_offset_envelope ? 'inside the rehearsed start-offset envelope' : 'outside the rehearsed start-offset envelope') : null;
   let primary = null;
@@ -1010,7 +1028,8 @@ function sheetModel() {
     const rec = rehearsalFor(), v = verdictText(rec), locks = S.panel?.go_locks ?? [], sc = S.startCheck ?? S.sendResult?.check;
     const blocking = (S.readiness ?? []).filter(c => c.status === 'block').map(c => c.label);
     const lost = liveState() === 'lost';
-    const items = [...locks.map(l => `Console: ${l}`), ...blocking.map(b => `Readiness: ${b}`), ...(lost ? ['Live view lost'] : [])];
+    const moved = goalSentStale();
+    const items = [...locks.map(l => `Console: ${l}`), ...(moved ? [moved] : []), ...blocking.map(b => `Readiness: ${b}`), ...(lost ? ['Live view lost'] : [])];
     return { title: robot ? 'GO · the real robot walks' : 'GO · practice robot', tone: robot ? 'robot' : 'practice',
       body: `<div class="dp-summary">
           <div><span>Goal</span><strong>(${num(S.goal?.xy?.[0], 2)}, ${num(S.goal?.xy?.[1], 2)}) · ${escape(goalWords(S.goal?.xy))}</strong></div>
@@ -1092,7 +1111,9 @@ function renderHud() {
   if (!sess || !v) { if (el.innerHTML) { el.innerHTML = ''; updateInsets(); } return; }
   const ls = liveState(), age = liveAge(), old = ls === 'fresh' ? null : `${age.toFixed(1)} s old`;
   const val = (x, fmt) => (old ? `<em>${escape(old)}</em>` : x === null || x === undefined ? '<em>Unavailable</em>' : fmt(x));
-  const hist = v.pose_hist ?? [], speed = hist.length > 1 ? Math.hypot(hist.at(-1)[1] - hist[0][1], hist.at(-1)[2] - hist[0][2]) / Math.max(0.05, hist.at(-1)[0] - hist[0][0]) : null;
+  const trail = S.poseTrail ?? [], hist = v.pose_hist ?? [];
+  const speed = trail.length > 1 && trail.at(-1).t - trail[0].t >= 0.3 ? Math.hypot(trail.at(-1).x - trail[0].x, trail.at(-1).y - trail[0].y) / (trail.at(-1).t - trail[0].t)
+    : hist.length > 1 ? Math.hypot(hist.at(-1)[1] - hist[0][1], hist.at(-1)[2] - hist[0][2]) / Math.max(0.05, hist.at(-1)[0] - hist[0][0]) : null;
   const odom = v.odom ?? p?.odom ?? {}, odomTone = odom.lost ? 'bad' : odom.doubt ? 'warn' : '';
   const odomText = odom.lost ? `LOST · ${odom.lost}` : odom.doubt ? 'LIO doubt' : odom.watchdog ? `watchdog: ${odom.watchdog}` : `${odom.mode ?? '?'}${finite(odom.lio_age_s) ? ` · LIO ${Math.round(odom.lio_age_s * 1000)} ms` : ''}`;
   const temp = p?.temps?.max_c, sonic = p?.standing_s, lidar = st().robot_link?.lidar_hz;
@@ -1213,6 +1234,8 @@ function bindPointer() {
   canvas.addEventListener('pointerdown', e => { if (S.visible) pointerDown = [e.clientX, e.clientY]; });
   canvas.addEventListener('pointermove', e => {
     if (!S.visible || e.buttons) return;
+    if (S.clickAt && Math.hypot(e.clientX - S.clickAt[0], e.clientY - S.clickAt[1]) < 6) return;
+    S.clickAt = null;
     hoverAt = [e.clientX, e.clientY];
     if (!hoverRaf) hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; hover(hoverAt); });
   });
@@ -1224,7 +1247,7 @@ function bindPointer() {
     if (!S.scene) return;
     const hit = d3.pickAt(e.clientX, e.clientY); if (!hit) return;
     const tip = $('dp-hover-tip'); if (tip) tip.hidden = true;
-    S.hover = null; d3.setHover(null);
+    S.hover = null; d3.setHover(null); S.clickAt = [e.clientX, e.clientY];
     const quick = d3.quickCheck(d3.scanLookup(), hit.xy);
     checkGoal(hit.xy).then(() => { if (S.goal) S.goal.quick = quick; });
   });

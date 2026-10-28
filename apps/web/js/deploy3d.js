@@ -176,13 +176,14 @@ class MemoryLayer {
       this.floor.userData = { nx, ny }; this.floor.renderOrder = 1; this.floor.name = `${this.group.name}-floor`;
       this.group.add(this.floor);
     }
-    const data = this.floor.material.map.image.data;
-    let steps = 0, obstacles = 0, overheads = 0;
+    const data = this.floor.material.map.image.data, near = mem.near;
+    let steps = 0, obstacles = 0, overheads = 0, nearCount = 0;
     for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
       const k = i * ny + j, code = support[k], t = (j * nx + i) * 4;  // texel row j along +y, column i along +x
       if (code === 255) { data[t + 3] = 0; continue; }
       const h = code * 0.02;
-      data[t] = COLORS.floor[0]; data[t + 1] = COLORS.floor[1]; data[t + 2] = COLORS.floor[2]; data[t + 3] = 235;
+      if (near && near[k]) { data[t] = 236; data[t + 1] = 112; data[t + 2] = 100; data[t + 3] = 255; nearCount++; }   // near-body returns: red
+      else { data[t] = COLORS.floor[0]; data[t + 1] = COLORS.floor[1]; data[t + 2] = COLORS.floor[2]; data[t + 3] = 235; }
       if (h >= STEP_OVER_M) obstacles++; else if (h >= FLOOR_M) steps++;
       if (ceiling && ceiling[k] !== 255) overheads++;
     }
@@ -211,7 +212,7 @@ class MemoryLayer {
       }
     }
     for (const m of [ms, mo, mc]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
-    this.counts = { steps, obstacles, overheads };
+    this.counts = { steps, obstacles, overheads, near: nearCount };
     this.applyStyle();
   }
   // 'ghost': the scan under a live map, quiet grey so the two never read as one.

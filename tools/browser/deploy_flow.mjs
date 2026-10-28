@@ -123,6 +123,15 @@ try {
   await primary().click();
   await until('the operator lease', s => s.lease);
   assert.match(await primaryText(), /scan the scene/i);
+  // Another page asks for the controls: it is told who holds them, and taking over is a separate, explicit press.
+  const other = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await other.goto(`${base}/?workspace=deploy`, { waitUntil: 'domcontentloaded' });
+  await other.waitForFunction(() => window.__deploy?.S?.stateOk, null, { timeout: 30000 });
+  await other.fill('#dp-operator', 'Visitor'); await other.click('#dp-primary');
+  await other.waitForFunction(() => /Take over from Linji/.test(document.getElementById('dp-primary')?.textContent ?? ''), null, { timeout: 10000 });
+  assert.match(await other.locator('.dp-body .callout.warning').first().textContent(), /Linji holds the controls/);
+  await other.screenshot({ path: path.join(shots, '02b-lease-held-elsewhere.png') });
+  await other.close();
   await shot('02-connect-controls');
   // Readiness drawer: open, then a check with a 3D anchor flies the camera there.
   await page.click('#dp-ready-toggle');
@@ -244,8 +253,33 @@ try {
   await primary().click();
   await page.waitForSelector('.dp-body .callout.ok', { timeout: 15000 });
   assert.match(await page.locator('.dp-body .callout.ok').first().textContent(), /Goal confirmed by the node/);
-  await page.waitForFunction(() => window.__deploy.d3.aligned, null, { timeout: 15000 });
+  await page.waitForFunction(() => window.__deploy.d3.aligned && window.__deploy.d3.liveLookup, null, { timeout: 15000 });
   await shot('15-goal-sent-aligned', { narrow: true });
+  // The frame chain: the planner's live map (odometry frame, through align.scene_from_odom) lands on the scan's map
+  // (memory frame, through scene_from_memory). Live obstacle cells over seen scan cells must sit on scan obstacles.
+  step('frames');
+  const frames = await page.evaluate(() => {
+    const D = window.__deploy.d3, live = D.liveLookup, scan = D.scanLookup;
+    const ap = (p, xy) => { const c = Math.cos(p[2]), s = Math.sin(p[2]); return [p[0] + c * xy[0] - s * xy[1], p[1] + s * xy[0] + c * xy[1]]; };
+    const tall = (m, k) => m.support[k] !== 255 && m.support[k] * 0.02 >= 0.25;
+    let n = 0, hit = 0; const m = live.mem;
+    for (let i = 0; i < m.nx; i++) for (let j = 0; j < m.ny; j++) {
+      if (!tall(m, i * m.ny + j)) continue;
+      const xy = ap(live.sceneFromGrid, [m.lo[0] + i * m.res, m.lo[1] + j * m.res]), c = scan.cell(xy);
+      if (!c || scan.mem.support[c.k] === 255) continue;
+      n++;
+      let ok = false;
+      for (const dx of [-0.06, 0, 0.06]) for (const dy of [-0.06, 0, 0.06]) { const q = scan.cell([xy[0] + dx, xy[1] + dy]); if (q && tall(scan.mem, q.k)) ok = true; }
+      if (ok) hit++;
+    }
+    return { n, hit, frac: n ? hit / n : null, scene_from_odom: D.align?.scene_from_odom, scene_from_memory: D.scanFrame };
+  });
+  report.frames = frames;
+  console.log(`  live map on the scan map: ${frames.hit}/${frames.n} (${Math.round((frames.frac ?? 0) * 100)} %)`);
+  if (!scanDir) {
+    assert.ok(Math.abs(frames.scene_from_memory[2]) > 0.5 && Math.abs(frames.scene_from_odom[2]) > 0.2, `non-identity frames: ${JSON.stringify(frames)}`);
+    assert.ok(frames.n > 50 && frames.frac >= 0.9, `the live map lines up with the scan map in the scene: ${JSON.stringify(frames)}`);
+  }
   step('go');
   await until('GO open', async () => /GO/.test(await primaryText()) && !(await primary().isDisabled()), 15000);
   await primary().click();
