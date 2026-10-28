@@ -811,10 +811,15 @@ class UncertainActTests(GatewayCase):
     def test_refusals_and_missing_sessions_stay_answers(self):
         status, out = self.deploy.act({"act": "note", "slot": "robot"})
         self.assertEqual(status, 404)                                  # no session: an answer, not "unknown"
-        self.start_robot()
+        robot = self.start_robot()
         status, out = self.deploy.act({"act": "c", "slot": "robot", "lease_id": self.deploy.lease_take(
             {"operator": "x"})["lease_id"]})
         self.assertEqual((status, out["result"]), (200, "refused"))
+        robot.panel.shutdown()                                         # the panel no longer listens: not delivered
+        robot.panel.server_close()
+        status, out = self.deploy.act({"act": "note", "slot": "robot"})
+        self.assertEqual(status, 502)
+        self.assertIn("Connection refused", out["error"])
 
 
 class ReviewTests(GatewayCase):
