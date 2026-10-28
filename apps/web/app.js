@@ -13,6 +13,7 @@ import { runs, initRuns, refreshRuns, drawCompare, selectedRuns, runColor } from
 import { renderSystemMap, renderRobotContract, KIND_LABEL, sessionKind } from './js/system.js';
 import { nav, initNavigate, render as renderNavigate, pickGoal, overlay as navOverlay, resetPreview as resetNavPreview } from './js/navigate.js';
 import { initFocus } from './js/focus.js';
+import { initDeploy, enter as enterDeploy, leave as leaveDeploy, probe as probeDeploy, handleKey as deployKey } from './js/deploy.js';
 
 const state = {
   session: null, sessionId: null, frame: null, measuredFrame: null, frozenFrame: null, frameIndex: -1, time: 0,
@@ -26,6 +27,7 @@ let rehearsePreviewSuspensions = 0;
 state.freeze = on_ => { state.frozenFrame = on_ ? state.frame : null; renderFrame(true); };
 
 const WORKSPACES = {
+  deploy: { title: 'Deploy', eyebrow: 'Connect · scan · goal · rehearse · deploy · review', panel: null, stage: '3d' },
   replay: { title: 'Replay', eyebrow: '', panel: null, stage: '3d' },
   navigate: { title: 'Navigate', eyebrow: "Goals on the robot's own map", panel: 'navigate', stage: '3d' },
   arena: { title: 'Navigation arena', eyebrow: 'Build · obstacles · start / goal presets', panel: 'arena', stage: 'arena' },
@@ -417,15 +419,17 @@ async function refreshNavMap(job, force = false) {
   } catch { /* no map yet: the session has not published its memory */ }
   finally { navAttach.mapLoading = false; }
 }
+const HARDWARE_TEXT = "Studio has no DDS participant and no motor-command path of its own. It relays an operator's press to the deploy kit's console, which owns the robot and checks every gate.";
+const FOOTER_TEXT = " Loopback only · replay, owned CPU simulation; Deploy relays the operator's presses to the deploy kit's console";
 function robotLinkChrome(job) {
   const live = job?.kind === 'robot' && ['starting', 'running', 'cancelling', 'detached'].includes(job.status);
   const chip = $('hardware-chip');
   chip.classList.toggle('robot-live', live);
-  chip.lastChild.textContent = live ? 'Robot link · goal + stand only' : 'No motor commands';
-  chip.title = live ? 'The robot link may stage a goal and ask for a stand on node.py; Go stays with the operator.' : 'Studio has no DDS participant and no motor-command path. On a real robot it may only stage a goal and ask for a stand on node.py; Go stays with the operator.';
+  chip.lastChild.textContent = live ? 'Robot link · goal + stand only' : 'Relays presses · no motor path';
+  chip.title = live ? 'The robot link may stage a goal and ask for a stand on node.py; Go stays with the operator.' : HARDWARE_TEXT;
   $('footer-mode').lastChild.textContent = live
     ? ' Loopback only · robot link live: goal and stand to node.py; never Go, quit or motor commands'
-    : ' Loopback only · replay, owned CPU simulation and the robot link (goal and stand only)';
+    : FOOTER_TEXT;
 }
 async function attachNav(job) {
   robotLinkChrome(job);
@@ -624,7 +628,9 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
   document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel !== ws.panel; });
   $('tool-title').textContent = ws.title; $('tool-eyebrow').textContent = ws.eyebrow;
   sn.visible = name === 'sensors';
-  document.body.classList.toggle('no-inspector', ['arena', 'runs', 'system'].includes(name));
+  document.body.classList.toggle('no-inspector', ['arena', 'runs', 'system', 'deploy'].includes(name));
+  if (name === 'deploy' && previous !== 'deploy') { setPlaying(false); if (scene.view.robotView) setRobotView(false); }
+  if (previous === 'deploy' && name !== 'deploy') leaveDeploy();
   if (previous === 'runs' && name !== 'runs') scene.setComparison([]);
   if (previous === 'arena' && name !== 'arena' && arena.preview3d) { arena.preview3d = false; scene.setArenaPreview(null); }
   if (name !== 'rehearse') setPreviewing(false);
@@ -678,6 +684,12 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
     }
     if (name === 'sensors') { renderSensors(state); refreshSensors(state, true); }
     if (name === 'system') await renderSystem();
+    if (name === 'deploy') await enterDeploy();
+    // Studio opened on Deploy: Replay's recording loads on the first visit.
+    if (name === 'replay' && !state.session && !state.loading && state.defaultSession) {
+      const id = state.defaultSession; state.defaultSession = null;
+      $('session-picker').value = id; await loadSession(id);
+    }
   } catch (error) { emit('workbench:error', error.message); }
   finally { if (preserving) rehearsePreviewSuspensions--; }
   emit('workspace', name);
@@ -689,7 +701,7 @@ async function renderSystem() {
   $('system-panel').innerHTML = `<div class="panel-section"><h4>Selected component</h4><div id="system-detail">${systemDetails(inspector.systemNode, state.session, state.robot)}</div></div>
     <div class="panel-section"><h4>This source</h4><p class="tiny">${escape(KIND_LABEL[kind])}</p>
     <label class="check"><input id="system-deploy" type="checkbox" ${state.systemDeploy ? 'checked' : ''}> Show the real-time deployment topology instead</label></div>
-    <div class="panel-section"><h4>Boundary</h4><p class="tiny">Studio is observe-only. It never publishes <code>rt/lowcmd</code>, hand commands or ZMQ <code>pose</code>, and never connects to the planner node control port :5562. Physical E-stop and operator procedures own the robot.</p></div>`;
+    <div class="panel-section"><h4>Boundary</h4><p class="tiny">Studio never publishes <code>rt/lowcmd</code>, hand commands or ZMQ <code>pose</code>, and has no DDS participant. In Deploy it relays an operator's press (Arm, Start SONIC, Clear map, Send goal, GO, Stand, Takeover, E-STOP) to the deploy kit's console, which owns the robot and checks every gate. Navigate's robot link may stage a goal and ask for a stand on the planner node; Go stays with the operator there. The physical E-stop is the only stop that does not go through the console.</p></div>`;
   $('system-stage').innerHTML = `<div class="system-layout"><section><span class="eyebrow">Deployment chain</span><h3>${state.systemDeploy ? 'Real-time deployment (source-configured)' : escape(state.session?.metadata?.title ?? 'System')}</h3><div id="system-map-host"></div></section>
     <section id="robot-contract"></section></div>`;
   const draw = () => renderSystemMap($('system-map-host'), state.session, { selected: inspector.systemNode, showDeploy: !!state.systemDeploy,
@@ -744,6 +756,7 @@ function initInspectorResize() {
 }
 
 function onKey(e) {
+  if (state.workspace === 'deploy' && deployKey(e)) return;
   if (focus?.handleKey(e)) return;
   if (e.key === 'Escape' && document.body.classList.contains('show-inspector')) { setInspectorDrawer(false); $('inspector-toggle').focus(); return; }
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -824,6 +837,9 @@ async function initialize() {
   // Notes, popovers and chips that float under the title row follow its height (it wraps on narrow stages).
   new ResizeObserver(([entry]) => $('viewport-shell').style.setProperty('--vp-top-h', `${Math.ceil(entry.target.getBoundingClientRect().height)}px`)).observe(document.querySelector('.vp-top'));
   focus = initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, cameraView, previewMarkers, sampleHealth });
+  initDeploy({ csrf: async fresh => { if (fresh) state.catalog = null; return (await ensureCatalog()).csrf_token; }, sessions: () => state.sessions });
+  // A view link or a session in the URL keeps Replay; otherwise Studio opens on Deploy when the deploy service answers.
+  const deployFirst = view.get('workspace') === 'deploy' || (!view.has('session') && !view.has('workspace') ? probeDeploy().catch(() => false) : false);
   $('focus-details-close').addEventListener('click', () => setInspectorDrawer(false));
   $('focus-enter').addEventListener('click', () => setInspectorDrawer(false));
   requestAnimationFrame(tick);
@@ -849,13 +865,18 @@ async function initialize() {
       $('loading-overlay').hidden = true; $('no-recordings').hidden = false;
       $('session-title').textContent = 'No recordings yet';
       $('session-picker').insertAdjacentHTML('afterbegin', '<option value="" selected disabled>No recordings yet</option>');
-      await setWorkspace(view.get('workspace') || 'navigate');
+      await setWorkspace(view.get('workspace') || ((await deployFirst) ? 'deploy' : 'navigate'));
       return;
     }
     const firstJob = [...sessions].filter(s => s.group === 'CPU rehearsals' && s.available && s.outcome)
       .sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0))[0];
     const selected = sessions.some(s => s.id === requested) ? requested : (firstJob ?? sessions.find(s => s.available)).id;
     $('session-picker').value = selected;
+    if (await deployFirst) {
+      state.defaultSession = selected; $('loading-overlay').hidden = true;
+      await setWorkspace('deploy');
+      return;
+    }
     if (!(await loadSession(selected))) return;
     if (requested && requested !== selected) return;
     // View links configure this browser only; they never start a worker.
