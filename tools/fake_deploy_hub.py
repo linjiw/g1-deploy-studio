@@ -484,7 +484,7 @@ class FakeConsole:
         with self.lock:
             expect = msg.get("expect") or {}
             mismatch = [k for k, v in expect.items() if self._state_field(k) != v]
-            if mismatch:
+            if mismatch and act not in ("h", "t"):  # like the kit's console: a stop is never refused over a stale page
                 ok, reason = False, f"the console's state changed ({', '.join(mismatch)}): look again"
             else:
                 ok, reason = self._act(act, msg, source)
