@@ -807,13 +807,13 @@ function initInspectorResize() {
 function onKey(e) {
   if (e.defaultPrevented) return;
   if (e.key === 'Escape' && document.querySelector('.popover:not([hidden])')) { e.preventDefault(); closePopovers(null, true); return; }
+  if (focus?.handleKey(e)) return;
+  if (e.key === 'Escape' && document.body.classList.contains('show-inspector')) { setInspectorDrawer(false); $('inspector-toggle').focus(); return; }
   const focused = document.activeElement;
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(focused?.tagName) || focused?.isContentEditable || e.ctrlKey || e.metaKey || e.altKey) return;
   if (focused?.closest('.popover')) return;
   // Space on a focused control belongs to that control's native activation.
   if (e.key === ' ' && focused?.closest('button, a[href], summary, [role="button"]')) return;
-  if (focus?.handleKey(e)) return;
-  if (e.key === 'Escape' && document.body.classList.contains('show-inspector')) { setInspectorDrawer(false); $('inspector-toggle').focus(); return; }
   if (state.workspace === 'arena' && e.key !== '?') return;  // the arena editor owns the keyboard
   const k = e.key;
   if (k === ' ') { e.preventDefault(); $('play').click(); }

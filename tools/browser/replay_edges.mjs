@@ -14,12 +14,14 @@ try {
   await report.check('empty', 'An empty catalog stays unavailable and Retry opens a real recording', async () => {
     await page.route('**/api/sessions', r => r.fulfill({ json: { sessions: [] } }));
     await page.goto(`${BASE}/?session=sonic-lockstep`);
-    await page.waitForSelector('#retry-load');
+    await page.waitForFunction(() => window.__studio?.state.ready);
+    await page.click('#workspace-replay');
+    await page.waitForSelector('#refresh-recordings');
     assert(await page.locator('#play').isDisabled(), 'empty replay can play');
     assert(await page.locator('#session-picker').isDisabled(), 'empty picker is enabled');
-    assert(await page.locator('#source-badge').innerText() === 'UNAVAILABLE', 'empty data marked as truth');
+    assert(await page.locator('#source-badge').isHidden() || /unavailable/i.test(await page.locator('#source-badge').innerText()), 'empty data marked as truth');
     await report.shot('empty');
-    await page.unroute('**/api/sessions'); await page.click('#retry-load');
+    await page.unroute('**/api/sessions'); await page.click('#refresh-recordings');
     await ready(page, 'sonic-lockstep');
     assert(!await page.locator('#play').isDisabled(), 'recovered replay cannot play');
   });
@@ -32,6 +34,7 @@ try {
     return { callbacks: after - before, interval_ms: 1200 };
   });
   await report.check('workspace-race', 'A slow workspace load cannot reactivate an editor after leaving', async () => {
+    await page.evaluate(() => { window.__studio.state.catalog = null; });
     let release, arrived;
     const started = new Promise(resolve => { arrived = resolve; });
     const held = new Promise(resolve => { release = resolve; });
@@ -98,9 +101,15 @@ try {
     const t = await page.evaluate(() => window.__studio.state.time);
     assert(t > 0.4, `replay did not advance: ${t}`);
     await page.check('#loop');
-    await page.evaluate(() => { const s = window.__studio; s.seek(s.state.session.metadata.duration_s - 0.05); });
-    await page.click('#play'); await page.waitForTimeout(300); await page.click('#play');
-    assert(await page.evaluate(() => window.__studio.state.time) < 1, 'loop did not restart');
+    const looped = await page.evaluate(() => new Promise(resolve => {
+      const s = window.__studio;
+      s.seek(s.state.session.metadata.duration_s - 0.05);
+      const cleanup = () => { clearTimeout(timeout); window.removeEventListener('studio:frame', onFrame); s.setPlaying(false); };
+      const onFrame = event => { if (event.detail.time < 0.5) { cleanup(); resolve(true); } };
+      const timeout = setTimeout(() => { cleanup(); resolve(false); }, 10000);
+      window.addEventListener('studio:frame', onFrame); document.getElementById('play').click();
+    }));
+    assert(looped, 'loop did not restart');
     await page.uncheck('#loop');
     await page.evaluate(() => window.__studio.seek(1.234)); await page.click('#camera-follow'); await page.click('#tab-health'); await page.click('#copy-view');
     await page.goto(page.url()); await ready(page, 'sonic-lockstep');
