@@ -8,6 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2310161c'/%3E%3Ctext x='16' y='21.5' fill='%23ffffff' font-size='14' font-weight='800' text-anchor='middle' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/focus.css">
+  <link rel="stylesheet" href="/deploy.css">
   <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.min.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
 </head>
 <body>
@@ -15,8 +16,9 @@
     <a class="brand" href="/" aria-label="G1 Deploy Studio home"><span class="brand-icon">G1</span><span class="brand-name">Deploy <strong>Studio</strong></span></a>
     <div class="run-picker"><label for="session-picker">Run</label><select id="session-picker" aria-label="Select recording or rehearsal" data-testid="session-select"><option>Loading…</option></select></div>
     <span id="run-outcome" class="run-outcome"></span>
+    <div id="deploy-context" class="deploy-context" aria-label="Deploy: robot, operator and service"></div>
     <div class="topbar-right">
-      <button id="hardware-chip" class="hardware-off" aria-controls="evidence-legend" title="Studio has no DDS participant and no motor-command path. On a real robot it may only stage a goal and ask for a stand on node.py; Go stays with the operator."><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 10 4-1.7 7-5.6 7-10V6z"/></svg><span>No motor commands</span></button>
+      <button id="hardware-chip" class="hardware-off" aria-controls="evidence-legend" title="Studio has no DDS participant and no motor-command path of its own. It relays an operator's press to the deploy kit's console, which owns the robot and checks every gate."><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 10 4-1.7 7-5.6 7-10V6z"/></svg><span>Relays presses · no motor path</span></button>
       <button id="evidence-button" class="ghost" aria-expanded="false" aria-controls="evidence-legend">Evidence key</button>
       <button id="inspector-toggle" class="ghost inspector-toggle" aria-expanded="false" aria-controls="focus-inspector" title="Show the inspector: intent, joints, health, map, pipeline, graph and source">Details</button>
       <button id="help-button" class="ghost" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-expanded="false" aria-controls="help-overlay">?</button>
@@ -29,13 +31,16 @@
     <dl><dt>Space</dt><dd>Play / pause</dd><dt>← / →</dt><dd>Step one 20 ms control tick</dd><dt>Shift + ← / →</dt><dd>Step 1 s</dd>
     <dt>J / K / L</dt><dd>Slower · pause · faster</dd><dt>F / T / O / G / R</dt><dd>Follow · Top · Orbit · Fit scene · Robot view</dd>
     <dt>M</dt><dd>Toggle observed map</dd><dt>1 – 7</dt><dd>Inspector tabs</dd><dt>?</dt><dd>This help</dd></dl>
+    <p class="tiny">Deploy: F frames the step · T top · O orbit · Esc cancels a goal pick or closes a sheet. No key presses GO or E-STOP.</p>
     <p class="tiny">Arena editor: Del removes · D duplicates · R rotates 15° · arrows nudge · Esc deselects.</p>
     <button id="help-evidence" class="link-button">What the evidence chips mean</button>
   </div>
   <div id="error-banner" class="error-banner" role="alert" hidden></div>
+  <div id="deploy-estop" class="deploy-estop" role="region" aria-label="Emergency stop" hidden></div>
 
   <main class="shell">
     <nav class="rail" aria-label="Workspaces">
+      <button id="workspace-deploy" data-workspace="deploy" aria-pressed="false" title="Connect, scan, pick a goal, rehearse and deploy, in 3D"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.8v10.4M7.6 8.2 12 3.8l4.4 4.4"/><path d="M4.5 14.5v3.2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3.2"/></svg></i><span>Deploy</span></button>
       <button id="workspace-replay" data-workspace="replay" class="active" aria-pressed="true" title="Replay recordings and runs"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m10 8.6 5.2 3.4-5.2 3.4z"/></svg></i><span>Replay</span></button>
       <button id="workspace-navigate" data-workspace="navigate" aria-pressed="false" title="Put goals on the robot's own map and watch it walk"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-10.5a6.5 6.5 0 0 1 13 0C18.5 15.4 12 21 12 21z"/><circle cx="12" cy="10.5" r="2.3"/></svg></i><span>Navigate</span></button>
       <button id="workspace-arena" data-workspace="arena" aria-pressed="false" title="Build a navigation arena: obstacles, start, goal"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><rect x="7" y="7" width="4" height="6" rx="1"/><rect x="13" y="12" width="4" height="5" rx="1"/></svg></i><span>Arena</span></button>
@@ -65,6 +70,7 @@
           <canvas id="arena-canvas" class="stage-canvas" aria-label="Arena editor (top-down, metres)" hidden></canvas>
           <canvas id="runs-canvas" class="stage-canvas" aria-label="Run trajectory comparison" hidden></canvas>
           <div id="system-stage" class="stage-doc" hidden></div>
+          <div id="deploy-stage" class="deploy-stage"></div>
 
           <div class="vp-top">
           <div class="vp-title" id="vp-title">
@@ -141,9 +147,10 @@
       </div>
       <div class="inspector-footer"><span id="inspector-time">Synchronized · 00:00.000</span></div>
     </aside>
+    <aside id="deploy-panel" class="deploy-panel" aria-label="Deploy steps"></aside>
   </main>
   <button id="inspector-backdrop" class="inspector-backdrop" aria-label="Close details" tabindex="-1" hidden></button>
-  <footer class="statusbar"><span id="footer-mode"><i></i> Loopback only · replay, owned CPU simulation and the robot link (goal and stand only)</span><span id="footer-source" class="footer-source"></span><span id="build-info">build —</span></footer>
+  <footer class="statusbar"><span id="footer-mode"><i></i> Loopback only · replay, owned CPU simulation; Deploy relays the operator's presses to the deploy kit's console</span><span id="footer-source" class="footer-source"></span><span id="build-info">build —</span></footer>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

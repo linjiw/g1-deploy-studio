@@ -27,6 +27,7 @@ export const view = {
   layers: { robot: true, reference: true, future: true, trajectory: true, environment: true,
     navigation: true, perception: false, frames: false, sensors: true },
   lastPoseKey: null, followAnchor: new THREE.Vector3(), mapSample: null, session: null,
+  minFrameMs: 0, beforeRender: null,
 };
 
 const quat = v => new THREE.Quaternion(v[1], v[2], v[3], v[0]);
@@ -213,15 +214,19 @@ export function initScene(host, { onPick } = {}) {
   requestAnimationFrame(loop);
 }
 
-function loop() {
+function loop(now = performance.now()) {
   if (view.renderer) {
     const moving = view.controls.update();
-    if (view.dirty || moving) {
+    // view.minFrameMs (0 = every animation frame) caps the frame rate; Deploy sets it to 33 (30 fps).
+    const capped = view.minFrameMs > 0 && now - (view.lastRenderAt ?? -Infinity) < view.minFrameMs;
+    if ((view.dirty || moving) && capped) view.dirty = true;
+    else if (view.dirty || moving) {
+      view.beforeRender?.(now);
       const r = view.renderer, size = r.getSize(new THREE.Vector2());
       r.setScissorTest(false); r.setViewport(0, 0, size.x, size.y);
       r.render(view.scene, view.camera);
       if (view.robotView && view.robotViewReady) renderRobotView(size);
-      view.drawCount++; view.dirty = false;
+      view.drawCount++; view.dirty = false; view.lastRenderAt = now;
     }
   }
   requestAnimationFrame(loop);
@@ -693,3 +698,6 @@ export function markerPositions() {
 export function markerScreen() {
   return Object.values(view.markers).map(o => ({ name: o.name, ndc: o.position.clone().project(view.camera).toArray() }));
 }
+
+// ----- Deploy workspace (js/deploy3d.js): the robot builder, posing and drawing helpers, shared as-is ------------
+export { buildRobot, pose, label as makeLabel, navMarker, polyline, setPolyline, disposeGroup, boxMesh };

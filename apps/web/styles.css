@@ -219,7 +219,8 @@ body.stage-2d .vp-toolbar, body.stage-2d .vp-hud, body.stage-2d .viewport-meta, 
 .vp-toolbar { display: flex; gap: 6px; align-items: center; flex: none; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .vp-toolbar > button { height: 34px; min-height: 0; padding: 0 12px; border-radius: 10px; background: var(--glass); border-color: var(--glass-line); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: var(--shadow); }
 .vp-toolbar > button:hover:not(:disabled) { background: var(--glass-2); }
-.vp-toolbar > button[aria-pressed="true"], .vp-toolbar > button[aria-expanded="true"] { background: var(--text); border-color: var(--text); color: #fff; }
+.vp-toolbar > button[aria-pressed="true"], .vp-toolbar > button[aria-expanded="true"],
+.vp-toolbar > button[aria-pressed="true"]:hover:not(:disabled), .vp-toolbar > button[aria-expanded="true"]:hover:not(:disabled) { background: var(--text); border-color: var(--text); color: #fff; }
 #layers-button::after { content: ''; width: 12px; height: 12px; background: var(--chevron) center / 12px no-repeat; }
 #layers-button[aria-expanded="true"]::after { filter: invert(1) brightness(2); }
 /* Segmented control, as the site's .seg: a quiet track, the chosen segment filled. */
