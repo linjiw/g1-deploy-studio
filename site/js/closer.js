@@ -97,7 +97,7 @@ class Closer {
 
   async load(sc) {
     const S = this.S, token = ++S.token;
-    S.playing = false;
+    S.playing = false; this.renderDock();
     const [world, walk] = await Promise.all([json(`${sc.world}/index.json`).then(decodeWorld), walkJson(`${sc.world}/g/${sc.goal}.json`).then(d => new Walk(d))]);
     if (token !== S.token || this.destroyed) return;
     S.scenario = sc; S.world = world; S.walk = walk;  // the scenario changes only with its walk

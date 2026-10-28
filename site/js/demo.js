@@ -95,7 +95,9 @@ class Demo {
     this.viewer.ghost('plan', { opacity: 0.42 });
     const h = this.parseHash();
     this.progress(0.88, 'Loading the room');
-    await this.loadWorld(h?.world && this.catalog.some(w => w.id === h.world) ? h.world : this.catalog[0].id, { keepHash: true });
+    if (!this.catalog.length) throw new Error('No recorded rooms are available.');
+    const ready = await this.loadWorld(h?.world && this.catalog.some(w => w.id === h.world) ? h.world : this.catalog[0].id, { keepHash: true });
+    if (!ready && !this.destroyed) throw new Error('The first room could not load. Check your connection and try again.');
     if (this.destroyed) return;
     this.progress(1, 'Ready');
     this.root.classList.add('is-ready');
@@ -200,6 +202,7 @@ class Demo {
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
+    ++this.S.loadToken; this.S.staged = null;
     this.abort.abort();
     clearTimeout(this._ghostTip);
     for (const o of this.observers) o.disconnect();
@@ -262,7 +265,7 @@ class Demo {
       if (token === S.loadToken) this.flash(`Could not load this room: ${error.message}`);
       return false;
     }
-    if (token !== S.loadToken) return false;  // a later click won
+    if (token !== S.loadToken || this.destroyed) return false;  // a later click or Stop won
     Object.assign(S, { worldId: id, world, walk: null, selected: null, staged: null, mode: 'pick', hover: null, clicked: null, cursor: null });
     const v = this.viewer;
     v.setMarker('goalMarker', null); v.setMarker('hoverMarker', null); v.setLine(this.lines.route, null);
@@ -389,7 +392,7 @@ class Demo {
     S.mode = 'loading'; this.render();
     try {
       const walk = new Walk(await walkJson(`${S.worldId}/g/${c.id}.json`));
-      if (S.staged !== c || S.mode !== 'loading') return;
+      if (this.destroyed || S.staged !== c || S.mode !== 'loading') return;
       this.viewer.setMarker('hoverMarker', null);
       S.walk = walk; S.mapStep = -1; S.phase = null; S.events = 0;
       this.writeHash(`${S.worldId}/${c.id}/play`);
@@ -404,6 +407,7 @@ class Demo {
       if (hadFocus || (this.root.contains(document.activeElement) && document.activeElement.disabled !== false) || document.activeElement === document.body && this.engaged) this.el.play.focus({ preventScroll: true });
       if (!at) this.splash('Pre-scan, then walk', 'it stands for 0.5 s while the LiDAR fills its map');
     } catch (error) {
+      if (this.destroyed || S.staged !== c || S.mode !== 'loading') return;
       S.mode = 'staged'; this.flash(`Could not load the walk: ${error.message}`); this.render();
     }
   }
@@ -614,6 +618,7 @@ class Demo {
   }
   renderPicker() {
     const S = this.S, E = this.el;
+    const focused = E.picker.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
     const wrong = this.catalog.flatMap(w => listOf(w)).filter(x => x.grade !== 'clean');
     E.folders.innerHTML = this.catalog.map((w, i) => {
       const list = listOf(w), on = S.folder === w.id;
@@ -634,6 +639,9 @@ class Demo {
       const where = x.turn === null ? '' : `<span class="w-dir" style="--turn:${Math.round(-x.turn)}deg" aria-hidden="true">↑</span>`;
       return `<li><button data-room="${x.room}" data-walk="${x.id}" aria-label="${escape(`${S.folder === 'wrong' ? `${titles[x.room]}, ` : ''}${fmt(x.dist, 1)} m ${direction(x.turn)}, ${g.label}, ${detail}`)}"><i style="background:${g.css}"></i><span class="w-main">${where}${S.folder === 'wrong' ? `${escape(titles[x.room])} · ` : ''}${fmt(x.dist, 1)} m ${escape(direction(x.turn))}</span><span class="w-grade">${escape(g.label)}</span><span class="w-detail mono">${detail}</span></button></li>`;
     }).join('') : '<li class="empty">No walks here.</li>';
+    E.shuffle.disabled = !rows.length;
+    if (focused?.filter) E.filters.querySelector(`[data-filter="${focused.filter}"]`)?.focus({ preventScroll: true });
+    else if (focused?.folder) E.folders.querySelector(`[data-folder="${focused.folder}"]`)?.focus({ preventScroll: true });
   }
   toggleHelp(open = this.el.help.hidden) {
     const was = !this.el.help.hidden;

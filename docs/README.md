@@ -25,6 +25,7 @@ Start with **[STATUS.md](STATUS.md)**: one page with what works, the current res
 
 | Document | Contents |
 |---|---|
+| [UIUX_REVIEW_2026-10-24.md](UIUX_REVIEW_2026-10-24.md) | Website, demo and Studio UX fixes, rendering measurements, failure/mobile regressions and CPU rehearsal evidence |
 | [ROBUSTNESS.md](ROBUSTNESS.md) | Random-goal campaign. Addenda: open floor (A), latency (B), predictive anchoring (C), actuator profiles (D) and firming runs (E) |
 | [VALIDATION.md](VALIDATION.md) | First independent validation (v0.2, 101 checks) |
 | [REVALIDATION.md](REVALIDATION.md) | Re-validation (v0.3, 118 checks) and the fix verification |

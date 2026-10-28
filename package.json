@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "test:browser": "node tools/browser/ui_acceptance.mjs",
+    "test:browser:edges": "node tools/browser/replay_edges.mjs && node tools/browser/studio_ux.mjs",
+    "test:visualization": "node tools/browser/visualization_performance.mjs",
     "test:browser:forwarded": "node tools/browser/forwarded.mjs",
     "test:rehearsal": "node tools/browser/rehearsal_flow.mjs",
-    "site:check": "node tools/site/check.mjs"
+    "site:check": "node tools/site/check.mjs",
+    "site:check:edges": "node tools/site/ux_edges.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",

@@ -74,8 +74,8 @@ let token = '', refreshToken = null;
 export const setToken = value => { token = value ?? ''; };
 export const setTokenRefresher = fn => { refreshToken = fn; };
 
-export async function request(path, body, { cache = 'no-store', retried = false } = {}) {
-  const options = { cache };
+export async function request(path, body, { cache = 'no-store', retried = false, signal } = {}) {
+  const options = { cache, signal };
   if (body !== undefined) {
     Object.assign(options, {
       method: 'POST',
@@ -88,7 +88,7 @@ export async function request(path, body, { cache = 'no-store', retried = false 
   try { data = await response.json(); } catch { data = {}; }
   if (response.status === 403 && body !== undefined && !retried && refreshToken && /token/i.test(data.error ?? '')) {
     await refreshToken();
-    return request(path, body, { cache, retried: true });
+    return request(path, body, { cache, signal, retried: true });
   }
   if (!response.ok) throw new Error(data.error ?? `${path}: request failed (${response.status})`);
   return data;

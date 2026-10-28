@@ -301,3 +301,15 @@
 .stage.narrow .layers .legend-btn { width: 26px; }
 .stage.narrow .poster.small img { object-fit: contain; background: #0c1015; }
 .stage.closer.narrow .split-facts div:nth-child(n+3) { display: none; }
+
+/* Loading actions remain usable before a viewer exists; failures wrap without covering their controls. */
+.boot-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.boot-card small { overflow-wrap: anywhere; }
+.boot-card a { color: var(--s-ink); text-decoration: underline; }
+.boot.failed .bar { display: none; }
+@media (pointer: coarse) {
+  .stage .dk, .stage .btn, .stage .x, .stage .seg button, .stage .pill { min-height: 44px; min-width: 44px; }
+  .stage .filters button { min-height: 36px; }
+  .stage .layers button { min-height: 36px; }
+  .stage .layers .legend-btn { min-width: 36px; }
+}

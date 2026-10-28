@@ -228,6 +228,9 @@ function hit(px, py) {
 }
 
 function onPointerDown(e) {
+  if (!e.isPrimary || arena.drag) return;
+  arena.pointerId = e.pointerId;
+  arena.canvas.focus({ preventScroll: true });
   const rect = arena.canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top, pt = toWorld(px, py);
   arena.canvas.setPointerCapture(e.pointerId);
   if (e.button === 1 || e.button === 2 || e.shiftKey && arena.tool === 'select' && !hit(px, py)) { arena.drag = { type: 'pan', px, py, cx: arena.view.cx, cy: arena.view.cy }; return; }
@@ -243,6 +246,7 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
+  if (!e.isPrimary || (arena.drag && e.pointerId !== arena.pointerId)) return;
   const rect = arena.canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top, pt = toWorld(px, py);
   arena.hover = pt;
   const d = arena.drag;
@@ -266,7 +270,19 @@ function onPointerMove(e) {
   draw();
 }
 
-function onPointerUp() {
+function onPointerCancel(e) {
+  if (e && e.pointerId !== arena.pointerId) return;
+  arena.pointerId = null;
+  // A cancelled touch must never complete a half-drawn wall or leave a stuck drag.
+  const changedGeometry = arena.drag && !['pan', 'draw'].includes(arena.drag.type);
+  arena.drag = null; arena.hover = null;
+  if (changedGeometry) changed();
+  draw();
+}
+
+function onPointerUp(e) {
+  if (e && e.pointerId !== arena.pointerId) return;
+  arena.pointerId = null;
   const d = arena.drag; arena.drag = null;
   if (d?.type === 'draw' && d.end && Math.hypot(d.end[0] - d.start[0], d.end[1] - d.start[1]) > 0.1) {
     addBox(wall(d.start[0], d.start[1], d.end[0], d.end[1], WALL_T, arena.tool === 'beam' ? BEAM : [0, WALL_H]));
@@ -284,7 +300,7 @@ function onWheel(e) {
 }
 
 function onKey(e) {
-  if (!arena.active_workspace || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+  if (!arena.active_workspace || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || document.activeElement?.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
   const sel = arena.selection?.type === 'box' ? arena.boxes[arena.selection.index] : null;
   if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { arena.boxes.splice(arena.selection.index, 1); arena.selection = null; changed(); e.preventDefault(); }
   else if (e.key.toLowerCase() === 'd' && sel) { addBox({ ...clone(sel), center_xy: [sel.center_xy[0] + 0.3, sel.center_xy[1] - 0.3] }); e.preventDefault(); }
@@ -293,7 +309,7 @@ function onKey(e) {
     const step = e.shiftKey ? 0.25 : 0.05, d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] }[e.key];
     sel.center_xy = [snap(sel.center_xy[0] + d[0]), snap(sel.center_xy[1] + d[1])]; changed(); e.preventDefault();
   }
-  else if (e.key === 'Escape') { arena.selection = null; setTool('select'); draw(); renderPanel(); }
+  else if (e.key === 'Escape') { onPointerCancel(); arena.selection = null; setTool('select'); draw(); renderPanel(); }
 }
 
 function addBox(box) {
@@ -433,7 +449,7 @@ export function renderPanel() {
       <label>Length m<input id="box-len" type="number" step="0.05" min="0.06"></label><label>Width m<input id="box-wid" type="number" step="0.05" min="0.06"></label><span></span>
       <label>Bottom m<input id="box-z0" type="number" step="0.05" min="0"></label><label>Top m<input id="box-z1" type="number" step="0.05" min="0.05"></label></div>
       <div class="field-row compact"><button id="box-dup">Duplicate</button><button id="box-del" class="danger">Delete</button></div></div>` : ''}
-    <div class="panel-section"><h4>Start / goal presets</h4><div class="preset-list">${arena.presets.map((x, i) => `<div class="preset-row ${i === arena.active ? 'active' : ''}" data-preset-index="${i}"><button data-preset-select="${i}">${escape(x.label)}</button><span class="preset-state">·</span>${arena.presets.length > 1 ? `<button class="icon" data-preset-remove="${i}" title="Remove preset">✕</button>` : ''}</div>`).join('')}</div>
+    <div class="panel-section"><h4>Start / goal presets</h4><div class="preset-list">${arena.presets.map((x, i) => `<div class="preset-row ${i === arena.active ? 'active' : ''}" data-preset-index="${i}"><button data-preset-select="${i}">${escape(x.label)}</button><span class="preset-state">·</span>${arena.presets.length > 1 ? `<button class="icon" data-preset-remove="${i}" aria-label="Remove ${escape(x.label)} preset" title="Remove preset">✕</button>` : ''}</div>`).join('')}</div>
       ${q ? `<label class="field">Preset name<input id="preset-label" maxlength="100" value="${escape(q.label)}"></label><div class="grid-fields">
         <label>Start X<input id="preset-sx" type="number" step="0.05"></label><label>Start Y<input id="preset-sy" type="number" step="0.05"></label><label>Heading °<input id="preset-yaw" type="number" step="5"></label>
         <label>Goal X<input id="preset-gx" type="number" step="0.05"></label><label>Goal Y<input id="preset-gy" type="number" step="0.05"></label><span></span></div>` : ''}
@@ -451,7 +467,7 @@ export function renderPanel() {
 }
 
 function bindPanel() {
-  const num_ = id => Number($(id).value);
+  const num_ = id => $(id).valueAsNumber;
   // Text fields update in place: re-rendering the panel on 'change' (fired on blur by the
   // mousedown of the next click) would replace the clicked button before its 'click'.
   $('arena-label').addEventListener('input', e => { arena.label = e.target.value; arena.savedId = null; updateStatus(); });
@@ -466,7 +482,7 @@ function bindPanel() {
   $('arena-preview3d').addEventListener('click', e => { const on = e.currentTarget.getAttribute('aria-pressed') !== 'true'; e.currentTarget.setAttribute('aria-pressed', String(on)); e.currentTarget.classList.toggle('active', on); emit('arena:preview3d', on); });
   const sel = arena.selection?.type === 'box' ? arena.boxes[arena.selection.index] : null;
   if (sel) {
-    const bindBox = (id, apply) => $(id).addEventListener('change', () => { const v = num_(id); if (finite(v)) { apply(v); changed(false); draw(); } });
+    const bindBox = (id, apply) => $(id).addEventListener('change', () => { const v = num_(id); if (finite(v)) { apply(v); changed(false); draw(); } else { updateStatus(); } });
     bindBox('box-x', v => { sel.center_xy[0] = v; }); bindBox('box-y', v => { sel.center_xy[1] = v; });
     bindBox('box-len', v => { sel.half_xy[0] = Math.max(0.03, v / 2); }); bindBox('box-wid', v => { sel.half_xy[1] = Math.max(0.03, v / 2); });
     bindBox('box-yaw', v => { sel.yaw = wrap(rad(v)); }); bindBox('box-z0', v => { sel.z_bottom = Math.max(0, Math.min(v, sel.z_top - 0.05)); });
@@ -483,7 +499,7 @@ function bindPanel() {
       const row = document.querySelector(`[data-preset-select="${arena.active}"]`); if (row) row.textContent = q.label;
       updateStatus(); draw();
     });
-    const bindPreset = (id, apply) => $(id).addEventListener('change', () => { const v = num_(id); if (finite(v)) { apply(v); changed(false); draw(); } });
+    const bindPreset = (id, apply) => $(id).addEventListener('change', () => { const v = num_(id); if (finite(v)) { apply(v); changed(false); draw(); } else { updateStatus(); } });
     bindPreset('preset-sx', v => { q.start_xy[0] = v; }); bindPreset('preset-sy', v => { q.start_xy[1] = v; });
     bindPreset('preset-yaw', v => { q.start_yaw_rad = wrap(rad(v)); });
     bindPreset('preset-gx', v => { q.goal_xy[0] = v; }); bindPreset('preset-gy', v => { q.goal_xy[1] = v; });
@@ -529,6 +545,8 @@ export function initArena(canvas, catalog) {
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerCancel);
+  canvas.addEventListener('lostpointercapture', onPointerCancel);
   canvas.addEventListener('pointerleave', () => { arena.hover = null; draw(); });
   canvas.addEventListener('wheel', onWheel, { passive: false });
   canvas.addEventListener('contextmenu', e => e.preventDefault());

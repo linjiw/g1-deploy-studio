@@ -34,9 +34,11 @@ export function initTimeline({ onSeek }) {
     const t = tl.t0 + x / Math.max(1, rect.width - labelWidth() - 8) * (tl.t1 - tl.t0);
     tl.onSeek?.(t);
   };
-  tl.canvas.addEventListener('pointerdown', e => { tl.dragging = true; tl.canvas.setPointerCapture(e.pointerId); seekAt(e); });
+  tl.canvas.addEventListener('pointerdown', e => { if (!e.isPrimary || e.button !== 0) return; tl.dragging = true; tl.canvas.setPointerCapture(e.pointerId); seekAt(e); });
   tl.canvas.addEventListener('pointermove', e => { if (tl.dragging) seekAt(e); else hover(e); });
   tl.canvas.addEventListener('pointerup', () => { tl.dragging = false; });
+  tl.canvas.addEventListener('pointercancel', () => { tl.dragging = false; $('lanes-tip').hidden = true; });
+  tl.canvas.addEventListener('lostpointercapture', () => { tl.dragging = false; });
   tl.canvas.addEventListener('pointerleave', () => { $('lanes-tip').hidden = true; });
   $('lanes-toggle')?.addEventListener('click', () => {
     const collapsed = document.body.classList.toggle('lanes-collapsed');
@@ -45,7 +47,7 @@ export function initTimeline({ onSeek }) {
   });
 }
 
-const labelWidth = () => (tl.canvas?.clientWidth ?? 800) < 520 ? 92 : 132;
+const labelWidth = () => (tl.canvas?.clientWidth ?? 800) < 520 ? 112 : 132;
 
 export function setTimelineSession(session) {
   tl.session = session;
@@ -101,7 +103,7 @@ function drawBase() {
   tl.lanes.forEach((lane, i) => {
     const y0 = 2 + i * g.laneH, y1 = y0 + g.laneH - 3, mid = (y0 + y1) / 2;
     ctx.fillStyle = i % 2 ? '#111a23' : '#0f1720'; ctx.fillRect(0, y0, g.width, g.laneH - 1);
-    ctx.fillStyle = lane.available ? '#aab6c3' : '#6f7c8b';
+    ctx.fillStyle = lane.available ? '#aab6c3' : '#93a1b2';
     ctx.fillText(lane.label, 8, mid);
     if (lane.id === 'events') {
       for (const e of lane.events) {
@@ -109,10 +111,10 @@ function drawBase() {
         ctx.fillStyle = /error|fail|collision|estop/i.test(`${e.type} ${e.message}`) ? '#f08c85' : /result|goal/i.test(e.type ?? '') ? '#5fd39b' : '#efbb70';
         ctx.fillRect(x - 1, y0 + 3, 2, g.laneH - 8);
       }
-      if (!lane.available) { ctx.fillStyle = '#6f7c8b'; ctx.fillText('No events recorded', g.left + 6, mid); }
+      if (!lane.available) { ctx.fillStyle = '#93a1b2'; ctx.fillText('No events recorded', g.left + 6, mid); }
       return;
     }
-    if (!lane.available) { ctx.fillStyle = '#5f6b79'; ctx.fillText('Unavailable in this recording', g.left + 6, mid); return; }
+    if (!lane.available) { ctx.fillStyle = '#93a1b2'; ctx.fillText(g.width - g.left < 220 ? 'Unavailable' : 'Unavailable in this recording', g.left + 6, mid); return; }
     const yOf = v => y1 - Math.min(1, v / lane.max) * (y1 - y0 - 3);
     if (lane.threshold !== null && lane.threshold <= lane.max * 1.001) {
       const ty = yOf(lane.threshold);
@@ -171,7 +173,7 @@ function hover(event) {
     text = `${lane.label} ${best[1].toFixed(3)} ${lane.unit} at ${clock(best[0])}${lane.threshold !== null ? ` · ${lane.thresholdLabel} ${lane.threshold} ${lane.unit}` : ''}`;
   } else text = `${lane.label} was not captured in this recording`;
   tip.textContent = text; tip.hidden = false;
-  tip.style.left = `${Math.min(rect.width - 260, Math.max(0, x + 10))}px`; tip.style.top = `${Math.max(0, y - 30)}px`;
+  tip.style.left = `${Math.max(0, Math.min(rect.width - tip.offsetWidth, x + 10))}px`; tip.style.top = `${Math.max(0, y - 30)}px`;
 }
 
 export function refreshTimelineLive() {

@@ -9,11 +9,12 @@ const up = new THREE.Vector3(0, 0, 1);
 const stl = new STLLoader();
 const meshCache = new Map();          // content-addressed URL -> Promise<BufferGeometry>
 const sharedGeometries = new Set();
-const scratch = { q: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), m: new THREE.Matrix4() };
+const scratch = { q: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), m: new THREE.Matrix4(), size: new THREE.Vector2() };
+let renderRequest = 0;
 
 export const view = {
   scene: null, camera: null, renderer: null, controls: null, host: null,
-  dirty: true, drawCount: 0, camera_mode: 'orbit', model: null,
+  dirty: true, drawCount: 0, visible: true, contextLost: false, camera_mode: 'orbit', model: null,
   robot: null, ghost: null, futures: [], content: null, environment: null,
   mapLayer: null, sensorLayer: null, sensorOverlays: new Map(), lines: {}, markers: {},
   compareGroup: null, arenaGroup: null, robotView: false, robotCamera: null, onPick: null,
@@ -23,12 +24,16 @@ export const view = {
 };
 
 const quat = v => new THREE.Quaternion(v[1], v[2], v[3], v[0]);
-export const markDirty = () => { view.dirty = true; };
+function scheduleRender() {
+  if (!renderRequest && view.renderer && view.visible && !view.contextLost && !document.hidden)
+    renderRequest = requestAnimationFrame(loop);
+}
+export const markDirty = () => { view.dirty = true; scheduleRender(); };
 
 // ----- Preallocated renderables -------------------------------------------------
 function polyline(color, opacity = 1, capacity = 4096, width = 1) {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(capacity * 3), 3));
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage));
   geometry.setDrawRange(0, 0);
   const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, linewidth: width }));
   line.frustumCulled = false;
@@ -42,13 +47,13 @@ function setPolyline(line, points, z = null) {
     const p = points[i];
     attr.array[i * 3] = p[0]; attr.array[i * 3 + 1] = p[1]; attr.array[i * 3 + 2] = z ?? p[2] ?? 0.02;
   }
-  attr.needsUpdate = true;
+  attr.clearUpdateRanges();
+  if (n) { attr.addUpdateRange(0, n * 3); attr.needsUpdate = true; }
   line.geometry.setDrawRange(0, n);
-  line.geometry.computeBoundingSphere();
 }
 function pointLayer(color, size, capacity = 6000, opacity = 0.85) {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(capacity * 3), 3));
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage));
   geometry.setDrawRange(0, 0);
   const points = new THREE.Points(geometry, new THREE.PointsMaterial({ color, size, transparent: true, opacity, sizeAttenuation: true, depthWrite: false }));
   points.frustumCulled = false;
@@ -62,7 +67,8 @@ function setPoints(layer, points) {
     const p = points[i];
     attr.array[i * 3] = p[0]; attr.array[i * 3 + 1] = p[1]; attr.array[i * 3 + 2] = p[2];
   }
-  attr.needsUpdate = true;
+  attr.clearUpdateRanges();
+  if (n) { attr.addUpdateRange(0, n * 3); attr.needsUpdate = true; }
   layer.geometry.setDrawRange(0, n);
   return n;
 }
@@ -159,9 +165,13 @@ export function initScene(host, { onPick } = {}) {
   view.robotCamera = new THREE.PerspectiveCamera(84, 16 / 9, 0.05, 40); view.robotCamera.up.copy(up);
 
   let pointerStart = null;
-  renderer.domElement.addEventListener('pointerdown', e => { pointerStart = [e.clientX, e.clientY]; });
+  renderer.domElement.addEventListener('pointerdown', e => {
+    pointerStart = e.button === 0 && e.isPrimary ? { x: e.clientX, y: e.clientY, id: e.pointerId } : null;
+  });
+  renderer.domElement.addEventListener('pointercancel', () => { pointerStart = null; });
   renderer.domElement.addEventListener('pointerup', e => {
-    if (!view.onPick || !pointerStart || Math.hypot(e.clientX - pointerStart[0], e.clientY - pointerStart[1]) > 5) return;
+    const start = pointerStart; pointerStart = null;
+    if (!view.onPick || !start || e.button !== 0 || e.pointerId !== start.id || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 5) return;
     const rect = renderer.domElement.getBoundingClientRect(), ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -(e.clientY - rect.top) / rect.height * 2 + 1), camera);
     const hit = ray.ray.intersectPlane(new THREE.Plane(up, 0), new THREE.Vector3());
@@ -170,32 +180,45 @@ export function initScene(host, { onPick } = {}) {
   new ResizeObserver(() => {
     const { width, height } = host.getBoundingClientRect();
     if (width < 2 || height < 2) return;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5, Math.sqrt(3.5e6 / (width * height))));
     camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height); markDirty();
     if (view.camera_mode === 'scene' && view.session) fitScene();
   }).observe(host);
-  renderer.domElement.addEventListener('webglcontextlost', () =>
-    window.dispatchEvent(new CustomEvent('studio:error', { detail: 'The 3D rendering context was lost. Reload to restore the scene; recorded data is unchanged.' })));
-  requestAnimationFrame(loop);
+  new IntersectionObserver(entries => {
+    view.visible = entries[0].isIntersecting;
+    if (view.visible) markDirty();
+  }).observe(host);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) markDirty(); });
+  renderer.domElement.addEventListener('webglcontextlost', e => {
+    e.preventDefault(); view.contextLost = true;
+    window.dispatchEvent(new CustomEvent('studio:error', { detail: 'The 3D view is paused while its graphics context recovers. Recorded data is unchanged. Reload if the scene does not return.' }));
+  });
+  renderer.domElement.addEventListener('webglcontextrestored', () => {
+    view.contextLost = false; renderer.shadowMap.needsUpdate = true; markDirty();
+  });
+  markDirty();
 }
 
 function loop() {
-  if (view.renderer) {
-    const moving = view.controls.update();
-    if (view.dirty || moving) {
-      const r = view.renderer, size = r.getSize(new THREE.Vector2());
-      r.setScissorTest(false); r.setViewport(0, 0, size.x, size.y);
-      r.render(view.scene, view.camera);
-      if (view.robotView && view.robotViewReady) renderRobotView(size);
-      view.drawCount++; view.dirty = false;
-    }
+  renderRequest = 0;
+  if (!view.renderer || !view.visible || view.contextLost || document.hidden) return;
+  const moving = view.controls.update();
+  if (view.dirty || moving) {
+    const r = view.renderer, size = r.getSize(scratch.size);
+    r.setScissorTest(false); r.setViewport(0, 0, size.x, size.y);
+    r.render(view.scene, view.camera);
+    if (view.robotView && view.robotViewReady) renderRobotView(size);
+    view.drawCount++; view.dirty = false;
   }
-  requestAnimationFrame(loop);
+  if (moving) scheduleRender();
 }
 
 // ----- Robot model ------------------------------------------------------------
 async function geometry(spec) {
   if (spec.type === 'mesh') {
-    if (!meshCache.has(spec.url)) meshCache.set(spec.url, stl.loadAsync(spec.url).then(g => { sharedGeometries.add(g); return g; }));
+    if (!meshCache.has(spec.url)) meshCache.set(spec.url, stl.loadAsync(spec.url).then(g => { sharedGeometries.add(g); return g; }).catch(error => {
+      meshCache.delete(spec.url); throw error;  // A transient fetch failure must be retryable.
+    }));
     return meshCache.get(spec.url);
   }
   const s = spec.size;
@@ -210,7 +233,9 @@ async function geometry(spec) {
 
 async function buildRobot(spec, jointNames, ghost = null) {
   const joints = [];
+  const ownedGeometries = new Set(), ownedMaterials = new Set();
   const ghostMaterial = ghost ? new THREE.MeshStandardMaterial({ color: ghost.color ?? 0x57ded3, transparent: true, opacity: ghost.opacity, roughness: 0.3, metalness: 0.1, depthWrite: false, emissive: ghost.emissive ?? 0x1b625c, emissiveIntensity: 0.35 }) : null;
+  if (ghostMaterial) ownedMaterials.add(ghostMaterial);
   async function body(node) {
     const group = new THREE.Group(); group.name = node.name;
     const restPosition = new THREE.Vector3(...node.position), restQuaternion = quat(node.quaternion_wxyz);
@@ -224,18 +249,29 @@ async function buildRobot(spec, jointNames, ghost = null) {
     for (const g of node.geometries) {
       const rgba = g.rgba ?? [0.65, 0.68, 0.7, 1];
       const material = ghostMaterial ?? new THREE.MeshStandardMaterial({ color: new THREE.Color(rgba[0], rgba[1], rgba[2]), roughness: 0.55, metalness: 0.22 });
-      const mesh = new THREE.Mesh(await geometry(g), material);
+      ownedMaterials.add(material);
+      const shape = await geometry(g);
+      if (!sharedGeometries.has(shape)) ownedGeometries.add(shape);
+      const mesh = new THREE.Mesh(shape, material);
       mesh.position.fromArray(g.position); mesh.quaternion.copy(quat(g.quaternion_wxyz));
       if (g.scale) mesh.scale.fromArray(g.scale);
       mesh.castShadow = !ghost; mesh.receiveShadow = !ghost; mesh.renderOrder = ghost ? 2 : 0;
       group.add(mesh);
     }
-    const children = await Promise.all(node.children.map(body));
-    if (children.length) group.add(...children);
+    const children = await Promise.allSettled(node.children.map(body));
+    const failed = children.find(result => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    if (children.length) group.add(...children.map(result => result.value));
     return group;
   }
-  const root = await body(spec.root);
-  return { root, joints, material: ghostMaterial };
+  try {
+    const root = await body(spec.root);
+    return { root, joints, material: ghostMaterial };
+  } catch (error) {
+    for (const shape of ownedGeometries) shape.dispose();
+    for (const material of ownedMaterials) material.dispose();
+    throw error;
+  }
 }
 
 function pose(model, frame, reference = null) {
@@ -271,15 +307,26 @@ export function clearSessionScene() {
 
 export async function loadSessionScene(session, id, isCurrent) {
   const spec = session.metadata.model_path ? await request(`/api/model?id=${encodeURIComponent(id)}`, undefined, { cache: 'no-cache' }) : null;
+  if (!isCurrent()) return null;
   // A live robot link may stream the LIO pose before (or without) the runner's joints: build the scene for it too.
   const worldAvailable = session.frames.some(hasPose) || session.frames.some(hasRoot);
   const names = session.joint_names ?? [];
-  const [main, ref] = worldAvailable && spec
-    ? await Promise.all([buildRobot(spec, names), buildRobot(spec, names, { opacity: 0.26 })]) : [null, null];
-  if (!isCurrent()) return null;
+  const builds = worldAvailable && spec ? [buildRobot(spec, names), buildRobot(spec, names, { opacity: 0.26 })] : [];
+  if (worldAvailable && spec && session.frames.some(hasReferencePose)) builds.push(
+    buildRobot(spec, names, { opacity: 0.09, color: 0xefbb70, emissive: 0x4a3510 }),
+    buildRobot(spec, names, { opacity: 0.06, color: 0xefbb70, emissive: 0x4a3510 }));
+  const results = await Promise.allSettled(builds);
+  const failed = results.find(result => result.status === 'rejected');
+  if (failed || !isCurrent()) {
+    for (const result of results) if (result.status === 'fulfilled') disposeGroup(result.value.root);
+    if (failed) throw failed.reason;
+    return null;
+  }
+  const [main = null, ref = null, ...previews] = results.map(result => result.value);
   clearSessionScene();
   view.session = session; view.model = spec; view.robot = main; view.ghost = ref;
   if (main) view.content.add(main.root, ref.root);
+  view.futures = previews; previews.forEach(p => view.content.add(p.root));
   const env = view.environment = new THREE.Group();
   for (const b of session.environment?.boxes ?? []) {
     if (Array.isArray(b.center_xy) && Array.isArray(b.half_xy) && b.z_top > b.z_bottom) env.add(boxMesh(b));
@@ -307,11 +354,6 @@ export async function loadSessionScene(session, id, isCurrent) {
     view.markers.start.position.set(m.start_xy[0], m.start_xy[1], 0);
     const arrow = view.markers.start.getObjectByName('heading'); if (arrow) arrow.rotation.z = m.start_yaw_rad;
     view.content.add(view.markers.start);
-  }
-  if (session.frames.some(hasReferencePose) && spec) {
-    const previews = await Promise.all([buildRobot(spec, names, { opacity: 0.09, color: 0xefbb70, emissive: 0x4a3510 }), buildRobot(spec, names, { opacity: 0.06, color: 0xefbb70, emissive: 0x4a3510 })]);
-    if (!isCurrent()) return null;
-    view.futures = previews; previews.forEach(p => view.content.add(p.root));
   }
   view.robotViewReady = worldAvailable;
   view.renderer.shadowMap.needsUpdate = true;
