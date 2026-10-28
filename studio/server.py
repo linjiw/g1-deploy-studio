@@ -49,7 +49,8 @@ GENERAL_SLOTS = 12
 RESERVE_SLOTS = 4
 RESERVE_HEADER_S = 1.0
 DEPLOY_ACTS = set(DEPLOY_HUB_ACTS) | set(DEPLOY_CONSOLE_ACTS)
-DEPLOY_POST_ROUTES = ('/api/deploy/act', '/api/deploy/lease', '/api/deploy/lease/renew', '/api/deploy/lease/release')
+DEPLOY_POST_ROUTES = ('/api/deploy/act', '/api/deploy/lease', '/api/deploy/lease/renew', '/api/deploy/lease/release',
+                      '/api/deploy/tag')
 INDEX_HTML = ROOT / 'apps/web/index.html'
 INLINE_SCRIPT = re.compile(rb'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', re.S)
 _script_policy = {}
@@ -100,10 +101,28 @@ def build_identity(root=ROOT):
         except (OSError, subprocess.SubprocessError):
             return None
     status = git('status', '--porcelain', '--untracked-files=no')
-    return {'commit': git('rev-parse', 'HEAD'), 'describe': git('log', '-1', '--format=%h %s'),
+    commit = git('rev-parse', 'HEAD')
+    dirty = None if status is None else bool(status)
+    return {'commit': commit, 'describe': git('log', '-1', '--format=%h %s'),
             'committed_at': git('log', '-1', '--format=%cI'),
-            'dirty': None if status is None else bool(status), 'root': str(root),
-            'started_unix_s': time.time()}
+            'dirty': dirty, 'root': str(root),
+            'started_unix_s': time.time(), 'release': release_info(root, commit, dirty)}
+
+
+def release_info(root, commit, dirty, data_root=None):
+    """Installed vs candidate: whether this gateway serves the release worktree that tools/studio_service.sh installs
+    (<data root>/release, its commit in <data root>/release.commit) or another checkout (a candidate under test)."""
+    data_root = Path(data_root) if data_root is not None else paths.get('data_root')
+    try:
+        installed = (data_root / 'release.commit').read_text().strip() or None
+    except OSError:
+        installed = None
+    try:
+        served_from = 'release' if Path(root).resolve() == (data_root / 'release').resolve() else 'worktree'
+    except OSError:
+        served_from = 'worktree'
+    return {'served_from': served_from, 'commit': commit, 'dirty': dirty, 'installed_commit': installed,
+            'is_installed': bool(commit) and commit == installed and served_from == 'release' and dirty is False}
 
 
 def mark_l3(data, provenance_path):
@@ -464,6 +483,7 @@ def make_deploy(catalog, link=None):
 
 
 def wire_deploy(catalog, deploy):
+    deploy.catalog = catalog  # Review: the exact Replay id of a kit session (deploy.replay_state)
     workbench = getattr(catalog, 'workbench', None)
     if workbench is not None and getattr(workbench, 'deploy_guard', None) is None:
         workbench.deploy_guard = deploy
@@ -630,7 +650,14 @@ class Handler(BaseHTTPRequestHandler):
                     x, y = float(query.get('x', [''])[0]), float(query.get('y', [''])[0])
                 except ValueError:
                     raise ValueError('x and y must be numbers in metres (scene frame)') from None
-                return self.deploy_call(lambda: (200, self.server.deploy.goal_check(query.get('scan', [''])[0], x, y)))
+                profile = query.get('profile', [None])[0] or None
+                return self.deploy_call(lambda: (200, self.server.deploy.goal_check(query.get('scan', [''])[0], x, y,
+                                                                                    profile)))
+            if path == '/api/deploy/session':
+                return self.deploy_call(lambda: self.server.deploy.session(query.get('name', [''])[0]))
+            if path == '/api/deploy/act_status':
+                return self.deploy_call(lambda: self.server.deploy.act_status(
+                    query.get('slot', [''])[0], query.get('id', [''])[0], query.get('session', [None])[0]))
             if path == '/api/deploy/link':
                 return self.respond(self.server.deploy.link_status())
             if path == '/api/deploy/heartbeat':
@@ -712,7 +739,9 @@ class Handler(BaseHTTPRequestHandler):
                                          "estop": ("straight to every console the gateway last knew as live, on a reserve "
                                                    "admission tier, 1 s timeout each; it goes through the console process"),
                                          "independent_of_the_console": ["the physical E-stop"],
-                                         "retries": "none in the gateway; the page repeats only E-STOP until acknowledged",
+                                         "retries": ("none in the gateway; the page repeats only E-STOP until acknowledged; "
+                                                     "an act whose reply is lost is reported as unknown (202) and "
+                                                     "reconciled from the console's act record, never resent"),
                                          "live_consoles": [{k: t[k] for k in ('slot', 'name', 'mode', 'practice')} for t in targets],
                                          "deploy_service": {k: hub[k] for k in ('ok', 'age_s', 'ever_ok')}},
                                      "robot_link": {"configured": bool(link.get('configured')), "connected": live,
@@ -867,7 +896,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = workbench.connect_robot(data)
             elif path in DEPLOY_POST_ROUTES:
                 deploy = self.server.deploy
-                handler = {'/api/deploy/act': deploy.act,
+                handler = {'/api/deploy/act': deploy.act, '/api/deploy/tag': deploy.tag,
                            '/api/deploy/lease': lambda d: (200, deploy.lease_take(d)),
                            '/api/deploy/lease/renew': lambda d: (200, deploy.lease_renew(d)),
                            '/api/deploy/lease/release': lambda d: (200, deploy.lease_release(d))}[path]

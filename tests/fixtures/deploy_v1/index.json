@@ -1,0 +1,90 @@
+{
+ "source": "the deploy kit's deploy service (g1 lab --headless, kit d8c816d, API v1) on 127.0.0.1:8769, recorded 2026-10-28 with GETs only, no live session; tokens, private profile and course names and home paths scrubbed. v3_* are the replies of this (pre-v3) service to the v3 paths.",
+ "responses": [
+  {
+   "file": "state.json",
+   "path": "/api/v1/state",
+   "status": 200
+  },
+  {
+   "file": "readiness.json",
+   "path": "/api/v1/readiness",
+   "status": 200
+  },
+  {
+   "file": "readiness_robot.json",
+   "path": "/api/v1/readiness?slot=robot",
+   "status": 200
+  },
+  {
+   "file": "sessions.json",
+   "path": "/api/v1/sessions",
+   "status": 200
+  },
+  {
+   "file": "scan_live.json",
+   "path": "/api/v1/scan/live",
+   "status": 200
+  },
+  {
+   "file": "scan_scene_404.json",
+   "path": "/api/v1/scan/no-such-scan/scene",
+   "status": 404
+  },
+  {
+   "file": "live_view_404.json",
+   "path": "/api/v1/live/robot/view?cloud_after=-1&mem_after=-1",
+   "status": 404
+  },
+  {
+   "file": "live_view_bad_slot_404.json",
+   "path": "/api/v1/live/bogus/view",
+   "status": 404
+  },
+  {
+   "file": "panel_state_404.json",
+   "path": "/api/v1/panel/robot/state",
+   "status": 404
+  },
+  {
+   "file": "track_404.json",
+   "path": "/api/v1/rehearsal/no-such-run/track",
+   "status": 404
+  },
+  {
+   "file": "manifest_404.json",
+   "path": "/api/v1/session/no-such-session/manifest",
+   "status": 404
+  },
+  {
+   "file": "v3_rehearsal_match.json",
+   "path": "/api/v1/rehearsal/match?scan=x&x=1&y=0&profile=deploy&odom=leg",
+   "status": 404
+  },
+  {
+   "file": "v3_session.json",
+   "path": "/api/v1/session/no-such-session",
+   "status": 404
+  },
+  {
+   "file": "v3_session_receipt.json",
+   "path": "/api/v1/session/no-such-session/receipt",
+   "status": 404
+  },
+  {
+   "file": "v3_session_recording.json",
+   "path": "/api/v1/session/no-such-session/recording",
+   "status": 404
+  },
+  {
+   "file": "v3_act.json",
+   "path": "/api/v1/act/robot/abc123",
+   "status": 404
+  },
+  {
+   "file": "v3_profile_route.json",
+   "path": "/api/v1/profile/deploy/route",
+   "status": 404
+  }
+ ]
+}

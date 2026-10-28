@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -46,11 +47,12 @@ class Clock:
 
 class FakeHubCase(unittest.TestCase):
     """A fake deploy hub, and a Deploy facade pointed at it."""
+    hub_args = ()
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.hub, self.hub_server = fake.start(["--port", "0", "--panel-port", "0", "--token", TOKEN])
+        self.hub, self.hub_server = fake.start(["--port", "0", "--panel-port", "0", "--token", TOKEN, *self.hub_args])
         self.hub_url = f"http://127.0.0.1:{self.hub_server.server_address[1]}"
         self.addCleanup(self._stop_hub)
         token_file = Path(self.tmp.name) / "panel_token"
@@ -65,12 +67,12 @@ class FakeHubCase(unittest.TestCase):
         return deploy
 
     def _stop_hub(self):
-        for c in list(self.hub.slots.values()):
+        for c in list(self.hub.slots.values()) + list(self.hub.consoles.values()):
             if c is not None:
                 c.ended = True
         try:
-            self.hub_server.shutdown()
-            self.hub_server.server_close()
+            self.hub.server.shutdown()
+            self.hub.server.server_close()
         except OSError:
             pass
         shutil.rmtree(self.hub.day, ignore_errors=True)
@@ -221,8 +223,8 @@ class GoalCheckFrameTests(FakeHubCase):
         deploy = self.make_deploy(clock=clock, autostart=False)
         self.start_robot()
         lease = deploy.lease_take({"operator": "op"})["lease_id"]
-        good = deploy.goal_check("scan-fake", 1.0, 0.5)
-        bad = deploy.goal_check("scan-fake", 2.0, 0.6)
+        good = deploy.goal_check("scan-fake", 1.0, 0.5, "deploy")    # the session's profile
+        bad = deploy.goal_check("scan-fake", 2.0, 0.6, "deploy")
         send = lambda **kw: deploy.act(dict({"act": "send_goal", "slot": "robot", "scan": "scan-fake",
                                              "goal_scene": [1.0, 0.5], "lease_id": lease}, **kw))
         for kw, why in (({}, "needs a goal check"), ({"check_id": "nope"}, "needs a goal check"),
@@ -485,7 +487,8 @@ class GatewayTests(GatewayCase):
         status, state = self.call("GET", "/api/deploy/state")
         self.assertEqual(status, 200)
         self.assertEqual(state["api"], 1)
-        self.assertEqual(set(state["studio"]), {"estop_targets", "hub", "lease", "refresher"})
+        self.assertEqual(set(state["studio"]), {"estop_targets", "hub", "lease", "refresher", "audit", "capabilities"})
+        self.assertIsNotNone(state["source_age_s"])
         console = self.start_robot()
         status, link = self.call("GET", "/api/deploy/link")
         self.assertEqual([t["name"] for t in link["estop_targets"]], [console.name])
@@ -551,6 +554,7 @@ class GatewayTests(GatewayCase):
         self.assertTrue(all(t["key_sent"] and t["confirmed"] and t["latency_ms"] is not None for t in out["targets"]))
         self.assertEqual((robot.runner, sim.runner), ("E-STOP", "E-STOP"))
         self.assertLess(dt, 0.3)
+        self.deploy.audit_flush()                                   # E-STOP's audit row is written off its path
         rows = [json.loads(l) for l in self.audit.read_text().splitlines()]
         self.assertEqual(rows[-1]["kind"], "estop")
 
@@ -559,13 +563,14 @@ class GatewayTests(GatewayCase):
         self.stop_hub_server()
         status, out = self.call("GET", "/api/deploy/heartbeat")
         self.assertEqual(status, 200)
-        (row,) = out["targets"]
-        self.assertEqual((row["slot"], row["name"], row["ok"]), ("robot", robot.name, True))
+        (row,) = out["consoles"]
+        self.assertEqual((row["slot"], row["session"], row["reached"], row["state"]), ("robot", robot.name, True, "fresh"))
         self.assertLess(row["console_age_s"], 0.5)
+        self.assertIsNotNone(out["hub"]["age_s"])                   # measured now, while the deploy service is down
         robot.ended = True                                          # the console ends: its panel closes
         time.sleep(0.2)
-        row = self.call("GET", "/api/deploy/heartbeat")[1]["targets"][0]
-        self.assertFalse(row["ok"])
+        row = self.call("GET", "/api/deploy/heartbeat")[1]["consoles"][0]
+        self.assertEqual((row["reached"], row["console_age_s"], row["state"]), (False, None, "unknown"))
         self.assertTrue(row["error"])
 
     def test_a_hung_console_costs_one_second_and_never_hides_the_other(self):
@@ -597,7 +602,7 @@ class GatewayTests(GatewayCase):
                                                             "lease_id": lease["lease_id"]}, self.csrf())
         self.assertEqual((status, out["slot"]), (200, "robot"))
         self.assertEqual(self.hub.actions[-1]["body"]["operator"], "Linji")
-        status, check = self.call("GET", "/api/deploy/goal_check?scan=scan-fake&x=1.0&y=0.5")
+        status, check = self.call("GET", "/api/deploy/goal_check?scan=scan-fake&x=1.0&y=0.5&profile=deploy")
         self.assertEqual(status, 200)
         self.assertTrue(check["check_id"])
         status, out = self.call("POST", "/api/deploy/act", {"act": "send_goal", "slot": "robot", "scan": "scan-fake",
@@ -702,6 +707,453 @@ class AdmissionTests(GatewayCase):
         status, out, dt = self.estop()
         self.assertEqual(status, 200)
         self.assertTrue(out["ok"])
+
+
+
+# --------------------------------------------------------------------------------------------- contract v3 (Astra's review)
+def wait_for(pred, timeout=5.0, step=0.05):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(step)
+    return False
+
+
+class HeartbeatV3Tests(GatewayCase):
+    """C: each console measured now on the direct path; unknown is never healthy."""
+
+    def test_frozen_panel_keeps_a_fresh_heartbeat_and_a_hung_console_is_unknown(self):
+        robot = self.start_robot()
+        self.hub.faults.set(freeze_panel=True)                      # the hub's view of the panel freezes ...
+        row = self.call("GET", "/api/deploy/heartbeat")[1]["consoles"][0]
+        self.assertEqual((row["reached"], row["state"]), (True, "fresh"))  # ... the console itself answers
+        self.hub.faults.set(freeze_panel=False, hang_console=True)
+        t0 = time.monotonic()
+        status, out = self.call("GET", "/api/deploy/heartbeat")
+        row = out["consoles"][0]
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertEqual((row["slot"], row["session"], row["reached"], row["console_age_s"], row["state"]),
+                         ("robot", robot.name, False, None, "unknown"))
+        self.assertIsNotNone(row["at"])
+        self.hub.faults.set(hang_console=False)
+        self.assertTrue(wait_for(lambda: self.call("GET", "/api/deploy/heartbeat")[1]["consoles"][0]["reached"]))
+
+    def test_source_ages_for_the_view_the_panel_and_the_state(self):
+        self.start_robot()
+        self.hub.post("/api/v1/act", {"slot": "robot", "act": "arm", "id": "arm"})
+        _, view = self.call("GET", "/api/deploy/live?slot=robot")
+        self.assertLess(view["source_age_s"], 0.5)
+        self.hub.faults.set(freeze_view=True, freeze_panel=True)
+        self.call("GET", "/api/deploy/panel?slot=robot")
+        time.sleep(1.1)
+        _, view = self.call("GET", "/api/deploy/live?slot=robot")
+        _, panel = self.call("GET", "/api/deploy/panel?slot=robot")
+        self.assertGreater(view["source_age_s"], 1.0)                # stale, measured on this host's clock
+        self.assertGreater(panel["source_age_s"], 1.0)
+        self.assertLess(self.call("GET", "/api/deploy/state")[1]["source_age_s"], 0.5)
+
+
+class UncertainActTests(GatewayCase):
+    """D / F07: a reply that never came is "unknown", never "refused", never sent again."""
+
+    def take_lease(self):
+        return self.call("POST", "/api/deploy/lease", {"operator": "Linji"}, self.csrf())[1]["lease_id"]
+
+    def relayed(self, act):
+        return [a for a in self.hub.actions if a["path"] == "/api/v1/act" and a["body"].get("act") == act]
+
+    def test_a_lost_console_reply_is_unknown_never_resent_then_reconciled(self):
+        robot = self.start_robot()
+        lease = self.take_lease()
+        self.hub.faults.set(console_drop_reply=1, console_drop_acts=["arm"])
+        status, out = self.call("POST", "/api/deploy/act", {"act": "arm", "slot": "robot", "lease_id": lease,
+                                                            "expect": {"session": robot.name}}, self.csrf())
+        self.assertEqual(status, 202, out)
+        self.assertEqual((out["state"], out["act"], out["slot"], out["session"], out["retried"]),
+                         ("unknown", "arm", "robot", robot.name, False))
+        self.assertNotIn("refused", json.dumps(out))
+        self.assertEqual(len(self.relayed("arm")), 1)                # sent once
+        self.assertIsNotNone(robot.armed_t)                           # and carried out
+        status, rec = self.call("GET", f"/api/deploy/act_status?slot=robot&id={out['id']}")
+        self.assertEqual((status, rec["known"], rec["result"], rec["session"]), (200, True, "done", robot.name))
+        self.assertFalse(self.call("GET", "/api/deploy/act_status?slot=robot&id=never")[1]["known"])
+        self.assertEqual(self.call("GET", "/api/deploy/act_status?slot=robot&id=../x")[0], 400)
+        self.assertIn("act_unknown", [json.loads(l)["kind"] for l in self.audit.read_text().splitlines()])
+
+    def test_a_reply_the_service_lost_or_never_sent_in_time_is_unknown(self):
+        robot = self.start_robot()
+        self.hub.faults.set(hub_drop_reply=1)                         # applied, then the connection closed
+        status, out = self.deploy.act({"act": "note", "slot": "robot", "operator": "x"})
+        self.assertEqual((status, out["state"]), (202, "unknown"))
+        quick = self.make_deploy(post_timeout_s=0.5, autostart=False)
+        quick.refresh_state()
+        self.hub.faults.set(act_delay_s=1.0)                          # a stalled request mid-confirmation
+        status, out = quick.act({"act": "note", "slot": "robot", "operator": "x"})
+        self.assertEqual((status, out["state"], out["reconcile"]), (202, "unknown", "act_status"))
+        self.assertTrue(wait_for(lambda: quick.act_status("robot", out["id"])[1]["known"], timeout=3))
+        self.assertEqual(quick.act_status("robot", out["id"])[1]["result"], "done")
+        self.assertEqual(len(self.relayed("note")), 2)                # two presses, two sends: none repeated
+
+    def test_send_goal_whose_console_reply_is_lost_is_unknown(self):
+        robot = self.start_robot()
+        self.hub.post("/api/v1/act", {"slot": "robot", "act": "arm", "id": "arm"})
+        self.assertTrue(wait_for(lambda: robot.phase == "WAIT", timeout=6))
+        lease = self.deploy.lease_take({"operator": "Linji"})["lease_id"]
+        check = self.deploy.goal_check("scan-fake", 1.0, 0.5, "deploy")
+        self.hub.faults.set(console_drop_reply=1, console_drop_acts=["goal_odom"])
+        status, out = self.deploy.act({"act": "send_goal", "slot": "robot", "scan": "scan-fake", "goal_scene": [1.0, 0.5],
+                                       "check_id": check["check_id"], "lease_id": lease})
+        self.assertEqual((status, out["state"], out["act"]), (202, "unknown", "send_goal"))
+        self.assertEqual(self.deploy.act_status("robot", out["id"])[1]["result"], "done")
+        self.assertEqual(robot.goal_seq, 1)
+
+    def test_refusals_and_missing_sessions_stay_answers(self):
+        status, out = self.deploy.act({"act": "note", "slot": "robot"})
+        self.assertEqual(status, 404)                                  # no session: an answer, not "unknown"
+        self.start_robot()
+        status, out = self.deploy.act({"act": "c", "slot": "robot", "lease_id": self.deploy.lease_take(
+            {"operator": "x"})["lease_id"]})
+        self.assertEqual((status, out["result"]), (200, "refused"))
+
+
+class ReviewTests(GatewayCase):
+    """E / F05: the session's detail, its exact Replay id (discovery forced), tags on ended sessions."""
+
+    def link_day(self):
+        self.hub.studio_link = self.hub.link_studio(Path(self.tmp.name) / "data")
+
+    def test_session_detail_with_the_exact_replay_id_after_forced_discovery(self):
+        self.link_day()
+        self.catalog.discover_console()                               # throttled for 10 s from now
+        robot = self.start_robot()
+        status, d = self.call("GET", f"/api/deploy/session?name={robot.name}")
+        self.assertEqual(status, 200)
+        self.assertEqual(d["receipt"]["session"], robot.name)
+        self.assertEqual(d["replay"]["state"], "registered")
+        self.assertEqual(d["replay"]["catalog_id"], fake.studio_id(Path(self.hub.day), robot.name))
+        self.assertIn("still recording", d["replay"]["detail"])
+        self.assertIn(d["replay"]["catalog_id"], [s["id"] for s in self.catalog.listing()["sessions"]])
+        self.hub.post("/api/v1/stop", {"slot": "robot"})
+        self.assertTrue(wait_for(lambda: (robot.dir / "console_summary.json").is_file()))
+        d = self.call("GET", f"/api/deploy/session?name={robot.name}")[1]
+        self.assertEqual((d["ended"], d["replay"]["state"]), (True, "registered"))
+        from studio.replay import FLOW_ROOT
+        if (FLOW_ROOT / "sim/assets/g1_29dof.xml").is_file():          # Replay opens that session
+            status, body = self.call("GET", f"/api/session?id={d['replay']['catalog_id']}")
+            self.assertEqual(status, 200, body)
+        self.assertEqual(self.call("GET", "/api/deploy/session?name=nope")[0], 404)
+        self.assertEqual(self.call("GET", "/api/deploy/session?name=../x")[0], 400)
+
+    def test_an_unlinked_day_is_not_registered_with_the_reason(self):
+        robot = self.start_robot()
+        d = self.call("GET", f"/api/deploy/session?name={robot.name}")[1]
+        self.assertEqual((d["replay"]["state"], d["replay"]["catalog_id"]), ("not_registered", None))
+        self.assertIn("did not link", d["replay"]["detail"])
+
+    def test_tag_an_ended_session_as_a_named_viewer(self):
+        robot = self.start_robot()
+        robot.attempts.append({"n": 1, "t_go": 1.0, "outcome": "arrived", "result": "arrived", "tag": None,
+                               "note": None, "tag_history": []})
+        self.hub.post("/api/v1/stop", {"slot": "robot"})
+        body = {"name": robot.name, "n": 1, "tag": "touched", "note": "left tower"}
+        self.assertEqual(self.call("POST", "/api/deploy/tag", body)[0], 403)            # CSRF as every POST
+        status, out = self.call("POST", "/api/deploy/tag", body, self.csrf())
+        self.assertEqual((status, out["need"]), (400, "operator"))                    # no lease, no name
+        status, out = self.call("POST", "/api/deploy/tag", dict(body, operator="Viewer"), self.csrf())
+        self.assertEqual((status, out["ok"], out["ended"]), (200, True, True))
+        self.assertEqual(out["tag_history"][-1]["operator"], "Viewer")
+        d = self.call("GET", f"/api/deploy/session?name={robot.name}")[1]
+        self.assertEqual(d["attempts"][0]["tag"], "touched")
+        rows = [json.loads(l) for l in self.audit.read_text().splitlines()]
+        self.assertIn(("tag", "Viewer"), [(r["kind"], r.get("operator")) for r in rows])
+        self.assertEqual(self.call("POST", "/api/deploy/tag", dict(body, n=0, operator="V"), self.csrf())[0], 400)
+
+
+class GoalCheckConfigTests(FakeHubCase):
+    """F / F06: the profile's route configuration, receipts bound to scan, memory, goal and configuration, a TTL."""
+
+    def setUp(self):
+        super().setUp()
+        saved = {k: dict(v["params"]) for k, v in fake.PROFILES.items()}
+        self.addCleanup(lambda: [fake.PROFILES[k].__setitem__("params", v) for k, v in saved.items()])
+
+    def test_the_profiles_route_configuration_decides_the_check(self):
+        generic = self.deploy.goal_check("scan-fake", 2.0, 0.0)
+        deploy = self.deploy.goal_check("scan-fake", 2.0, 0.0, "deploy")
+        self.assertEqual((generic["config"]["basis"], deploy["config"]["basis"]),
+                         ("Studio generic check", "profile route config"))
+        self.assertEqual(deploy["config"]["sha"], fake.profile_sha("deploy"))
+        self.assertEqual(deploy["config"]["params"]["route_margin_m"], 0.30)
+        self.assertFalse(generic["ok"])                                 # the 0.35 m generic margin closes the gap
+        self.assertTrue(deploy["ok"], deploy["checks"])                 # the profile's 0.30 m leaves a way
+        near = self.deploy.goal_check("scan-fake", 2.4, 0.0, "near")
+        self.assertTrue(self.deploy.goal_check("scan-fake", 2.4, 0.0, "deploy")["ok"])
+        self.assertFalse(near["ok"])
+        self.assertEqual(near["config"]["params"]["route_margin_m"], 0.45)
+        self.assertEqual(deploy["binding"], {"scan": "scan-fake", "memory_sha": self.hub.world.memory_sha,
+                                             "goal_scene": [2.0, 0.0], "config_sha": deploy["config"]["sha"]})
+        with self.assertRaises(DeployError) as ctx:
+            self.deploy.goal_check("scan-fake", 1.0, 0.0, "no-such-profile")
+        self.assertEqual(ctx.exception.status, 404)
+
+    def send(self, deploy, check, lease, goal=(1.0, 0.5)):
+        return deploy.act({"act": "send_goal", "slot": "robot", "scan": "scan-fake", "goal_scene": list(goal),
+                           "check_id": check["check_id"], "lease_id": lease})
+
+    def test_a_receipt_expires_after_ten_minutes_on_a_controlled_clock(self):
+        clock, wall = Clock(), Clock()
+        wall.t = 1_800_000_000.0
+        deploy = self.make_deploy(clock=clock, wall=wall, autostart=False)
+        self.start_robot()
+        check = deploy.goal_check("scan-fake", 1.0, 0.5, "deploy")
+        self.assertEqual((check["issued_at"], check["expires_at"]), (wall.t, wall.t + 600.0))
+        clock.t += 599.0
+        lease = deploy.lease_take({"operator": "op", "take_over": True})["lease_id"]
+        before = len(self.hub.actions)
+        self.send(deploy, check, lease)
+        self.assertIn("/api/v1/send_goal", [a["path"] for a in self.hub.actions[before:]])  # 599 s: still good
+        clock.t += 2.0
+        with self.assertRaisesRegex(DeployError, "expired") as ctx:
+            self.send(deploy, check, lease)
+        self.assertEqual((ctx.exception.status, ctx.exception.extra["why"]), (409, "expired"))
+
+    def test_send_goal_needs_the_sessions_profile_and_its_current_contents(self):
+        code, out = self.hub_post("/api/v1/start", {"mode": "robot", "confirm": CONFIRM, "profile": "deploy"})
+        self.assertTrue(out["ok"], out)
+        lease = self.deploy.lease_take({"operator": "op"})["lease_id"]
+        for profile in ("low-margin", None):
+            check = self.deploy.goal_check("scan-fake", 1.0, 0.5, profile)
+            with self.subTest(profile=profile), self.assertRaisesRegex(DeployError, "session runs") as ctx:
+                self.send(self.deploy, check, lease)
+            self.assertEqual(ctx.exception.extra["why"], "config mismatch")
+        before = len(self.hub.actions)
+        self.send(self.deploy, self.deploy.goal_check("scan-fake", 1.0, 0.5, "deploy"), lease)
+        self.assertIn("/api/v1/send_goal", [a["path"] for a in self.hub.actions[before:]])
+        self.hub.fake_post("/api/fake/profile", {"name": "deploy", "params": {"route_margin_m": 0.28}})
+        check = self.deploy.goal_check("scan-fake", 1.0, 0.5, "deploy")             # the new contents' sha ...
+        with self.assertRaisesRegex(DeployError, "session runs"):                   # ... is not what the session runs
+            self.send(self.deploy, check, lease)
+
+    def test_a_changed_scan_memory_voids_the_receipt(self):
+        self.start_robot()
+        lease = self.deploy.lease_take({"operator": "op"})["lease_id"]
+        check = self.deploy.goal_check("scan-fake", 1.0, 0.5, "deploy")
+        path = Path(self.hub.world.memory_file)
+        with np.load(path, allow_pickle=True) as z:
+            data = {k: z[k] for k in z.files}
+        data["support"] = np.where(np.isnan(data["support"]), np.nan, data["support"] + 0.01)
+        time.sleep(0.01)
+        np.savez(path, **data)
+        with self.assertRaisesRegex(DeployError, "memory changed"):
+            self.send(self.deploy, check, lease)
+
+
+class GoalCheckOldServiceTests(FakeHubCase):
+    hub_args = ("--v1-only",)
+
+    def test_without_the_kits_route_config_the_check_says_generic_and_send_goal_works(self):
+        self.start_robot()
+        check = self.deploy.goal_check("scan-fake", 1.0, 0.5, "deploy")
+        self.assertEqual(check["config"]["basis"], "Studio generic check")
+        self.assertIn("before contract v3", check["config"]["detail"])
+        lease = self.deploy.lease_take({"operator": "op"})["lease_id"]
+        before = len(self.hub.actions)
+        self.deploy.act({"act": "send_goal", "slot": "robot", "scan": "scan-fake", "goal_scene": [1.0, 0.5],
+                         "check_id": check["check_id"], "lease_id": lease})
+        self.assertIn("/api/v1/send_goal", [a["path"] for a in self.hub.actions[before:]])
+
+
+class AuditHealthTests(GatewayCase):
+    """G: audit write failures counted and shown; never in the E-STOP's way."""
+
+    def test_failures_are_counted_shown_and_never_slow_the_estop(self):
+        self.start_robot()
+        self.assertEqual(self.call("GET", "/api/deploy/link")[1]["audit"]["errors"], 0)
+        good = self.deploy.audit_path
+        self.deploy.audit_path = Path(self.tmp.name)                   # a directory: every write fails
+        self.deploy.act({"act": "note", "slot": "robot", "operator": "x"})
+        audit = self.call("GET", "/api/deploy/link")[1]["audit"]
+        self.assertEqual((audit["ok"], audit["errors"]), (False, 1))
+        self.assertIn("IsADirectoryError", audit["last_error"])
+        self.assertIsNotNone(audit["at"])
+        held = threading.Event()
+
+        def hung_disk():                                               # a writer stuck on the disk holds the lock
+            with self.deploy.audit_lock:
+                held.set()
+                time.sleep(1.5)
+        threading.Thread(target=hung_disk, daemon=True).start()
+        held.wait(1)
+        status, out, dt = self.estop()
+        self.assertTrue(out["ok"], out)
+        self.assertLess(dt, 0.3)
+        self.deploy.audit_path = good
+        self.deploy.audit_flush(3.0)
+        self.deploy.act({"act": "note", "slot": "robot", "operator": "x"})
+        audit = self.call("GET", "/api/deploy/link")[1]["audit"]
+        self.assertEqual(audit["ok"], True)
+        self.assertGreaterEqual(audit["errors"], 1)                     # the history stays visible
+
+
+class VersionAndCapabilityTests(GatewayCase):
+    def test_version_says_installed_or_candidate(self):
+        from studio.server import release_info
+        status, v = self.call("GET", "/api/version")
+        self.assertEqual(set(v["release"]), {"served_from", "commit", "dirty", "installed_commit", "is_installed"})
+        self.assertEqual(v["release"]["commit"], v["commit"])
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "release").mkdir()
+            (Path(tmp) / "release.commit").write_text("abc123\n")
+            r = release_info(Path(tmp) / "release", "abc123", False, data_root=tmp)
+            self.assertEqual((r["served_from"], r["installed_commit"], r["is_installed"]), ("release", "abc123", True))
+            r = release_info(ROOT, "def456", True, data_root=tmp)
+            self.assertEqual((r["served_from"], r["is_installed"]), ("worktree", False))
+
+    def test_v3_passthrough_with_capabilities(self):
+        self.hub.seed_rehearsals({"preset": "f02", "goal_scene": [3.0, 0.0]})
+        self.call("GET", "/api/deploy/state")
+        caps = self.call("GET", "/api/deploy/link")[1]["capabilities"]
+        self.assertTrue(all(caps.values()), caps)
+        status, m = self.call("GET", "/api/deploy/rehearsal/match?scan=scan-fake&x=3&y=0&profile=deploy&odom=fused")
+        self.assertIn("new-failure", m["complete"]["name"])
+        robot = self.start_robot()
+        status, rec = self.call("GET", f"/api/deploy/recording?name={robot.name}")
+        self.assertEqual((status, rec["recorder_alive"]), (200, True))
+        self.assertIsNotNone(rec["source_age_s"])
+        self.assertEqual(self.call("GET", f"/api/deploy/session/receipt?name={robot.name}")[1]["session"], robot.name)
+        self.assertEqual(self.call("GET", "/api/deploy/profile/route?name=low-margin")[1]["params"]["route_margin_m"], 0.25)
+        self.hub.faults.set(manifest_fail=1)
+        self.assertEqual(self.call("GET", f"/api/deploy/manifest?name={robot.name}")[0], 503)
+        self.assertEqual(self.call("GET", f"/api/deploy/manifest?name={robot.name}")[1]["version"], 2)
+
+
+class OldServiceTests(GatewayCase):
+    """F09: a deploy service without the v3 capabilities: {supported: false, capability}, never a guess."""
+    hub_args = ("--v1-only",)
+
+    def test_every_v3_endpoint_says_unsupported(self):
+        robot = self.start_robot()
+        self.call("GET", "/api/deploy/state")
+        self.assertEqual(set(self.call("GET", "/api/deploy/link")[1]["capabilities"].values()), {False})
+        for path, cap in ((f"/api/deploy/rehearsal/match?scan=scan-fake&x=1&y=0", "rehearsal_match"),
+                          (f"/api/deploy/recording?name={robot.name}", "recording_health"),
+                          (f"/api/deploy/session/receipt?name={robot.name}", "session_receipt"),
+                          ("/api/deploy/profile/route?name=deploy", "profile_route"),
+                          ("/api/deploy/act_status?slot=robot&id=x", "act_status"),
+                          (f"/api/deploy/session?name={robot.name}", "session_detail")):
+            status, out = self.call("GET", path)
+            self.assertEqual((status, out["supported"], out["capability"]), (200, False, cap), path)
+        status, out = self.call("POST", "/api/deploy/tag", {"name": robot.name, "n": 1, "tag": "x", "operator": "V"},
+                                self.csrf())
+        self.assertEqual((status, out["supported"], out["capability"]), (200, False, "session_tag"))
+
+
+class FixtureHub(BaseHTTPRequestHandler):
+    """Replays the recorded replies of the kit's real deploy service (tests/fixtures/deploy_v1)."""
+    replies = {}
+
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path)
+        q = sorted((k, v) for k, v in urllib.parse.parse_qsl(u.query) if k != "t")
+        status, body = self.replies.get((u.path, tuple(q)), (404, b'{"ok": false, "error": "unknown endpoint"}'))
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+class RealServiceFixtureTests(unittest.TestCase):
+    """F09: replies recorded from the kit's real deploy service (read-only GETs, tokens scrubbed) through the gateway's
+    sanitize / passthrough, and the fake hub's shapes against them."""
+    FIXTURES = ROOT / "tests/fixtures/deploy_v1"
+
+    @classmethod
+    def setUpClass(cls):
+        index = json.loads((cls.FIXTURES / "index.json").read_text())
+        cls.fixtures = {}
+        for row in index["responses"]:
+            u = urllib.parse.urlparse(row["path"])
+            key = (u.path, tuple(sorted(urllib.parse.parse_qsl(u.query))))
+            raw = (cls.FIXTURES / row["file"]).read_bytes()
+            FixtureHub.replies[key] = (row["status"], raw)
+            cls.fixtures[row["path"]] = (row["status"], json.loads(raw))
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHub)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        token = Path(self.tmp.name) / "panel_token"
+        token.write_text("x")
+        self.deploy = Deploy(link=DeployLink(f"http://127.0.0.1:{self.srv.server_address[1]}", token), autostart=False)
+        self.addCleanup(self.deploy.close)
+
+    def test_the_fixtures_hold_no_token_or_private_names(self):
+        text = "".join(p.read_text() for p in self.FIXTURES.glob("*.json")).lower()
+        for word in ("st1", "kcsc", "/home/robotixx", "?t=", "&t="):
+            self.assertNotIn(word, text)
+
+    def test_recorded_replies_through_the_gateway(self):
+        status, state = self.deploy.get("/api/deploy/state", {})
+        self.assertEqual(status, 200)
+        json.dumps(state, allow_nan=False)
+        self.assertEqual(state["api"], 1)
+        self.assertEqual(set(state["studio"]), {"estop_targets", "hub", "lease", "refresher", "audit", "capabilities"})
+        self.assertEqual(state["studio"]["estop_targets"], [])         # live {robot: null, sim: null}
+        self.assertTrue(state["studio"]["hub"]["ok"])
+        self.assertEqual(set(state["studio"]["capabilities"].values()), {False})  # the recorded service predates v3
+        self.assertIsNotNone(state["source_age_s"])
+        for route, query, want in (("/api/deploy/readiness", {}, "/api/v1/readiness"),
+                                   ("/api/deploy/readiness", {"slot": "robot"}, "/api/v1/readiness?slot=robot"),
+                                   ("/api/deploy/sessions", {}, "/api/v1/sessions"),
+                                   ("/api/deploy/scan/live", {}, "/api/v1/scan/live")):
+            self.assertEqual(self.deploy.get(route, query), (200, self.fixtures[want][1]), route)
+        self.assertEqual(self.deploy.get("/api/deploy/scan/scene", {"name": "no-such-scan"}),
+                         (404, {"ok": False, "error": "no such scan"}))
+        self.assertEqual(self.deploy.get("/api/deploy/manifest", {"name": "no-such-session"})[0], 404)
+        for route, query in (("/api/deploy/live", {"slot": "robot", "cloud_after": "-1", "mem_after": "-1"}),
+                             ("/api/deploy/panel", {"slot": "robot"}),
+                             ("/api/deploy/rehearsal/track", {"name": "no-such-run"})):
+            status, out = self.deploy.get(route, query)
+            self.assertEqual((status, out["ok"], out["ended"]), (200, False, True), route)
+        for route, query, cap in (("/api/deploy/rehearsal/match", {"scan": "x", "x": "1", "y": "0", "profile": "deploy",
+                                                                   "odom": "leg"}, "rehearsal_match"),
+                                  ("/api/deploy/recording", {"name": "no-such-session"}, "recording_health"),
+                                  ("/api/deploy/session/receipt", {"name": "no-such-session"}, "session_receipt"),
+                                  ("/api/deploy/profile/route", {"name": "deploy"}, "profile_route")):
+            self.assertEqual(self.deploy.get(route, query)[1]["capability"], cap)
+        self.assertFalse(self.deploy.session("no-such-session")[1]["supported"])
+        self.assertFalse(self.deploy.act_status("robot", "abc123")[1]["supported"])
+        hb = self.deploy.heartbeat()
+        self.assertEqual((hb["consoles"], hb["hub"]["ok"]), ([], True))
+
+    def test_the_fake_hub_answers_every_field_the_real_one_does(self):
+        hub, srv = fake.start(["--port", "0", "--panel-port", "0", "--token", TOKEN])
+        self.addCleanup(lambda: (srv.shutdown(), srv.server_close(), shutil.rmtree(hub.day, ignore_errors=True)))
+        real = {p: obj for p, (status, obj) in self.fixtures.items()}
+        state = hub.state()
+        self.assertLessEqual(set(real["/api/v1/state"]), set(state))
+        for key in ("pc", "robot_link", "doctor", "scan_job", "sessions"):
+            self.assertLessEqual(set(real["/api/v1/state"][key]), set(state[key]), key)
+        self.assertLessEqual(set(real["/api/v1/state"]["profiles"][0]), set(state["profiles"][0]))
+        self.assertLessEqual(set(real["/api/v1/readiness"]), set(hub.readiness()))
+        self.assertLessEqual(set(real["/api/v1/readiness"]["checks"][0]), set(hub.readiness()["checks"][0]))
+        self.assertLessEqual(set(real["/api/v1/sessions"]), set(hub.sessions_v1()))
+        self.assertLessEqual(set(real["/api/v1/scan/live"]), set(hub.scan_live()))
+        self.assertEqual(hub.get("/api/v1/scan/no-such-scan/scene", {}), (404, real["/api/v1/scan/no-such-scan/scene"]))
+        self.assertEqual(hub.get("/api/v1/session/no-such-session/manifest", {}),
+                         (404, real["/api/v1/session/no-such-session/manifest"]))
+        self.assertEqual(hub.track("no-such-run"), (404, real["/api/v1/rehearsal/no-such-run/track"]))
+        self.assertEqual(hub.get("/api/v1/live/bogus/view", {}), (404, real["/api/v1/live/bogus/view"]))
 
 
 if __name__ == "__main__":

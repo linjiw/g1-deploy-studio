@@ -853,18 +853,22 @@ class FakeHub:
         return {"api": 1, "capabilities": V1_CAPABILITIES + (V3_CAPABILITIES if self.v3 else []),
                 "version": {"kit_commit": "fake", "kit_dirty": False, "private_commit": None}, "day": self.day,
                 "t": round(time.time(), 3), "t_mono": round(time.monotonic(), 3), "state_age_s": 0.0,
-                "pc": {"load": 1.2, "cpus": 28, "gpu": {"used_mib": 2000, "total_mib": 16376}, "busy": [], "chains": [],
-                       "disk_free_gb": 812.0},
+                "pc": {"load": [1.2, 1.1, 1.0], "cpus": 28, "busy": [], "chains": [], "disk_free_gb": 812.0,
+                       "gpu": {"util_pct": 12.0, "mem_used_mib": 2000.0, "compute_apps": []}},
                 "robot_link": {"iface": "eno1", "carrier": not self.args.practice_only, "livox_driver": True,
-                               "lidar_hz": 10.0, "lio_bridge": True, "lio_pose_age_s": 0.07, "robot": "lab-g1"},
+                               "lidar_hz": 10.0, "lidar_at": round(time.time(), 3), "lio_bridge": True,
+                               "lio_pose_age_s": 0.07, "lio_at": round(time.time(), 3), "robot": "lab-g1"},
                 "profiles": [{"name": n, "label": p["label"], "featured": p["featured"], "note": p["note"],
                               "bundle_ok": True, "error": None} for n, p in PROFILES.items()],
-                "default_profile": "deploy", "default_odom": "fused", "live": live, "scans": self.scans,
-                "scan_job": {"running": self.scan["running"], "name": self.scan["name"]},
+                "default_profile": "deploy", "default_odom": "fused", "courses": ["gap-069", "open-2m"],
+                "live": live, "scans": self.scans,
+                "scan_job": {"running": self.scan["running"], "name": self.scan["name"], "error": None,
+                             "t": None if self.scan["t0"] is None else round(time.monotonic() - self.scan["t0"], 1)},
                 "sessions": self.sessions_v1(), "rehearsals": self.rehearsal_rows(),
                 "rehearsal_job": next(({"name": r["name"], "current": r["current"]} for r in self.rehearsal_rows()
                                        if r["state"] == "running" and not r.get("seeded")), None),
-                "gpu": {"free_mib": 14000, "rehearsal_mib": 8500}, "doctor": self.doctor,
+                "gpu": {"free_mib": 14000, "rehearsal_mib": 8500},
+                "doctor": self.doctor or {"t": None, "exit": None, "text": None, "running": False},
                 "phone_panel": f"http://100.64.0.1:{self.args.panel_port}/?t=…", "studio_link": self.studio_link,
                 "lease_seen": self.lease_seen()}
 
@@ -887,12 +891,15 @@ class FakeHub:
 
     def scan_live(self):
         s = self.scan
+        idle = {"running": False, "name": s["name"], "practice": bool(s["name"] and s["name"].startswith("practice-")),
+                "phase": None, "error": None, "t": None, "n_frames": 0, "qpos": None, "joint_names": JOINT_NAMES,
+                "cloud": None, "memory": None, "start_S": None}
         if not s["running"]:
-            return {"running": False, "name": s["name"]}
+            return idle
         el = time.monotonic() - s["t0"]
         if el > 8.0:
             s["running"] = False
-            return {"running": False, "name": s["name"]}
+            return idle
         w = self.world
         frac = min(1.0, el / 8.0)
         n = w.support.shape[0]
@@ -901,7 +908,8 @@ class FakeHub:
         mask = r < 0.5 + 3.5 * frac
         pts, cls = w.cloud(np.random.default_rng(int(el * 10)), (0.0, 0.0, 0.0), 2500)
         origin = [0.0, 0.0, 1.2]
-        return {"running": True, "name": s["name"], "t": round(el, 2), "n_frames": int(el * 10),
+        return {"running": True, "name": s["name"], "practice": idle["practice"], "phase": "scanning", "error": None,
+                "t": round(el, 2), "n_frames": int(el * 10),
                 "joint_names": JOINT_NAMES, "start_S": w.start_S,
                 "qpos": [0.0, 0.0, PELVIS_Z, 1.0, 0.0, 0.0, 0.0, *[round(float(v), 4) for v in STAND]],
                 "cloud": {"n": len(pts), "origin": origin, "points_b64": enc_points(pts, origin), "class_b64": enc_u8(cls)},
@@ -1432,7 +1440,7 @@ class FakeHub:
                 reply.setdefault("ok", False)
             return code, reply
         if path == "/api/v1/doctor":
-            self.doctor = {"t": time.time(), "exit": 0, "text": "all checks passed (fake)"}
+            self.doctor = {"t": time.time(), "exit": 0, "text": "all checks passed (fake)", "running": False}
             return 200, dict(self.doctor, ok=True)
         m = re.fullmatch(r"/api/v1/session/([^/]+)/tag", path)
         if m and self.v3:

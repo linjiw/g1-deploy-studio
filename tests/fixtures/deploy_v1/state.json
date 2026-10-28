@@ -1,0 +1,124 @@
+{
+ "api": 1,
+ "capabilities": [
+  "state",
+  "readiness",
+  "sessions",
+  "scan",
+  "scan_live",
+  "scan_scene",
+  "practice",
+  "start",
+  "stop",
+  "start_check",
+  "send_goal",
+  "rehearse",
+  "track",
+  "live_view",
+  "act",
+  "panel_state",
+  "manifest",
+  "doctor",
+  "confirm"
+ ],
+ "courses": [
+  "rp-door-rope",
+  "rp-rope-behind",
+  "lab-site-2m",
+  "open-2m",
+  "open-3m",
+  "slalom",
+  "pillar",
+  "box-low",
+  "gap-069",
+  "gap-069-diag"
+ ],
+ "day": "/home/USER/g1-student-deploy/runs/lab-day-20261028",
+ "default_odom": "leg",
+ "default_profile": "deploy",
+ "doctor": {
+  "exit": null,
+  "running": false,
+  "t": null,
+  "text": null
+ },
+ "gpu": {
+  "free_mib": 14347.0,
+  "rehearsal_mib": 8500
+ },
+ "live": {
+  "robot": null,
+  "sim": null
+ },
+ "pc": {
+  "busy": [],
+  "chains": [],
+  "cpus": 28,
+  "disk_free_gb": 123.0,
+  "gpu": {
+   "compute_apps": [],
+   "mem_used_mib": 2029.0,
+   "util_pct": 18.0
+  },
+  "load": [
+   1.85,
+   1.8,
+   2.7
+  ]
+ },
+ "phone_panel": null,
+ "profiles": [
+  {
+   "bundle_ok": true,
+   "error": null,
+   "featured": false,
+   "label": "deploy-full-lidar",
+   "name": "deploy-full-lidar",
+   "note": "(scrubbed)"
+  },
+  {
+   "bundle_ok": true,
+   "error": null,
+   "featured": true,
+   "label": "deploy",
+   "name": "deploy",
+   "note": "(scrubbed)"
+  }
+ ],
+ "rehearsal_job": null,
+ "rehearsals": [],
+ "robot_link": {
+  "carrier": false,
+  "iface": "eno1",
+  "lidar_at": 1793214650.704592,
+  "lidar_hz": 0.0,
+  "lio_at": null,
+  "lio_bridge": false,
+  "lio_pose_age_s": null,
+  "livox_driver": true,
+  "robot": "lab-g1"
+ },
+ "scan_job": {
+  "error": null,
+  "name": null,
+  "running": false,
+  "t": null
+ },
+ "scans": [],
+ "sessions": {
+  "limit": 40,
+  "offset": 0,
+  "other": [],
+  "other_total": 0,
+  "robot": []
+ },
+ "state_age_s": 0.227,
+ "studio_link": "/home/USER/research-data/g1-deploy-studio/robot-sessions/lab-day-20261028",
+ "t": 1793214654.3064601,
+ "t_mono": 3013155.799905556,
+ "version": {
+  "kit_commit": "d8c816db1637f976bb687aede7e17021f4329001",
+  "kit_dirty": false,
+  "private_commit": null
+ }
+}

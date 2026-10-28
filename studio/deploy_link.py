@@ -8,7 +8,15 @@ module is everything the gateway does for Deploy:
 * the operator lease: one controlling page at a time, renewed by the page's 1 s heartbeat and lost 3 s after the last
   one (a hidden tab sends none). The gateway forwards it to every live console as act `lease {holder, until}`, so the
   phone panel's GO is refused while a Studio page holds it. Motion-enabling acts need it; Stand, Takeover, E-STOP never;
-* goal checks on a scan's memory, scene frame in and out, each with a `check_id` (kept 10 min) that send_goal must carry;
+* goal checks on a scan's memory with the session profile's route configuration from the kit (Studio's generic
+  parameters when the kit has none), scene frame in and out, each a receipt (`check_id`, good for 10 min) bound to the
+  scan, its memory sha, the goal and the configuration's sha, that send_goal must carry;
+* uncertain acts: a relayed act whose reply is lost answers 202 `{state: "unknown"}` and is never sent again; the
+  console's act record says what happened (`act_status`);
+* Review: a session's detail from the deploy service plus the exact Replay catalog id (forcing the catalog's
+  discovery), and tags on ended sessions;
+* the direct console heartbeat (each console measured now, on the E-STOP's path, while the deploy service is down);
+* the audit log's health (write failures are counted and shown, never silent, never in the E-STOP's way);
 * the E-STOP fast path: straight to the panel of every console the gateway last knew as live (port and token from the
   session's panel_url.txt, cached), never through the deploy service, in parallel with 1 s timeouts;
 * the guards: what the deploy service says is live, for the workbench, Navigate's robot link and the service script.
@@ -32,11 +40,13 @@ from __future__ import annotations
 
 import argparse
 from collections import OrderedDict
+import hashlib
 import http.client
 import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
 import sys
 import threading
@@ -61,6 +71,15 @@ LEASE_FORWARD_S = 2.0          # re-sent to each live console this often while h
 LEASE_FORWARD_MARGIN_S = 2.0   # ... with `until` this far past the lease's own expiry, so it never lapses in between
 CHECK_TTL_S = 600.0            # a goal check's check_id is good for send_goal for 10 min
 MAX_CHECKS = 512
+HEARTBEAT_STALE_S = 1.0        # a console heartbeat older than this: CONSOLE NOT RESPONDING (the page's rule)
+FORCED_DISCOVERY_S = 2.0       # Review forces the catalog's robot-sessions discovery at most this often
+AUDIT_QUEUE = 1000             # E-STOP and the direct path hand their audit rows to a writer thread
+# Studio's generic goal-check parameters (studio/goal_check.py defaults), used when the kit has no route configuration
+# for the profile. Names as the kit's GET /api/v1/profile/<name>/route.
+GENERIC_ROUTE = {"robot_radius_m": 0.30, "route_margin_m": 0.35, "step_over_m": 0.25, "ceiling_below_m": 1.35,
+                 "ceiling_near_m": 0.8, "grow_unknown_m": 0.1, "goal_lookahead_m": None, "guards": None}
+ROUTE_LIMITS = {"robot_radius_m": (0.05, 1.0), "route_margin_m": (0.0, 2.0), "step_over_m": (0.0, 1.0),
+                "ceiling_below_m": (0.5, 3.0), "ceiling_near_m": (0.0, 3.0), "grow_unknown_m": (0.0, 2.0)}
 ESTOP_TIMEOUT_S = 1.0          # per console; all consoles in parallel
 DIRECT_TIMEOUT_S = 1.5         # Stand / Takeover: the console waits up to 1.0 s for its main loop before it answers
 HEARTBEAT_TIMEOUT_S = 0.5      # GET /state of each console on the direct path
@@ -77,7 +96,25 @@ GET_ROUTES = {
     "/api/deploy/rehearsal/track": ("/api/v1/rehearsal/{name}/track", ()),
     "/api/deploy/manifest": ("/api/v1/session/{name}/manifest", ()),
     "/api/deploy/panel": ("/api/v1/panel/{slot}/state", ()),
+    "/api/deploy/sessions": ("/api/v1/sessions", ("offset", "limit")),
+    # contract v3
+    "/api/deploy/rehearsal/match": ("/api/v1/rehearsal/match", ("scan", "x", "y", "profile", "odom")),
+    "/api/deploy/session/receipt": ("/api/v1/session/{name}/receipt", ()),
+    "/api/deploy/recording": ("/api/v1/session/{name}/recording", ()),
+    "/api/deploy/profile/route": ("/api/v1/profile/{name}/route", ()),
 }
+# The v3 capability each v3 route needs (the deploy service's state lists its capabilities). A service without it
+# answers 404 "unknown endpoint"; the gateway then answers {supported: false, capability} instead of guessing.
+V3_CAPABILITY = {"/api/deploy/rehearsal/match": "rehearsal_match", "/api/deploy/session/receipt": "session_receipt",
+                 "/api/deploy/recording": "recording_health", "/api/deploy/profile/route": "profile_route",
+                 "/api/deploy/session": "session_detail", "/api/deploy/act_status": "act_status",
+                 "/api/deploy/tag": "session_tag"}
+V3_CAPABILITIES = ("session_receipt", "rehearsal_match", "rehearsal_identity", "passage", "act_status",
+                   "session_detail", "session_tag", "profile_route", "recording_health", "manifest_v2")
+# Where the gateway adds `source_age_s` (now - the source's own monotonic time; the deploy service, its consoles and
+# this gateway share one host and one monotonic clock: loopback only).
+SOURCE_CLOCK = {"/api/deploy/state": "t_mono", "/api/deploy/live": "t_mono", "/api/deploy/panel": "console_t_mono",
+                "/api/deploy/recording": "t_mono"}
 # Studio's POST /api/deploy/act {act, ...}: act -> hub path. Console acts go through /api/v1/act.
 HUB_ACTS = {
     "start": "/api/v1/start", "stop": "/api/v1/stop", "scan": "/api/v1/scan", "practice_scan": "/api/v1/practice/scan",
@@ -107,6 +144,24 @@ class DeployError(Exception):
 
     def body(self):
         return {"error": str(self), **self.extra}
+
+
+class ReplyLost(DeployError):
+    """The request reached the deploy service (it was sent) but its reply never came: timed out, or the connection
+    closed first. What it did is unknown; an act in this state is reconciled through the console's act record."""
+
+
+def unsupported(status, obj):
+    """The deploy service does not have this endpoint (a kit before v3): its 404 says "unknown endpoint"."""
+    return status == 404 and isinstance(obj, dict) and str(obj.get("error") or "").startswith("unknown endpoint")
+
+
+def source_age(obj, key):
+    """now - obj[key] (a host monotonic time), rounded; None when absent."""
+    t = obj.get(key) if isinstance(obj, dict) else None
+    if isinstance(t, (int, float)) and not isinstance(t, bool) and math.isfinite(t):
+        return round(max(0.0, time.monotonic() - t), 3)
+    return None
 
 
 def sanitize(value):
@@ -193,9 +248,12 @@ class DeployLink:
                 status, raw = r.status, r.read()
         except urllib.error.HTTPError as e:
             status, raw = e.code, e.read()
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
+        except urllib.error.URLError as e:  # connecting or sending failed: the request never reached the service
             raise DeployError(f"the deploy service at {self.url} is not reachable ({getattr(e, 'reason', e)}); "
                               "start it on the deploy PC with ./g1 lab --headless", 503)
+        except (OSError, http.client.HTTPException) as e:  # sent, then no reply (a timeout, a closed connection)
+            raise ReplyLost(f"the deploy service did not answer {method} {path} "
+                            f"({type(e).__name__}{': ' + str(e) if str(e) else ''})", 504)
         try:
             obj = json.loads(raw or b"{}")
         except ValueError:
@@ -218,6 +276,12 @@ class DeployLink:
 
     def state(self, timeout=STATE_TIMEOUT_S):
         return self._request("GET", "/api/v1/state", timeout=timeout)
+
+    def get_path(self, path, query=None, timeout=GET_TIMEOUT_S):
+        return self._request("GET", path, query, timeout=timeout)
+
+    def post_path(self, path, body, timeout=POST_TIMEOUT_S):
+        return self._request("POST", path, body=body, timeout=timeout)
 
     def act(self, body, timeout=POST_TIMEOUT_S):
         """A proxied operator act: hub acts by name, console acts through /api/v1/act."""
@@ -287,6 +351,8 @@ class Consoles:
         self.state_try = None        # ... of the last attempt
         self.state_error = None
         self.ever_ok = False
+        self.capabilities = None     # the deploy service's capability list at the last good state (None: never seen)
+        self.version = None
 
     def update(self, state):
         live = state.get("live") if isinstance(state, dict) else None
@@ -301,22 +367,31 @@ class Consoles:
             name = str(entry.get("name") or "")
             with self.lock:
                 prev = self.targets.get(slot)
+            receipt = entry.get("receipt") if isinstance(entry.get("receipt"), dict) else None
             if prev and prev["name"] == name and prev["token"] and prev["port_hint"] == entry.get("panel_port"):
-                fresh[slot] = dict(prev, seen=now)
+                fresh[slot] = dict(prev, seen=now, receipt=receipt)
                 continue
             target = {"slot": slot, "name": name, "mode": entry.get("mode"), "practice": bool(entry.get("practice")),
                       "dir": entry.get("dir"), "port_hint": entry.get("panel_port"), "port": None, "token": None,
-                      "error": None, "seen": now}
+                      "error": None, "seen": now, "receipt": receipt}
             try:
                 target["port"], target["token"] = read_panel_target(entry.get("panel_token_file"), entry.get("panel_port"))
             except (OSError, ValueError) as error:
                 target["error"] = f"panel token not readable: {error}"[:300]
             fresh[slot] = target
+        caps = state.get("capabilities")
         with self.lock:
             self.targets = fresh
             self.state_ok = self.state_try = now
             self.state_error = None
             self.ever_ok = True
+            self.capabilities = [c for c in caps if isinstance(c, str)] if isinstance(caps, list) else []
+            self.version = state.get("version") if isinstance(state.get("version"), dict) else None
+
+    def has(self, capability):
+        """True / False from the last good state's capability list; None when the service never answered."""
+        with self.lock:
+            return None if self.capabilities is None else capability in self.capabilities
 
     def failed(self, error):
         with self.lock:
@@ -354,20 +429,29 @@ class Deploy:
     """One per gateway process (shared by its IPv4 and IPv6 listeners): the link, the lease, the check ids, the live
     consoles and the background refresher. Nothing here touches the network at construction."""
 
-    def __init__(self, link=None, audit_path=None, clock=time.monotonic, autostart=True):
+    def __init__(self, link=None, audit_path=None, clock=time.monotonic, autostart=True, wall=time.time,
+                 post_timeout_s=POST_TIMEOUT_S):
         self._link = link
         self._link_error = None
         self.clock = clock
+        self.wall = wall             # unix time for receipts (issued_at / expires_at); tests drive both clocks
+        self.post_timeout_s = post_timeout_s
         self.lock = threading.RLock()
         self.consoles = Consoles(clock)
         self.lease = None            # {lease_id, holder, until (monotonic), since (unix)}
         self.forwarded = {}          # slot -> {"holder": str|None, "at": monotonic} what each console was last told
-        self.checks = OrderedDict()  # check_id -> {scan, goal_scene, ok, at, blocked}
+        self.checks = OrderedDict()  # check_id -> the goal check's receipt (see goal_check)
         self.scenes = OrderedDict()  # scan name -> (monotonic, meta)
         self.grids = OrderedDict()   # (path, mtime_ns, size) -> grid
         self.client_at = None
+        self.catalog = None          # Studio's catalog (studio/server.py wire_deploy): Review's Replay ids
+        self.discovered_at = None
         self.audit_path = Path(audit_path) if audit_path else None
         self.audit_lock = threading.Lock()
+        self.audit_start_lock = threading.Lock()
+        self.audit_stats = {"writes": 0, "errors": 0, "last_error": None, "at": None, "last_ok": None}
+        self.audit_queue = queue.Queue(maxsize=AUDIT_QUEUE)
+        self.audit_thread = None
         self.wake = threading.Event()
         self.closed = False
         self.autostart = autostart
@@ -397,10 +481,39 @@ class Deploy:
         self.closed = True
         self.wake.set()
 
-    def audit(self, kind, **fields):
+    # -- the audit log (<data root>/deploy/gateway_actions.jsonl): failures are counted and shown, never silent
+    def audit(self, kind, sync=True, **fields):
+        """Append one row. sync=False hands it to the writer thread (E-STOP and the direct path never wait on a disk)."""
         if self.audit_path is None:
             return
-        row = json.dumps({"wall": round(time.time(), 3), "kind": kind, **fields}, default=str, allow_nan=False)
+        try:
+            row = json.dumps({"wall": round(time.time(), 3), "kind": kind, **fields}, default=str, allow_nan=False)
+        except ValueError as error:
+            self._audit_failed(f"row not encodable: {error}")
+            return
+        if sync:
+            self._audit_write(row)
+            return
+        try:
+            self.audit_queue.put_nowait(row)
+        except queue.Full:
+            self._audit_failed("the audit writer is stuck (queue full): row dropped")
+            return
+        if self.audit_thread is None:
+            with self.audit_start_lock:  # never audit_lock: a sync writer may hold it on a hung disk
+                if self.audit_thread is None:
+                    self.audit_thread = threading.Thread(target=self._audit_loop, name="deploy-audit", daemon=True)
+                    self.audit_thread.start()
+
+    def _audit_loop(self):
+        while True:
+            row = self.audit_queue.get()
+            try:
+                self._audit_write(row)
+            finally:
+                self.audit_queue.task_done()
+
+    def _audit_write(self, row):
         with self.audit_lock:
             try:
                 self.audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -408,8 +521,29 @@ class Deploy:
                     self.audit_path.replace(self.audit_path.with_suffix(".jsonl.1"))
                 with self.audit_path.open("a") as f:
                     f.write(row + "\n")
-            except OSError:
-                pass
+                self.audit_stats["writes"] += 1
+                self.audit_stats["last_ok"] = time.time()
+            except OSError as error:
+                self._audit_failed(f"{type(error).__name__}: {error}")
+
+    def _audit_failed(self, error):
+        self.audit_stats["errors"] += 1
+        self.audit_stats["last_error"] = str(error)[:300]
+        self.audit_stats["at"] = round(time.time(), 3)
+        print(f"deploy link: audit write failed ({self.audit_path}): {error}", file=sys.stderr, flush=True)
+
+    def audit_flush(self, timeout=2.0):
+        """Wait until the writer thread has written what it was handed (tests)."""
+        deadline = time.monotonic() + timeout
+        while self.audit_queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def audit_public(self):
+        st = dict(self.audit_stats)
+        ok = st["at"] is None or (st["last_ok"] is not None and st["last_ok"] > st["at"])
+        return {"ok": ok if self.audit_path is not None else None, "errors": st["errors"],
+                "last_error": st["last_error"], "at": st["at"], "writes": st["writes"],
+                "path": str(self.audit_path) if self.audit_path else None}
 
     def refresh_state(self, timeout=STATE_TIMEOUT_S):
         """Ask the deploy service for its state once and update the live consoles. Returns (status, obj) or raises."""
@@ -445,11 +579,24 @@ class Deploy:
             except Exception as error:  # the refresher must survive anything a broken hub answers
                 print(f"deploy link: lease forwarding failed: {type(error).__name__}: {error}", file=sys.stderr)
 
+    def capabilities_public(self):
+        """Each v3 capability of the deploy service: true / false, null while it never answered."""
+        return {c: self.consoles.has(c) for c in V3_CAPABILITIES}
+
     def link_status(self):
         targets, hub = self.consoles.public()
+        with self.consoles.lock:
+            hub = dict(hub, version=self.consoles.version)
         return {"estop_targets": targets, "hub": hub, "lease": self.lease_public(),
                 "refresher": self.thread is not None and self.client_at is not None
-                and self.clock() - self.client_at < CLIENT_ACTIVE_S}
+                and self.clock() - self.client_at < CLIENT_ACTIVE_S,
+                "audit": self.audit_public(), "capabilities": self.capabilities_public()}
+
+    def unsupported(self, capability):
+        version = (self.consoles.version or {}).get("kit_commit")
+        return {"supported": False, "capability": capability,
+                "detail": f"the deploy service{' (kit ' + str(version)[:12] + ')' if version else ''} has no "
+                          f"{capability}: it predates contract v3; update the kit"}
 
     # -- passthrough
     def get(self, route, query):
@@ -460,13 +607,17 @@ class Deploy:
             except DeployError as error:
                 return error.status, dict(error.body(), studio=self.link_status())
             if isinstance(obj, dict):
-                obj = dict(obj, studio=self.link_status())
+                obj = dict(obj, studio=self.link_status(), source_age_s=source_age(obj, "t_mono"))
             return status, obj
         status, obj = self.link.get(route, query)
+        if route in V3_CAPABILITY and unsupported(status, obj):
+            return 200, self.unsupported(V3_CAPABILITY[route])
         if status in (404, 502) and route in ("/api/deploy/live", "/api/deploy/panel", "/api/deploy/rehearsal/track"):
-            # a slot that just ended (404), a console still starting (502), a run not started yet: an answer, not an
-            # error (the page polls it until the state changes)
+            # a slot that just ended (404), a console still starting or not answering (502), a run not started yet:
+            # an answer, not an error (the page polls it until the state changes)
             return 200, dict(obj if isinstance(obj, dict) else {}, ok=False, ended=status == 404, starting=status == 502)
+        if status == 200 and route in SOURCE_CLOCK and isinstance(obj, dict):
+            obj = dict(obj, source_age_s=source_age(obj, SOURCE_CLOCK[route]))
         return status, obj
 
     # -- the operator lease
@@ -588,24 +739,75 @@ class Deploy:
         body["source"] = "studio"
         body["operator"] = holder or clean_operator(body.get("operator"), "studio (no lease)")
         try:
-            status, obj = self.link.act(body)
+            status, obj = self.link.act(body, timeout=self.post_timeout_s)
+        except ReplyLost as error:
+            return self._unknown(act, body, str(error))
         except DeployError as error:
             self.audit("act", act=act, slot=body.get("slot"), id=body["id"], operator=body["operator"],
                        status=error.status, error=str(error))
             raise
+        lost = self._lost_console_reply(act, status, obj)
+        if lost:
+            return self._unknown(act, body, lost)
         self.audit("act", act=act, slot=body.get("slot"), id=body["id"], operator=body["operator"], status=status,
                    ok=obj.get("ok") if isinstance(obj, dict) else None,
                    reason=(obj.get("reason") or obj.get("error")) if isinstance(obj, dict) else None)
         return status, obj
 
+    @staticmethod
+    def _lost_console_reply(act, status, obj):
+        """The deploy service answered, but the console's reply was lost on its side (the kit's hub: 502 "panel
+        unreachable" / a console that does not answer): what the console did is unknown. Returns the reason or None."""
+        if act in CONSOLE_ACTS and status in (502, 504):
+            return (obj.get("error") or obj.get("reason") or f"the deploy service answered {status}") \
+                if isinstance(obj, dict) else f"the deploy service answered {status}"
+        if act == "send_goal" and isinstance(obj, dict) and isinstance(obj.get("act"), dict):
+            reply = obj["act"]
+            text = str(reply.get("error") or "")
+            if reply.get("result") is None and reply.get("ok") is False and \
+                    re.search(r"panel unreachable|does not answer|timed out|no reply", text):
+                return f"the console's reply to goal_odom was lost ({text[:160]})"
+        return None
+
+    def _unknown(self, act, body, reason):
+        """HTTP 202 {state: "unknown"}: the act may have been carried out. Never sent again; reconcile through the
+        console's act record (GET /api/deploy/act_status?slot=&id=) or, for the service's own acts, its state."""
+        slot = body.get("slot") or ("robot" if act in CONSOLE_ACTS or act == "send_goal" else None)
+        expect = body.get("expect") if isinstance(body.get("expect"), dict) else {}
+        target = self.consoles.get(slot) if slot else None
+        session = expect.get("session") or (target or {}).get("name")
+        out = {"state": "unknown", "id": body["id"], "act": act, "slot": slot, "session": session,
+               "reconcile": "act_status" if act in CONSOLE_ACTS or act == "send_goal" else "state",
+               "retried": False, "detail": reason,
+               "message": "acknowledgement unavailable: checking the console's state (the act is not sent again)"}
+        self.audit("act_unknown", act=act, slot=slot, id=body["id"], operator=body["operator"], session=session,
+                   reason=reason)
+        return 202, out
+
+    def act_status(self, slot, act_id, session=None):
+        """GET /api/deploy/act_status?slot=&id=: the console's record of an act (through the deploy service)."""
+        self.touch()
+        if not safe_name(slot) or not safe_name(act_id) or (session is not None and not safe_name(session)):
+            raise DeployError("a valid slot and id are required", 400)
+        status, obj = self.link.get_path(f"/api/v1/act/{slot}/{act_id}", {"session": session} if session else None)
+        if unsupported(status, obj):
+            return 200, self.unsupported("act_status")
+        return status, obj
+
     def _require_check(self, body):
+        """send_goal's goal-check receipt: issued here, in the last CHECK_TTL_S, for this scan (and its memory as it is
+        now), this goal, not blocked, and with the route configuration of the profile the live session runs."""
         check_id = body.get("check_id")
         with self.lock:
             self._expire_checks()
             check = self.checks.get(check_id) if isinstance(check_id, str) else None
         if check is None:
             raise DeployError("send_goal needs a goal check from the last 10 min: check the goal again", 409,
-                              need="goal_check")
+                              need="goal_check", why="missing")
+        if self.clock() - check["at"] >= CHECK_TTL_S:
+            raise DeployError(f"this goal check expired (issued {time.strftime('%H:%M:%S', time.localtime(check['issued_at']))}"
+                              f"; send_goal needs a goal check from the last 10 min): check the goal again", 409,
+                              need="goal_check", why="expired", expires_at=check["expires_at"])
         goal = body.get("goal_scene")
         try:
             same_goal = (len(goal) == 2 and max(abs(float(goal[0]) - check["goal_scene"][0]),
@@ -614,18 +816,165 @@ class Deploy:
             same_goal = False
         if body.get("scan") != check["scan"] or not same_goal:
             raise DeployError("this check_id was issued for another scan or goal: check the goal again", 409,
-                              need="goal_check")
+                              need="goal_check", why="other goal")
         if not check["ok"]:
             raise DeployError("the goal check blocked this goal (" + ", ".join(check["blocked"]) + "): pick another goal",
-                              409, need="goal_check")
+                              409, need="goal_check", why="blocked")
+        try:  # the scan's memory as it is now (a rescan under the same name, an edited file)
+            now_sha = self._grid(self.scan_meta(check["scan"])["memory_file"])["sha256"]
+        except DeployError:
+            now_sha = check["memory_sha"]  # the deploy service will answer for itself; nothing to compare
+        if now_sha != check["memory_sha"]:
+            raise DeployError("the scan's memory changed since this goal check: check the goal again", 409,
+                              need="goal_check", why="memory changed")
+        slot = body.get("slot") or "robot"
+        target = self.consoles.get(slot)
+        if target is None or target.get("receipt") is None:  # a session started a moment ago: ask for its receipt
+            try:
+                self.refresh_state(timeout=STATE_TIMEOUT_S)
+            except DeployError:
+                pass
+            target = self.consoles.get(slot)
+        receipt = (target or {}).get("receipt") or {}
+        prof = receipt.get("profile") if isinstance(receipt.get("profile"), dict) else {}
+        config = check["config"]
+        if prof.get("sha"):
+            if config["basis"] == "profile route config":
+                if config["sha"] != prof["sha"] or config["profile"] != prof.get("name"):
+                    raise DeployError(
+                        f"this goal was checked with profile {config['profile']} (route config {str(config['sha'])[:12]}), "
+                        f"but the {target['slot']} session runs {prof.get('name')} ({str(prof['sha'])[:12]}): check the "
+                        f"goal again with the session's profile", 409, need="goal_check", why="config mismatch",
+                        session_profile=prof)
+            elif self.consoles.has("profile_route"):
+                raise DeployError(
+                    f"this goal was checked with Studio's generic parameters, but the {target['slot']} session runs "
+                    f"profile {prof.get('name')}, whose route configuration the deploy service provides: check the goal "
+                    f"again with that profile", 409, need="goal_check", why="config mismatch", session_profile=prof)
+        scan = receipt.get("scan") if isinstance(receipt.get("scan"), dict) else {}
+        if scan.get("memory_sha") and scan.get("name") == check["scan"] and scan["memory_sha"] != check["memory_sha"]:
+            raise DeployError(f"the {target['slot']} session's scan {scan['name']} has other memory than the one this goal "
+                              "was checked on: check the goal again", 409, need="goal_check", why="memory mismatch")
 
     def _expire_checks(self):
+        """Forget receipts twice their TTL old (an expired one stays a while so send_goal can say "expired")."""
         now = self.clock()
         while self.checks:
             key, first = next(iter(self.checks.items()))
-            if now - first["at"] < CHECK_TTL_S and len(self.checks) <= MAX_CHECKS:
+            if now - first["at"] < 2 * CHECK_TTL_S and len(self.checks) <= MAX_CHECKS:
                 break
             self.checks.popitem(last=False)
+
+    # -- Review: a session's detail, its Replay id, tags
+    def session(self, name):
+        """GET /api/deploy/session?name=: the deploy service's session detail plus `replay`: the exact Studio catalog id
+        or why there is none (the catalog's robot-sessions discovery is forced when the id is not listed yet)."""
+        self.touch()
+        if not safe_name(name):
+            raise DeployError("a valid session name is required", 400)
+        status, obj = self.link.get_path(f"/api/v1/session/{name}")
+        if unsupported(status, obj):
+            return 200, dict(self.unsupported("session_detail"), name=name, replay=self.replay_state(name, {}))
+        if status != 200 or not isinstance(obj, dict):
+            return status, obj
+        hint = obj.get("replay") if isinstance(obj.get("replay"), dict) else {}
+        return 200, dict(obj, replay=self.replay_state(name, dict(hint, dir=obj.get("dir"), ended=obj.get("ended"))))
+
+    def replay_state(self, name, hint):
+        """{catalog_id, state: registered|not_registered|indexing|error, detail} for a kit session in Studio's catalog."""
+        catalog = self.catalog
+        out = {"catalog_id": None, "state": "error", "detail": "", "studio_id": hint.get("studio_id")}
+        if catalog is None:
+            return dict(out, detail="this gateway has no catalog")
+        want_dir = None
+        if isinstance(hint.get("dir"), str) and hint["dir"]:
+            try:
+                want_dir = Path(hint["dir"]).resolve()
+            except OSError:
+                want_dir = None
+
+        def find():
+            with catalog.lock:
+                entries = list(catalog.entries.items())
+            ids = dict(entries)
+            if hint.get("studio_id") in ids:
+                return hint["studio_id"]
+            for key, entry in entries:
+                if entry.get("kind") != "robot-session":
+                    continue
+                path = Path(str(entry.get("path", "")))
+                try:
+                    if (want_dir is not None and path.resolve() == want_dir) or (want_dir is None and path.name == name):
+                        return key
+                except OSError:
+                    continue
+            return None
+
+        try:
+            key = find()
+            if key is None:
+                now = self.clock()
+                if self.discovered_at is None or now - self.discovered_at >= FORCED_DISCOVERY_S:
+                    self.discovered_at = now
+                    catalog.discover_console(force=True)
+                    key = find()
+        except Exception as error:  # a broken directory must not break Review
+            return dict(out, detail=f"Studio's catalog discovery failed: {type(error).__name__}: {error}"[:300])
+        if key is not None:
+            return dict(out, catalog_id=key, state="registered",
+                        detail="Replay lists this session" + ("" if hint.get("ended") is not False
+                                                              else " (still recording: Replay shows it so far)"))
+        base = getattr(catalog, "console_base", None)
+        where = None
+        if base is not None and Path(base).is_dir():
+            where = next((d for d in [Path(base) / name, *Path(base).glob(f"*/{name}")] if d.is_dir()), None)
+        if hint.get("linked") is False:
+            return dict(out, state="not_registered",
+                        detail="the deploy service did not link its day directory into Studio's robot-sessions "
+                               f"({base}); link it there (the kit does unless started with --no-studio-link)")
+        if where is not None and not (where / "rec" / "meta.json").is_file() and not (where / "meta.json").is_file():
+            if hint.get("ended") is False:
+                return dict(out, state="indexing", detail="the session is live and its recording has not started yet: "
+                                                          "Replay lists it once rec/meta.json exists")
+            return dict(out, state="not_registered", detail=f"{where} has no recording (rec/meta.json)")
+        if where is None and hint.get("ended") is False:
+            return dict(out, state="indexing", detail="the session is live and not under Studio's robot-sessions yet")
+        return dict(out, state="not_registered",
+                    detail=f"no session {name} under Studio's robot-sessions ({base}): the kit links its day "
+                           "directory there unless started with --no-studio-link")
+
+    def tag(self, document):
+        """POST /api/deploy/tag {name, n, tag, note}: a tag or note on an attempt of a live or ended session, through
+        the deploy service (append-only history there). The operator is the lease holder, else a named viewer."""
+        self.touch()
+        name = document.get("name")
+        if not safe_name(name):
+            raise DeployError("a valid session name is required", 400)
+        n = document.get("n")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise DeployError("n must be an attempt number (1, 2, ...)", 400)
+        tag, note = document.get("tag"), document.get("note")
+        if tag is not None and (not isinstance(tag, str) or len(tag) > 64):
+            raise DeployError("tag must be text (at most 64 characters) or null", 400)
+        if note is not None and (not isinstance(note, str) or len(note) > 1000):
+            raise DeployError("note must be text (at most 1000 characters) or null", 400)
+        operator = self.lease_holder(document.get("lease_id")) or clean_operator(document.get("operator"))
+        if operator is None:
+            raise DeployError("tagging needs an operator name (the lease holder's, or yours as a viewer)", 400,
+                              need="operator")
+        body = {"n": n, "tag": tag, "note": note, "operator": operator, "source": "studio",
+                "id": document.get("id") if isinstance(document.get("id"), str) and document.get("id") else uuid.uuid4().hex}
+        try:
+            status, obj = self.link.post_path(f"/api/v1/session/{name}/tag", body, timeout=self.post_timeout_s)
+        except ReplyLost as error:
+            self.audit("tag", session=name, n=n, tag=tag, operator=operator, id=body["id"], error=str(error))
+            return 202, {"state": "unknown", "id": body["id"], "act": "tag", "session": name, "detail": str(error),
+                         "reconcile": "session", "retried": False}
+        if unsupported(status, obj):
+            return 200, self.unsupported("session_tag")
+        self.audit("tag", session=name, n=n, tag=tag, note=note, operator=operator, id=body["id"], status=status,
+                   ok=obj.get("ok") if isinstance(obj, dict) else None)
+        return status, obj
 
     # -- E-STOP and the direct path
     def _send(self, target, body, timeout):
@@ -658,7 +1007,7 @@ class Deploy:
             out = {"ok": False, "targets": [], "t": round(time.time(), 3),
                    "error": "Studio knows no live console (the deploy service has not reported one): "
                             "use the physical E-stop"}
-            self.audit("estop", targets=[], error=out["error"])
+            self.audit("estop", sync=False, targets=[], error=out["error"])
             return out
         rows = [None] * len(targets)
         body = {"act": "estop", "source": "studio", "operator": operator}
@@ -679,31 +1028,43 @@ class Deploy:
                            "error": f"no reply within {ESTOP_TIMEOUT_S:.1f} s"}
         out = {"ok": all(r["ok"] for r in rows), "targets": rows, "t": round(time.time(), 3),
                "gateway_ms": round(1000 * (time.monotonic() - t0), 1)}
-        self.audit("estop", operator=operator, ok=out["ok"], targets=rows)
+        self.audit("estop", sync=False, operator=operator, ok=out["ok"], targets=rows)
         return out
 
     def heartbeat(self):
-        """Each cached console's heartbeat on the direct path (its panel's /state, not the deploy service):
-        console_age_s = now - console_t_mono (one host, one monotonic clock). The page says CONSOLE NOT RESPONDING
-        above 1 s, the E-STOP's own path being the one that is late."""
+        """GET /api/deploy/heartbeat (the page polls it at 1 Hz, whatever the deploy service does): each console the
+        gateway last knew as live, measured NOW on the direct path (its panel's /state, not the deploy service, 0.5 s
+        each): console_age_s = now - its console_t_mono (one host, one monotonic clock). A console that does not answer
+        is `reached: false` with console_age_s null: unknown, never healthy. Above 1 s the page says CONSOLE NOT
+        RESPONDING (use the physical E-stop)."""
+        self.touch()
         targets = self.consoles.snapshot()
         rows = [None] * len(targets)
 
+        def row_for(target, **kw):
+            return dict({"slot": target["slot"], "session": target["name"], "reached": False, "console_age_s": None,
+                         "latency_ms": None, "at": None, "state": "unknown", "error": target.get("error")}, **kw)
+
         def one(i, target):
-            row = {"slot": target["slot"], "name": target["name"], "ok": False, "console_age_s": None,
-                   "latency_ms": None, "error": target.get("error")}
+            row = row_for(target)
             if target.get("token") and target.get("port"):
                 t0 = time.monotonic()
                 try:
                     status, state = console_get_state(target["port"], target["token"], HEARTBEAT_TIMEOUT_S)
                     t_mono = state.get("console_t_mono")
-                    ok_t = isinstance(t_mono, (int, float)) and not isinstance(t_mono, bool)
-                    row.update(ok=status == 200 and ok_t, error=None if status == 200 and ok_t else
-                               f"the console answered {status}" + ("" if ok_t else " without console_t_mono"),
-                               console_age_s=round(time.monotonic() - t_mono, 3) if ok_t else None)
+                    ok_t = status == 200 and isinstance(t_mono, (int, float)) and not isinstance(t_mono, bool)
+                    row.update(reached=ok_t, error=None if ok_t else f"the console answered {status}"
+                               + ("" if isinstance(t_mono, (int, float)) else " without console_t_mono"),
+                               console_age_s=round(max(0.0, time.monotonic() - t_mono), 3) if ok_t else None)
+                    if ok_t and state.get("session") not in (None, target["name"]):
+                        row["error"] = f"the panel on this port serves session {state.get('session')}"
+                        row["reached"], row["console_age_s"] = False, None
                 except (OSError, ValueError, http.client.HTTPException) as error:
                     row["error"] = f"{type(error).__name__}: {error}"[:200]
                 row["latency_ms"] = round(1000 * (time.monotonic() - t0), 1)
+            row["at"] = round(time.time(), 3)
+            if row["reached"]:
+                row["state"] = "fresh" if row["console_age_s"] <= HEARTBEAT_STALE_S else "stale"
             rows[i] = row
 
         threads = [threading.Thread(target=one, args=(i, t), daemon=True) for i, t in enumerate(targets)]
@@ -712,9 +1073,10 @@ class Deploy:
         deadline = time.monotonic() + HEARTBEAT_TIMEOUT_S + 0.2
         for th in threads:
             th.join(max(0.0, deadline - time.monotonic()))
-        rows = [r or {"slot": t["slot"], "name": t["name"], "ok": False, "console_age_s": None, "latency_ms": None,
-                      "error": f"no reply within {HEARTBEAT_TIMEOUT_S:.1f} s"} for r, t in zip(rows, targets)]
-        return {"targets": rows, "t": round(time.time(), 3)}
+        rows = [r or row_for(t, at=round(time.time(), 3), error=f"no reply within {HEARTBEAT_TIMEOUT_S:.1f} s")
+                for r, t in zip(rows, targets)]
+        _, hub = self.consoles.public()
+        return {"consoles": rows, "hub": hub, "stale_after_s": HEARTBEAT_STALE_S, "t": round(time.time(), 3)}
 
     def direct(self, document):
         """Stand (h) or Takeover (t) to one live console, on the E-STOP's path (no deploy service, no lease)."""
@@ -730,7 +1092,8 @@ class Deploy:
         body = {"act": act, "id": document.get("id") if isinstance(document.get("id"), str) and document.get("id")
                 else uuid.uuid4().hex, "source": "studio", "operator": operator}
         row, reply = self._send(target, body, DIRECT_TIMEOUT_S)
-        self.audit("direct", act=act, slot=slot, id=body["id"], operator=operator, ok=row["ok"], error=row["error"])
+        self.audit("direct", sync=False, act=act, slot=slot, id=body["id"], operator=operator, ok=row["ok"],
+                   error=row["error"])
         if reply is None:
             raise DeployError(f"the {slot} console did not answer: {row['error']}", 504, slot=slot,
                               latency_ms=row["latency_ms"])
@@ -814,21 +1177,67 @@ class Deploy:
                     self.grids.popitem(last=False)
         return grid
 
-    def goal_check(self, scan, x, y):
-        """Studio's goal check on a scan's memory for goal_scene [x, y]: scene -> memory_S with start_S, the six
-        checks of studio/goal_check.py from the scan pose, plus `gap` (the narrowest passage along the route between
-        the scan twin's boxes); geometry back in the scene frame; a check_id for send_goal."""
+    def route_config(self, profile=None):
+        """The route configuration the goal check uses: the kit's for `profile` (GET /api/v1/profile/<name>/route),
+        else Studio's generic parameters. {profile, sha, params, basis, source_basis, detail}."""
+        def generic(detail):
+            sha = hashlib.sha256(json.dumps({"generic": GENERIC_ROUTE}, sort_keys=True).encode()).hexdigest()
+            return {"profile": profile, "sha": sha, "params": dict(GENERIC_ROUTE), "basis": "Studio generic check",
+                    "source_basis": None, "detail": detail}
+        if profile in (None, ""):
+            return generic("no profile asked: Studio's generic parameters")
+        if not safe_name(profile):
+            raise DeployError("profile must be a profile name", 400)
+        status, obj = self.link.get_path(f"/api/v1/profile/{profile}/route")
+        if unsupported(status, obj):
+            return generic("the deploy service has no route configuration (a kit before contract v3): Studio's generic "
+                           "parameters, not the profile's")
+        if status == 404:
+            raise DeployError((obj or {}).get("error") or f"no deploy profile {profile!r}", 404)
+        if status != 200 or not isinstance(obj, dict) or not isinstance(obj.get("params"), dict) \
+                or not isinstance(obj.get("sha"), str) or not obj["sha"]:
+            raise DeployError(f"the deploy service answered {status} without a usable route configuration for "
+                              f"{profile}", 502)
+        params, defaults = {}, []
+        for key, generic_value in GENERIC_ROUTE.items():
+            value = obj["params"].get(key)
+            if key in ROUTE_LIMITS:
+                lo, hi = ROUTE_LIMITS[key]
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) \
+                        or not lo <= value <= hi:
+                    if value is not None:
+                        raise DeployError(f"the profile's {key} ({value!r}) is outside {lo}-{hi}", 502)
+                    value = generic_value
+                    defaults.append(key)
+                value = float(value)
+            params[key] = value
+        return {"profile": obj.get("profile") or profile, "sha": obj["sha"], "params": params,
+                "basis": "profile route config", "source_basis": obj.get("basis"),
+                "detail": "the kit's route configuration for this profile" + (
+                    f" (Studio's generic value for {', '.join(defaults)})" if defaults else "")}
+
+    def goal_check(self, scan, x, y, profile=None):
+        """Studio's goal check on a scan's memory for goal_scene [x, y] with a profile's route configuration: scene ->
+        memory_S with start_S, the six checks of studio/goal_check.py from the scan pose, plus `gap` (the narrowest
+        passage along the route between the scan twin's boxes); geometry back in the scene frame; a receipt (check_id,
+        issued_at, expires_at) bound to the scan, its memory sha, the goal and the configuration's sha."""
         from studio import goal_check
         self.touch()
         goal_scene = [float(x), float(y)]
         if not all(math.isfinite(v) and abs(v) <= 1e3 for v in goal_scene):
             raise DeployError("x and y must be finite metres in the scene frame", 400)
         meta = self.scan_meta(scan)
+        config = self.route_config(profile)
+        cp = config["params"]
         start = meta["start_S"]                     # memory_S_from_scene
         scene_from_memory = inverse(start)
         grid = self._grid(meta["memory_file"])
         robot_mem, goal_mem = start[:2], apply(start, goal_scene)
-        result = goal_check.check_goal(grid, robot_mem, goal_mem, arrival_radius_m=0.4, basis="scan memory")
+        result = goal_check.check_goal(grid, robot_mem, goal_mem, arrival_radius_m=0.4, basis="scan memory",
+                                       robot_radius_m=cp["robot_radius_m"], inflate_m=cp["route_margin_m"],
+                                       step_over_m=cp["step_over_m"], low_obstacle_m=min(0.05, cp["step_over_m"]),
+                                       head_height_m=cp["ceiling_below_m"], overhead_radius_m=cp["ceiling_near_m"],
+                                       grow_unknown_m=cp["grow_unknown_m"])
         twin = None
         if meta["twin"] is not None:
             try:
@@ -836,11 +1245,13 @@ class Deploy:
             except ValueError:
                 twin = None
         path_mem = result.get("path_xy")
-        gap = goal_check.route_gap(twin, path_mem) if twin is not None and path_mem else None
-        result["checks"].append(goal_check.gap_check(gap, twin is not None, path_mem is not None))
-        # The straight line too: the route pads obstacles by its 0.35 m margin, so it walks around a gap narrower than
-        # 0.7 m (the 0.69 m towers of 2026-10-27) and never measures it, while a policy may still go through it.
-        direct = goal_check.route_gap(twin, [robot_mem, goal_mem]) if twin is not None else None
+        gap_kw = {"step_over_m": cp["step_over_m"], "head_height_m": cp["ceiling_below_m"]}
+        gap = goal_check.route_gap(twin, path_mem, **gap_kw) if twin is not None and path_mem else None
+        result["checks"].append(goal_check.gap_check(gap, twin is not None, path_mem is not None,
+                                                     robot_radius_m=cp["robot_radius_m"], inflate_m=cp["route_margin_m"]))
+        # The straight line too: the route pads obstacles by its margin, so it walks around a gap narrower than twice
+        # that (the 0.69 m towers of 2026-10-27) and never measures it, while a policy may still go through it.
+        direct = goal_check.route_gap(twin, [robot_mem, goal_mem], **gap_kw) if twin is not None else None
         if direct is not None and (gap is None or direct["width_m"] < gap["width_m"] - 0.05):
             row = result["checks"][-1]
             around = (f"; the route goes around it ({result['path_m']:.1f} m instead of {result['straight_m']:.1f} m)"
@@ -865,12 +1276,18 @@ class Deploy:
                    frame="scene", scan=scan, goal_scene=goal_scene, start_S=[round(v, 6) for v in start])
         out["grid"] = dict(result["grid"], frame="memory_S (scan memory; geometry above is in scene)")
         check_id = uuid.uuid4().hex
+        issued = round(self.wall(), 3)
+        receipt = {"scan": scan, "goal_scene": goal_scene, "ok": out["ok"], "at": self.clock(),
+                   "blocked": [c["id"] for c in out["checks"] if c["status"] == "block"],
+                   "memory_sha": grid.get("sha256"), "config": config, "issued_at": issued,
+                   "expires_at": round(issued + CHECK_TTL_S, 3)}
         with self.lock:
             self._expire_checks()
-            self.checks[check_id] = {"scan": scan, "goal_scene": goal_scene, "ok": out["ok"], "at": self.clock(),
-                                     "blocked": [c["id"] for c in out["checks"] if c["status"] == "block"]}
-        out["check_id"] = check_id
-        out["check_ttl_s"] = CHECK_TTL_S
+            self.checks[check_id] = receipt
+        out.update(check_id=check_id, check_ttl_s=CHECK_TTL_S, issued_at=receipt["issued_at"],
+                   expires_at=receipt["expires_at"], config=config, memory_sha=receipt["memory_sha"],
+                   binding={"scan": scan, "memory_sha": receipt["memory_sha"], "goal_scene": goal_scene,
+                            "config_sha": config["sha"]})
         return out
 
 
