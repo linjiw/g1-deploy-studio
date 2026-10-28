@@ -195,11 +195,15 @@ imports no deploy code and opens no DDS participant to replay a session. Browser
 
 ## 8. Safety rules for robot mode
 
+Since 2026-10-28 the robot workflow lives in the Deploy workspace ([DEPLOY.md](DEPLOY.md)), on top of the deploy kit; the rules below hold for it and for Navigate's robot link.
+
 - Studio never writes `rt/lowcmd` or hand commands and never creates a DDS writer. The SONIC runner stays the only motor writer.
-- The remote, the physical E-stop and the gantry or spotter stay with people. A Studio "stand" request, if it is ever added, is labelled *not an emergency stop*.
-- Studio stages goals only while the robot stands (Phase 2). The node's supervisor stays the authority: tilt E-stop, stale-state E-stop, stand on LiDAR loss.
-- Closing the browser or losing the tunnel changes nothing on the robot. This is tested before any robot step, as M5 already requires.
-- Every staged goal is logged with the operator, time, the check results and the readback.
+- Studio relays an operator's press to the deploy kit's console, which owns the robot and every gate (GO, Arm, goal confirmation). Studio never makes up a press; the gateway retries nothing; the page repeats only E-STOP until it is acknowledged.
+- Studio's E-STOP goes straight to every live console's panel, on a reserve admission tier, without the deploy service. It still depends on the console process, as do the phone panel, the remote's Select while the student streams and the node's own stops. **Only the physical E-stop is independent.** The remote, the physical E-stop and the gantry or spotter stay with people. Stand is labelled *not an emergency stop*.
+- One page controls at a time (the operator lease, lost 3 s after its last heartbeat); while it holds it, the console refuses GO from the phone panel. A goal is sent only with a goal check from the last 10 minutes that did not block, and the deploy service checks it again on the live map. The node's supervisor stays the authority: tilt E-stop, stale-state E-stop, stand on LiDAR loss.
+- Navigate's robot link only observes while the deploy kit runs a robot session, so no goal or stand reaches the node around the console. Studio starts no CPU job while a kit session runs, and its service is not restarted while one is live (`tools/studio_service.sh guard`).
+- Closing the browser or losing the tunnel changes nothing on the robot: the lease lapses within 3 s (the phone panel's GO is allowed again a few seconds later) and the console keeps its state. Studio does not stop the robot when its live view goes stale; it says so and keeps E-STOP, Stand and Takeover live.
+- Every relayed act, lease change and E-STOP is logged by the gateway (`deploy/gateway_actions.jsonl`) and by the kit (`hub_actions.jsonl`, `console_events.jsonl`), with the operator and the result.
 - Each phase is a separate authorization, mapped onto the robot ladder: observation from H1, Phase 0 courses at H5 (open floor) and H6 (ground obstacles), goal staging only after a successful H5 with console goals.
 
 ## 9. Rehearse the whole workflow first

@@ -4,6 +4,8 @@ Read README.md, docs/CODE_REFERENCES.md and docs/ARCHITECTURE.md before implemen
 
 - Build working replay/simulation slices first, with visible evidence and real tests. The repository is a bootstrap, not a finished cockpit.
 - Respect the SONIC pipeline: planner -> versioned ZMQ reference -> existing SONIC runner -> Unitree DDS commands. The dashboard never owns rt/lowcmd or hand-command writers.
+- Deploy (docs/DEPLOY.md) relays an operator's press to the deploy kit's console, which owns the robot and every gate. Never synthesize a press, never retry an act in the gateway, never add a motor or DDS path, never move a gate into Studio. Keep `/api/deploy/estop` and `/api/deploy/direct` on the reserve admission tier and free of calls to the deploy service. Studio's E-STOP goes through the console process: wherever an E-STOP is shown, say that only the physical E-stop is independent of it.
+- Never restart or release the gateway while the deploy kit reports a live session (`tools/studio_service.sh guard`); it carries Deploy's E-STOP.
 - Default to replay/read-only. Live robot mode requires explicit operator authorization, safety review and physical emergency-stop/gantry procedures appropriate to the test. UI emergency controls cannot replace independent physical safety.
 - Simulation and robot networks must be isolated. Use a simulator-specific DDS domain on loopback; never silently fall back to robot domain 0. Do not launch existing hardware scripts from discovery/check tools.
 - References are read-only integration sources. Do not modify other repositories, their environments or running jobs without explicit approval. Never recursively copy outputs/input_snapshot trees.
