@@ -245,6 +245,8 @@ async function pollScanLive() {
 
 async function pollLive() {
   const slot = viewSlot(); if (!slot) return;
+  // The memory is asked for in full every 10 s: after Clear map (a new epoch) its seq may start below the cursor.
+  if (performance.now() - (S.memAt ?? 0) > 10000) S.cursors.mem = -1;
   const r = await api(`/api/deploy/live?slot=${slot}&cloud_after=${S.cursors.cloud}&mem_after=${S.cursors.mem}`);
   if (!r.ok || !r.data.ok) {
     if (r.status === 404) { S.liveGone = { name: liveSlot(slot)?.name ?? null, at: performance.now() }; if (S.view) { S.view = null; d3.clearLive(); } }
@@ -253,7 +255,7 @@ async function pollLive() {
   const v = r.data;
   if (v.memory?.epoch !== undefined && S.view?.memEpoch !== undefined && v.memory.epoch !== S.view.memEpoch) S.cursors.mem = -1;
   if (v.cloud?.seq !== undefined) S.cursors.cloud = v.cloud.seq;
-  if (v.memory?.seq !== undefined) S.cursors.mem = v.memory.seq;
+  if (v.memory?.seq !== undefined) { S.cursors.mem = v.memory.seq; S.memAt = performance.now(); }
   S.view = { ...v, memEpoch: v.memory?.epoch ?? S.view?.memEpoch, slot }; S.viewAt = performance.now(); S.viewStaleUntilFresh = false; S.viewSlot = slot;
   if (Array.isArray(v.qpos) && Number.isFinite(v.t_mono)) {
     const h = S.poseTrail = (S.poseTrail ?? []).filter(e => e.slot === slot && v.t_mono - e.t < 1.2 && e.t < v.t_mono);
@@ -374,7 +376,7 @@ async function ladderAct(key) {
   const res = await act(name, { expect: expectNow(fields) });
   S.ladderNote[key] = res.ok ? { kind: 'ok', text: { arm: 'Armed: the planner node is starting.', sonic: 'SONIC is in CONTROL.', map: 'Map cleared: the robot rescans for 10 s.' }[key] }
     : { kind: 'warning', text: `Refused by the console: ${res.reason}` };
-  if (key === 'map' && res.ok) { S.clearedAt = performance.now(); S.autoCheckKey = null; }
+  if (key === 'map' && res.ok) { S.clearedAt = performance.now(); S.autoCheckKey = null; S.cursors.mem = -1; }
   closeSheet(); pollPanel(); renderAll();
 }
 async function sendGoal() {
