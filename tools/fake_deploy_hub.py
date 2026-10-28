@@ -859,8 +859,8 @@ class FakeHub:
 
     def no_session(self, name):
         """The kit's 404 for a session name it finds in no lab-day-* directory."""
-        return 404, {"ok": False, "error": f"no session {name!r} in {Path(self.day).name} or the other lab-day-* "
-                                          "directories beside it", "session": str(name)}
+        return 404, {"ok": False, "code": "no_such_session", "session": str(name),
+                     "error": f"no session {name!r} in {Path(self.day).name} or the other lab-day-* directories beside it"}
 
     def seed_previous_day(self, req):
         """POST /api/fake/previous_day: an ended robot session with one tagged attempt in an earlier day's directory

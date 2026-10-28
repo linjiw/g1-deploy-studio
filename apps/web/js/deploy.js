@@ -1731,7 +1731,7 @@ async function loadDetail(name, { manual = false } = {}) {
   const d = S.detail[name] = { ...(S.detail[name] ?? {}), loading: false, at: performance.now() };
   if (r.ok && r.data && typeof r.data === 'object' && !r.data.error && r.data.supported !== false) {
     Object.assign(d, { data: r.data, good: r.data, goodAt: Date.now(), error: null, unsupported: false, retries: 0, missing: false, gaveUp: false });
-  } else if (r.status === 404 && /no such session|unknown session|not found/i.test(r.data?.error ?? '')) {
+  } else if (r.status === 404 && (r.data?.code === 'no_such_session' || /no such session|no session\b|unknown session|not found/i.test(r.data?.error ?? ''))) {
     Object.assign(d, { data: null, error: null, missing: true });  // terminal: Retry or another session only
   } else if (unsupportedReply(r)) {
     Object.assign(d, { data: null, unsupported: unsupportedWhy(r), unsupportedReplay: r.data?.replay ?? null, error: null });
