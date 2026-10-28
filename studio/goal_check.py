@@ -698,3 +698,154 @@ def check_goal(grid, robot_xy, goal_xy, *, robot_radius_m=0.30, arrival_radius_m
             'checks': checks, 'straight_m': straight_m, 'path_m': path_m, 'path_xy': path_out,
             'unknown_fraction': unknown_fraction,
             'grid': {'basis': basis, 'res_m': res, 'observed_fraction': float(observed.mean())}}
+
+
+# ----- Deploy additions: the passage width along a route, and the cells behind a block ---------------------------
+# Used by the Deploy workspace's goal check (studio/deploy_link.py, docs/DEPLOY.md); check_goal above is unchanged.
+
+GAP_REACH_M = 1.5          # sides are searched this far across the route; wider passages are not narrow
+GAP_WARN_M = 1.0           # below this the route's 0.35 m margin leaves the 0.6 m body little room
+GAP_SPACING_M = 0.05
+
+
+def _ray_box_distances(origins, dirs, boxes):
+    """Distance along each ray (origins, dirs: (k, 2), dirs unit) to each oriented box (k, m); inf for a miss and 0
+    when the origin is inside. Slab method in each box's own frame."""
+    centre = np.array([b['center_xy'] for b in boxes], dtype=np.float64)
+    half = np.array([b['half_xy'] for b in boxes], dtype=np.float64)
+    yaw = np.array([b['yaw'] for b in boxes], dtype=np.float64)
+    c, s = np.cos(yaw)[None, :], np.sin(yaw)[None, :]
+    dx = origins[:, None, 0] - centre[None, :, 0]
+    dy = origins[:, None, 1] - centre[None, :, 1]
+    ox, oy = c * dx + s * dy, -s * dx + c * dy
+    vx = c * dirs[:, None, 0] + s * dirs[:, None, 1]
+    vy = -s * dirs[:, None, 0] + c * dirs[:, None, 1]
+    tmin = np.full(ox.shape, -np.inf)
+    tmax = np.full(ox.shape, np.inf)
+    hit = np.ones(ox.shape, dtype=bool)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        for o, v, h in ((ox, vx, half[None, :, 0]), (oy, vy, half[None, :, 1])):
+            flat = np.abs(v) < 1e-12
+            hit &= ~(flat & (np.abs(o) > h))
+            t1, t2 = (-h - o) / v, (h - o) / v
+            lo_t, hi_t = np.where(flat, -np.inf, np.minimum(t1, t2)), np.where(flat, np.inf, np.maximum(t1, t2))
+            tmin, tmax = np.maximum(tmin, lo_t), np.minimum(tmax, hi_t)
+    hit &= tmax >= np.maximum(tmin, 0.0)
+    return np.where(hit, np.maximum(tmin, 0.0), np.inf)
+
+
+def route_gap(boxes, path_xy, *, step_over_m=0.25, head_height_m=1.35, reach_m=GAP_REACH_M, spacing_m=GAP_SPACING_M):
+    """The narrowest free width across a route between boxes that block a walk (taller than step_over_m and lower
+    than head_height_m at their underside), measured perpendicular to the route every spacing_m.
+
+    A sample counts only when both sides hit a box within reach_m; samples inside a box are skipped (a twin box is
+    a fit to the scan and can overlap the planned route a little). Returns None when no sample is bounded on both
+    sides, else {width_m, at_xy (the route point), sides_xy [[left], [right]], left_m, right_m} in the frame of the
+    inputs."""
+    walls = [b for b in (boxes or []) if b['z_top'] > step_over_m and b['z_bottom'] < head_height_m]
+    path = np.asarray(path_xy if path_xy is not None else [], dtype=np.float64)
+    if not walls or path.ndim != 2 or len(path) < 2:
+        return None
+    points, dirs = [], []
+    for a, b in zip(path[:-1], path[1:]):
+        length = float(np.linalg.norm(b - a))
+        if length < 1e-9:
+            continue
+        steps = max(1, int(math.ceil(length / spacing_m)))
+        t = np.arange(steps + 1) / steps
+        points.append(a + t[:, None] * (b - a))
+        dirs.append(np.repeat(((b - a) / length)[None, :], steps + 1, axis=0))
+    if not points:
+        return None
+    points, dirs = np.vstack(points), np.vstack(dirs)
+    normals = np.stack([-dirs[:, 1], dirs[:, 0]], 1)
+    left = _ray_box_distances(points, normals, walls)
+    right = _ray_box_distances(points, -normals, walls)
+    inside = ((left == 0) | (right == 0)).any(axis=1)
+    left_m, right_m = left.min(axis=1), right.min(axis=1)
+    bounded = ~inside & (left_m <= reach_m) & (right_m <= reach_m)
+    if not bounded.any():
+        return None
+    width = np.where(bounded, left_m + right_m, np.inf)
+    k = int(np.argmin(width))
+    p, n = points[k], normals[k]
+    return {'width_m': float(width[k]), 'at_xy': [float(p[0]), float(p[1])],
+            'sides_xy': [[float(p[0] + n[0] * left_m[k]), float(p[1] + n[1] * left_m[k])],
+                         [float(p[0] - n[0] * right_m[k]), float(p[1] - n[1] * right_m[k])]],
+            'left_m': float(left_m[k]), 'right_m': float(right_m[k])}
+
+
+def gap_check(gap, have_boxes=True, have_route=True, *, robot_radius_m=0.30, inflate_m=0.35, warn_m=GAP_WARN_M,
+              reach_m=GAP_REACH_M):
+    """The `gap` check row for a route_gap result: block narrower than the robot (2 x robot_radius_m), warn below
+    warn_m, pass otherwise. Never passes when it could not be measured."""
+    body = 2 * robot_radius_m
+    if not have_boxes:
+        return _check('gap', 'warn', 'Passage width not measured',
+                      'The scan has no twin boxes to measure passages against.')
+    if not have_route:
+        return _check('gap', 'warn', 'Passage width not measured', 'There is no route to measure along.')
+    if gap is None:
+        return _check('gap', 'pass', 'No narrow passage',
+                      f"No passage narrower than {_metres(2 * reach_m)} along the route between the scan twin's boxes.")
+    width = gap['width_m']
+    text = (f"The narrowest passage along the route is {_metres(width)} wide between the scan twin's boxes "
+            f'({_metres(gap["left_m"])} left, {_metres(gap["right_m"])} right of the route).')
+    if width < body:
+        return _check('gap', 'block', 'Passage narrower than the robot',
+                      text + f' The checks take the robot as {_metres(body)} wide (radius {_metres(robot_radius_m)}).')
+    if width < warn_m:
+        return _check('gap', 'warn', 'Narrow passage',
+                      text + f' The route keeps {_metres(inflate_m)} from each side; below {_metres(warn_m)} the '
+                      f'{_metres(body)} wide robot has less than {_metres((warn_m - body) / 2)} a side, so a start '
+                      'offset or a twin box that is a little off becomes a touch. Rehearse it.')
+    return _check('gap', 'pass', 'Passage width', text)
+
+
+def blocking_cells(grid, result, robot_xy, goal_xy, *, gap=None, robot_radius_m=0.30, step_over_m=0.25,
+                   inflate_m=0.35, overhead_radius_m=0.8, head_height_m=1.35, limit=200):
+    """Cell centres (grid frame) behind each blocking check of a check_goal result (plus a blocking gap): tall cells
+    at the goal (free), low ceilings over it (overhead), obstacles along the straight line when there is no route
+    (reachable), the two sides of a passage narrower than the robot (gap). At most `limit` points."""
+    support, ceiling, lo, res, n = _require_grid(grid)
+    blocked = {c['id'] for c in result.get('checks', []) if c.get('status') == 'block'}
+    goal = _xy(goal_xy, 'goal_xy')
+    gi = cell_of(lo, res, goal)
+    out = []
+
+    def window(radius):
+        k = int(np.ceil(radius / res))
+        a0, a1 = max(gi[0] - k, 0), min(gi[0] + k + 1, n)
+        b0, b1 = max(gi[1] - k, 0), min(gi[1] + k + 1, n)
+        if a0 >= a1 or b0 >= b1:
+            return None
+        ii, jj = np.meshgrid(np.arange(a0, a1), np.arange(b0, b1), indexing='ij')
+        return ii, jj
+
+    if 'free' in blocked and (w := window(robot_radius_m)) is not None:
+        ii, jj = w
+        d = np.hypot(lo[0] + ii * res - goal[0], lo[1] + jj * res - goal[1])
+        tall = np.nan_to_num(support[ii, jj], nan=0.0) > step_over_m
+        out += [lo + np.array([i, j]) * res for i, j in zip(ii[tall & (d <= robot_radius_m)], jj[tall & (d <= robot_radius_m)])]
+    if 'overhead' in blocked and (w := window(overhead_radius_m)) is not None:
+        ii, jj = w
+        c = ceiling[ii, jj]
+        low = np.isfinite(c) & (c < head_height_m)
+        out += [lo + np.array([i, j]) * res for i, j in zip(ii[low], jj[low])]
+    if 'reachable' in blocked and robot_xy is not None and _in_grid(gi, n):
+        robot = _xy(robot_xy, 'robot_xy')
+        if _in_grid(cell_of(lo, res, robot), n):
+            occ = np.nan_to_num(support, nan=0.0) > step_over_m
+            ci, cj = np.nonzero(occ)
+            if len(ci):
+                cells = lo + np.stack([ci, cj], 1) * res
+                seg = goal - robot
+                t = np.clip(((cells - robot) @ seg) / max(float(seg @ seg), 1e-12), 0.0, 1.0)
+                near = np.linalg.norm(cells - (robot + t[:, None] * seg), axis=1) <= inflate_m + robot_radius_m
+                out += list(cells[near])
+    if gap is not None and gap.get('width_m', math.inf) < 2 * robot_radius_m:
+        out += [np.asarray(p, dtype=np.float64) for p in gap['sides_xy']]
+    if not out:
+        return []
+    pts = np.unique(np.round(np.array(out, dtype=np.float64), 4), axis=0)
+    return [[float(x), float(y)] for x, y in _decimate(pts, limit)]

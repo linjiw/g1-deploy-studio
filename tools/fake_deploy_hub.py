@@ -2,9 +2,10 @@
 """A stand-in for the deploy kit's deploy service (`g1 lab --headless`, API v1) and its console panel, for developing
 and testing Studio's Deploy workspace without the kit, the robot or a GPU. The contract is docs/DEPLOY.md.
 
-It serves the hub on `--port` (default 8779) and the console panel of the live session on `--panel-port` (default
-8780; Studio's E-STOP goes there directly, with the token from the session's panel_url.txt). The robot is a kinematic
-puppet: it stands, walks toward a confirmed goal at 0.4 m/s once GO passes the console's gates, and stops on E-STOP or
+It serves the hub on `--port` (default 8779). Every console serves its own panel, as the kit's consoles do: the robot
+slot on `--panel-port` (default 8780), the sim slot (practice, rehearsal runs) on a free port; each session's
+panel_url.txt and the hub state's `live.<slot>.panel_port` say which. Studio's E-STOP goes there directly, with the token
+from panel_url.txt. The robot is a kinematic puppet: it stands, walks toward a confirmed goal at 0.4 m/s once GO passes the console's gates, and stops on E-STOP or
 Stand. The scene is a synthetic room with two towers 0.69 m apart, or a real scan's memory.npz + twin.json
 (`--scan-dir`).
 
@@ -15,6 +16,10 @@ start_S = [0.3, -0.2, 1.2]; a session's odometry frame starts at the robot with 
 Nothing here talks to a robot, DDS or ZMQ.
 
 usage: .venv/bin/python tools/fake_deploy_hub.py [--port 8779] [--panel-port 8780] [--token T] [--scan-dir DIR]
+
+Tests start it in-process: `hub, server = start(["--port", "0", "--panel-port", "0"])`; `server.shutdown()` stops the
+hub while the consoles' panels keep serving (the E-STOP path never needs the hub). `FakeConsole.panel_delay_s` makes a
+panel answer slowly.
 """
 from __future__ import annotations
 
@@ -224,7 +229,10 @@ class FakeConsole:
                             f"{time.strftime('%H%M%S')}-{profile}"
         self.dir = Path(hub.day) / self.name
         self.dir.mkdir(parents=True, exist_ok=True)
-        (self.dir / "panel_url.txt").write_text(f"http://127.0.0.1:{hub.args.panel_port}/?t={hub.args.token}\n")
+        self.panel_delay_s = 0.0
+        self.panel = panel_server(self, hub.args.panel_port if slot == "robot" else 0, hub.args.token)
+        self.panel_port = self.panel.server_address[1]
+        (self.dir / "panel_url.txt").write_text(f"http://127.0.0.1:{self.panel_port}/?t={hub.args.token}\n")
         self.script = scripted_goal_scene
         self.memory_cache = None
         threading.Thread(target=self.loop, daemon=True).start()
@@ -294,7 +302,7 @@ class FakeConsole:
         return locks
 
     def _act(self, act, msg, source):
-        if self.runner == "E-STOP" and act not in ("tag", "note"):
+        if self.runner == "E-STOP" and act not in ("tag", "note", "lease"):
             return False, "E-STOP is active: end the session"
         if act == "arm":
             if self.armed_t is not None:
@@ -370,6 +378,8 @@ class FakeConsole:
             dt, last = now - last, now
             with self.lock:
                 self.step(dt)
+        self.panel.shutdown()  # an ended console's panel goes away with it
+        self.panel.server_close()
 
     def step(self, dt):
         if self.phase == "BOOT" and self.t() - self.armed_t > 3.0:
@@ -555,7 +565,7 @@ class FakeHub:
                 continue
             live[slot] = {"name": c.name, "dir": str(c.dir), "mode": "sim" if (slot == "sim" or c.practice) else "robot",
                           "practice": c.practice, "profile": c.profile, "odom": c.odom, "running": not c.ended,
-                          "panel_port": self.args.panel_port, "panel_token_file": str(c.dir / "panel_url.txt"),
+                          "panel_port": c.panel_port, "panel_token_file": str(c.dir / "panel_url.txt"),
                           "started": c.t0, "console_t_mono_age_s": 0.1,
                           "panel": {"runner": c.runner, "phase": c.phase, "attempts": len(c.attempts),
                                     "go_locks": c.go_locks(), "driving": None, "remote": {"connected": True},
@@ -574,7 +584,11 @@ class FakeHub:
                 "scan_job": {"running": self.scan["running"], "name": self.scan["name"]},
                 "sessions": {"robot": self.sessions, "other": []}, "rehearsals": list(self.rehearsals.values()),
                 "gpu": {"free_mib": 14000, "rehearsal_mib": 8500}, "doctor": self.doctor,
-                "phone_panel": f"http://100.64.0.1:{self.args.panel_port}/?t=…"}
+                "phone_panel": f"http://100.64.0.1:{self.args.panel_port}/?t=…", "lease_seen": self.lease_seen()}
+
+    def lease_seen(self):
+        """What each live console was last told about Studio's operator lease (a fake-only field for tests)."""
+        return {slot: (c.lease if c is not None and not c.ended else None) for slot, c in self.slots.items()}
 
     def scan_live(self):
         s = self.scan
@@ -790,44 +804,73 @@ class FakeHub:
         return 404, {"error": f"unknown {path}"}
 
 
-def serve(hub, port, panel_port, token):
-    def make(handler_get, handler_post):
-        class H(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
+def make_handler(handler_get, handler_post, token, delay=lambda: 0.0):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
 
-            def _send(self, code, obj):
-                data = json.dumps(obj, allow_nan=False).encode()
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+        def _send(self, code, obj):
+            data = json.dumps(obj, allow_nan=False).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
 
-            def _q(self):
-                u = urlparse(self.path)
-                return u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
+        def _q(self):
+            u = urlparse(self.path)
+            return u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
 
-            def do_GET(self):
-                path, q = self._q()
-                if q.get("t") != token:
-                    return self._send(403, {"error": "token"})
-                code, obj = handler_get(path, q)
-                self._send(code, obj)
+        def do_GET(self):
+            path, q = self._q()
+            if q.get("t") != token:
+                return self._send(403, {"error": "token"})
+            code, obj = handler_get(path, q)
+            self._send(code, obj)
 
-            def do_POST(self):
-                path, q = self._q()
-                if q.get("t") != token:
-                    return self._send(403, {"error": "token"})
-                n = int(self.headers.get("Content-Length") or 0)
-                try:
-                    body = json.loads(self.rfile.read(n) or b"{}")
-                except json.JSONDecodeError:
-                    return self._send(400, {"error": "json"})
-                code, obj = handler_post(path, body)
-                self._send(code, obj)
-        return H
+        def do_POST(self):
+            path, q = self._q()
+            if q.get("t") != token:
+                return self._send(403, {"error": "token"})
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except json.JSONDecodeError:
+                return self._send(400, {"error": "json"})
+            if delay():
+                time.sleep(delay())
+            code, obj = handler_post(path, body)
+            self._send(code, obj)
+    return H
 
+
+def panel_server(console, port, token):
+    """A console's own panel (GET /state, POST /act, `?t=TOKEN`), as panel.py serves it."""
+    def get(path, q):
+        return (200, console.state()) if path == "/state" else (404, {"error": f"unknown {path}"})
+
+    def post(path, body):
+        if path != "/act":
+            return 404, {"ok": False}
+        res = console.act(body, body.get("source", "panel"))
+        return (200 if res.get("ok") else 409), res
+
+    srv = None
+    for attempt in range(50):  # the robot slot's fixed port: the previous console's panel may still be closing
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(get, post, token, lambda: console.panel_delay_s))
+            break
+        except OSError:
+            if attempt == 49:
+                raise
+            time.sleep(0.05)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def serve(hub, port, token):
+    """The hub on 127.0.0.1:port; returns the server (shutdown() stops the hub; the consoles' panels keep serving)."""
     def hub_get(path, q):
         parts = path.split("/")
         if path == "/api/v1/state":
@@ -858,37 +901,33 @@ def serve(hub, port, panel_port, token):
             return (200, c.state()) if c else (404, {"error": "no session running in this slot"})
         return 404, {"error": f"unknown {path}"}
 
-    def panel_get(path, q):
-        c = hub.live("robot") or hub.live("sim")
-        if c is None:
-            return 404, {"error": "no session"}
-        return (200, c.state()) if path == "/state" else (404, {})
-
-    def panel_post(path, body):
-        cs = [c for c in (hub.live("robot"), hub.live("sim")) if c is not None]
-        if not cs or path != "/act":
-            return 404, {"ok": False}
-        res = cs[0].act(body, body.get("source", "panel"))
-        return (200 if res.get("ok") else 409), res
-
-    for p, (g, po) in ((port, (hub_get, hub.post)), (panel_port, (panel_get, panel_post))):
-        srv = ThreadingHTTPServer(("127.0.0.1", p), make(g, po))
-        srv.daemon_threads = True
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-    print(f"fake deploy hub on http://127.0.0.1:{port}/api/v1/state?t={token}  panel :{panel_port}  day {hub.day}",
-          flush=True)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(hub_get, hub.post, token))
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
-def main(argv=None):
+def parse(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", type=int, default=8779)
-    ap.add_argument("--panel-port", type=int, default=8780)
+    ap.add_argument("--panel-port", type=int, default=8780, help="the robot slot console's panel (0: a free port)")
     ap.add_argument("--token", default="fake-token")
     ap.add_argument("--scan-dir", default=None, help="a kit scan directory (memory.npz + twin.json) instead of the room")
     ap.add_argument("--practice-only", action="store_true", help="no robot link (eno1 carrier down), as on a practice day")
-    args = ap.parse_args(argv)
+    return ap.parse_args(argv)
+
+
+def start(argv=None):
+    """(hub, hub server) for in-process use."""
+    args = parse(argv)
     hub = FakeHub(args)
-    serve(hub, args.port, args.panel_port, args.token)
+    return hub, serve(hub, args.port, args.token)
+
+
+def main(argv=None):
+    hub, srv = start(argv)
+    print(f"fake deploy hub on http://127.0.0.1:{srv.server_address[1]}/api/v1/state?t={hub.args.token}  "
+          f"robot panel :{hub.args.panel_port}  day {hub.day}", flush=True)
     try:
         while True:
             time.sleep(3600)

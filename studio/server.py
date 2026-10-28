@@ -1,4 +1,5 @@
-"""Loopback replay and owned CPU simulation gateway. No hardware control interface."""
+"""Loopback replay and owned CPU simulation gateway. No hardware control interface: with the deploy kit (Deploy,
+docs/DEPLOY.md) it relays an operator's press to the kit's console, which owns the robot and every gate."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +20,8 @@ import time
 from urllib.parse import parse_qs, unquote, urlparse
 
 from studio import paths
-from studio.deploy_link import GET_ROUTES as DEPLOY_GET_ROUTES, DeployError, DeployLink
+from studio.deploy_link import (CONSOLE_ACTS as DEPLOY_CONSOLE_ACTS, ESTOP_PATHS, GET_ROUTES as DEPLOY_GET_ROUTES,
+                                HUB_ACTS as DEPLOY_HUB_ACTS, Deploy, DeployError)
 from studio.model import RobotModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,15 @@ CONSOLE_BASE = paths.get('data_root') / 'robot-sessions'
 L3_RESCAN_S = 10.0
 L3_GROUP = 'Real-time rehearsals (L3)'
 CONSOLE_GROUP = 'Robot sessions (deploy kit)'
+# The model the deploy kit's console sessions are replayed with (studio/replay.py _console), for Deploy's 3D robots.
+DEPLOY_MODEL = 'sim/assets/g1_29dof.xml'
+# Admission (review B4): 12 general request slots; when they are all taken, 4 reserve slots serve only E-STOP, Stand
+# and Takeover (ESTOP_PATHS), reading the request line and headers within RESERVE_HEADER_S; anything else gets 503.
+GENERAL_SLOTS = 12
+RESERVE_SLOTS = 4
+RESERVE_HEADER_S = 1.0
+DEPLOY_ACTS = set(DEPLOY_HUB_ACTS) | set(DEPLOY_CONSOLE_ACTS)
+DEPLOY_POST_ROUTES = ('/api/deploy/act', '/api/deploy/lease', '/api/deploy/lease/renew', '/api/deploy/lease/release')
 INDEX_HTML = ROOT / 'apps/web/index.html'
 INLINE_SCRIPT = re.compile(rb'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', re.S)
 _script_policy = {}
@@ -329,29 +340,63 @@ class Catalog:
         with self.lock:
             return self.meshes[token]
 
+    def deploy_model(self):
+        """The G1 29-DoF model the console replay uses (deploy root sim/assets/g1_29dof.xml), loaded once with its
+        meshes registered, as `{spec, joint_names}` for Deploy's robots (no catalog session needed)."""
+        with self.lock:
+            hit = getattr(self, '_deploy_model', None)
+        if hit is not None:
+            return hit
+        from studio.replay import FLOW_ROOT, JOINT_NAMES
+        path = FLOW_ROOT / DEPLOY_MODEL
+        if not path.is_file():
+            raise FileNotFoundError(f'The deploy model {DEPLOY_MODEL} is not under the deploy root {FLOW_ROOT} '
+                                    '(studio/paths.py deploy_root)')
+        resolved = str(path.resolve())
+        with self.lock:
+            model = self.models.get(resolved)
+        if model is None:
+            model = RobotModel(resolved, 'deploy')
+            with self.lock:
+                model = self.models.setdefault(resolved, model)
+                self.meshes.update(model.assets)
+        names = list(model.description['joint_names'])
+        if names != list(JOINT_NAMES):
+            raise ValueError(f'{DEPLOY_MODEL} has {len(names)} hinge joints that are not the G1 29-DoF order')
+        body = json.dumps({'spec': model.description, 'joint_names': names, 'source': DEPLOY_MODEL,
+                           'used_by': 'studio/replay.py console sessions'}, allow_nan=False, separators=(',', ':')).encode()
+        encoded = Encoded(body, 'application/json')
+        with self.lock:
+            self._deploy_model = encoded
+        return encoded
+
 
 class Gateway(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
     allow_reuse_address = True
 
-    def __init__(self, address, catalog):
+    def __init__(self, address, catalog, deploy=None):
         if address[0] not in {"127.0.0.1", "::1"}:
             raise ValueError("Replay gateway binds only literal loopback addresses; use an authenticated SSH tunnel")
         self.address_family = socket.AF_INET6 if address[0] == "::1" else socket.AF_INET
         self.catalog = catalog
-        self.slots = threading.BoundedSemaphore(12)
+        self.slots = threading.BoundedSemaphore(GENERAL_SLOTS)
+        self.reserve = threading.BoundedSemaphore(RESERVE_SLOTS)
+        self.tier_local = threading.local()
         self.static = {}
         self.static_lock = threading.Lock()
         self.identity = build_identity()
-        self._deploy = None
+        self._deploy = deploy
+        if deploy is not None:
+            wire_deploy(catalog, deploy)
         super().__init__(address, Handler)
 
     @property
     def deploy(self):
-        """The deploy link (studio/deploy_link.py), built on first use from config/local.json."""
+        """The Deploy facade (studio/deploy_link.py): one per process, shared by both loopback listeners."""
         if self._deploy is None:
-            self._deploy = DeployLink()
+            self._deploy = make_deploy(self.catalog)
         return self._deploy
 
     def server_bind(self):
@@ -361,7 +406,10 @@ class Gateway(ThreadingHTTPServer):
         super().server_bind()
 
     def process_request(self, request, client_address):
-        if not self.slots.acquire(blocking=False):
+        # Never blocks the accept loop: the tier is decided before any byte is read; a reserve-tier handler reads its
+        # request line and headers under a 1 s deadline and serves only ESTOP_PATHS (review B4).
+        tier = 'general' if self.slots.acquire(blocking=False) else 'reserve' if self.reserve.acquire(blocking=False) else None
+        if tier is None:
             # A bounded, small response explains overload instead of resetting the
             # tunnel's TCP connection without an HTTP response.
             try:
@@ -373,13 +421,22 @@ class Gateway(ThreadingHTTPServer):
                 pass
             request.close()
             return
-        super().process_request(request, client_address)
-
-    def process_request_thread(self, request, client_address):
+        thread = threading.Thread(target=self.process_request_thread, args=(request, client_address, tier), daemon=True)
         try:
-            super().process_request_thread(request, client_address)
+            thread.start()
+        except RuntimeError:
+            (self.slots if tier == 'general' else self.reserve).release()
+            self.shutdown_request(request)
+
+    def process_request_thread(self, request, client_address, tier='general'):
+        self.tier_local.tier = tier
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
         finally:
-            self.slots.release()
+            self.shutdown_request(request)
+            (self.slots if tier == 'general' else self.reserve).release()
 
     def static_file(self, target: Path, kind: str) -> Encoded:
         """Small in-memory cache of served files keyed by path, size and mtime."""
@@ -397,11 +454,28 @@ class Gateway(ThreadingHTTPServer):
         return encoded
 
 
-def loopback_gateways(port, catalog):
-    """Bind both localhost families or fail without leaving a partial service."""
-    ipv4 = Gateway(("127.0.0.1", port), catalog)
+def make_deploy(catalog, link=None):
+    """The process's Deploy facade, its audit log under the workbench data root, wired into the workbench's guards."""
+    workbench = getattr(catalog, 'workbench', None)
+    root = getattr(workbench, 'root', None)
+    deploy = Deploy(link=link, audit_path=Path(root) / 'deploy' / 'gateway_actions.jsonl' if root else None)
+    wire_deploy(catalog, deploy)
+    return deploy
+
+
+def wire_deploy(catalog, deploy):
+    workbench = getattr(catalog, 'workbench', None)
+    if workbench is not None and getattr(workbench, 'deploy_guard', None) is None:
+        workbench.deploy_guard = deploy
+
+
+def loopback_gateways(port, catalog, deploy=None):
+    """Bind both localhost families or fail without leaving a partial service. Both share one Deploy facade: one
+    operator lease, one set of check ids, one E-STOP target cache."""
+    deploy = deploy or make_deploy(catalog)
+    ipv4 = Gateway(("127.0.0.1", port), catalog, deploy)
     try:
-        ipv6 = Gateway(("::1", ipv4.server_port), catalog)
+        ipv6 = Gateway(("::1", ipv4.server_port), catalog, deploy)
     except Exception:
         ipv4.server_close()
         raise
@@ -422,9 +496,37 @@ class Handler(BaseHTTPRequestHandler):
 
     def setup(self):
         super().setup()
-        # Per socket operation; bodies are written in bounded chunks below so a
-        # slow authenticated tunnel is not limited to a 15 s total transfer.
-        self.connection.settimeout(15)
+        self.tier = getattr(self.server.tier_local, 'tier', 'general')
+        self._headers_read = False
+        if self.tier == 'reserve':
+            # A total deadline for the request line and headers, not a per-read one a trickling client could renew.
+            self.connection.settimeout(RESERVE_HEADER_S)
+            self._deadline = threading.Timer(RESERVE_HEADER_S, self._reserve_expired)
+            self._deadline.daemon = True
+            self._deadline.start()
+        else:
+            # Per socket operation; bodies are written in bounded chunks below so a
+            # slow authenticated tunnel is not limited to a 15 s total transfer.
+            self.connection.settimeout(15)
+
+    def _reserve_expired(self):
+        if not self._headers_read:
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def parse_request(self):
+        ok = super().parse_request()
+        if self.tier != 'reserve':
+            return ok
+        self._headers_read = True
+        self._deadline.cancel()
+        if ok and not (self.command == 'POST' and urlparse(self.path).path in ESTOP_PATHS):
+            self.respond({'error': 'Studio is busy: only E-STOP, Stand and Takeover are served right now; retry'},
+                         status=503)
+            return False
+        return ok
 
     def log_request(self, code='-', size='-'):
         # Keep polling and mesh requests from overwhelming the service journal.
@@ -521,6 +623,16 @@ class Handler(BaseHTTPRequestHandler):
             workbench = catalog.workbench
             if path in DEPLOY_GET_ROUTES:
                 return self.deploy_get(path, query)
+            if path == '/api/deploy/model':
+                return self.respond_cached(catalog.deploy_model(), "private, no-cache")
+            if path == '/api/deploy/goal_check':
+                try:
+                    x, y = float(query.get('x', [''])[0]), float(query.get('y', [''])[0])
+                except ValueError:
+                    raise ValueError('x and y must be numbers in metres (scene frame)') from None
+                return self.deploy_call(lambda: (200, self.server.deploy.goal_check(query.get('scan', [''])[0], x, y)))
+            if path == '/api/deploy/link':
+                return self.respond(self.server.deploy.link_status())
             if path == '/api/version':
                 return self.respond(dict(self.server.identity, hardware_enabled=False))
             if path == '/api/workbench' and workbench:
@@ -584,15 +696,32 @@ class Handler(BaseHTTPRequestHandler):
                                                for j in list(workbench.jobs.values()))
                 kinds = {j.get('kind') for j in list(workbench.jobs.values()) if j['status'] in ('starting', 'running', 'detached')} if workbench else set()
                 mode = 'robot-link' if 'robot' in kinds else 'simulation' if kinds else 'replay'
+                targets, hub = self.server.deploy.consoles.public()  # cached; /api/safety never calls the deploy service
                 return self.respond({"mode": mode, "hardware_enabled": False, "publishers": [],
                                      "dds_participants": 0, "binding": self.server.server_address[0], "read_only": not bool(workbench),
                                      "motor_command_path": False,
+                                     "deploy": {
+                                         "role": "relay",
+                                         "summary": ("Studio relays an operator's press to the deploy kit's console, which owns the "
+                                                     "robot and every gate. Studio has no DDS participant and no motor path, and "
+                                                     "never makes up a press."),
+                                         "relayed_acts": sorted(DEPLOY_ACTS),
+                                         "lease": "motion-enabling acts need the operator lease: one page, 1 s heartbeat, lost after 3 s",
+                                         "estop": ("straight to every console the gateway last knew as live, on a reserve "
+                                                   "admission tier, 1 s timeout each; it goes through the console process"),
+                                         "independent_of_the_console": ["the physical E-stop"],
+                                         "retries": "none in the gateway; the page repeats only E-STOP until acknowledged",
+                                         "live_consoles": [{k: t[k] for k in ('slot', 'name', 'mode', 'practice')} for t in targets],
+                                         "deploy_service": {k: hub[k] for k in ('ok', 'age_s', 'ever_ok')}},
                                      "robot_link": {"configured": bool(link.get('configured')), "connected": live,
                                                     "node_commands": ['status', 'goal (checked, while standing)', 'stand'],
+                                                    "refused_while": "the deploy kit runs a robot session (then it only observes)",
                                                     "never": ['go', 'quit', 'rt/lowcmd', 'hand commands', 'any DDS write']},
                                      "simulation_jobs_enabled": bool(workbench),
-                                     "allowed_mutations": ['local scenarios', 'map imports', 'owned CPU simulation jobs',
-                                                           'navigation sessions'] + (['robot link: goal and stand to node.py'] if link.get('configured') else [])
+                                     "allowed_mutations": ['local scenarios', 'map imports', 'owned CPU simulation jobs (none while a deploy-kit session is live)',
+                                                           'navigation sessions', "operator acts relayed to the deploy kit's console (Deploy)"]
+                                     + (['robot link: goal and stand to node.py, never while the deploy kit runs a robot session']
+                                        if link.get('configured') else [])
                                      if workbench else []})
             if path in ("/api/session", "/api/model", "/api/kinematics", "/api/export"):
                 key = query.get("id", [next(iter(catalog.entries), None)])[0]
@@ -656,19 +785,47 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": f"Internal error: {type(error).__name__}"}, status=500)
 
     def deploy_get(self, path, query):
+        return self.deploy_call(lambda: self.server.deploy.get(path, {k: v[0] for k, v in query.items()}))
+
+    def deploy_call(self, fn):
         try:
-            status, obj = self.server.deploy.get(path, {k: v[0] for k, v in query.items()})
+            status, obj = fn()
         except DeployError as error:
-            return self.respond({'error': str(error)}, status=error.status)
+            return self.respond(error.body(), status=error.status)
         return self.respond(obj, status=status)
 
+    def deploy_estop(self, path):
+        """POST /api/deploy/estop {} and /api/deploy/direct {slot, act: h|t}: no CSRF token (it changes on restart);
+        a loopback Host (authorize_local), an Origin equal to http://<Host> and X-Studio-Estop: 1 instead. Served on
+        the reserve tier as well. E-STOP answers 200 with `ok` false until every target acknowledged."""
+        hosts, origins = self.headers.get_all('Host', []), self.headers.get_all('Origin', [])
+        if len(origins) != 1 or len(hosts) != 1 or origins[0] != f'http://{hosts[0]}':
+            return self.respond({'error': 'Same-origin request required'}, status=403)
+        if self.headers.get('X-Studio-Estop') != '1':
+            return self.respond({'error': 'X-Studio-Estop: 1 required'}, status=403)
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+            if not 0 <= length <= 4096:
+                raise ValueError('E-STOP bodies are at most 4 KiB')
+            raw = self.rfile.read(length) if length else b''
+            data = json.loads(raw) if raw.strip() else {}
+            if not isinstance(data, dict):
+                raise ValueError('JSON object required')
+        except (ValueError, OSError) as error:
+            return self.respond({'error': str(error)}, status=422)
+        if path == '/api/deploy/estop':
+            return self.respond(self.server.deploy.estop(data))
+        return self.deploy_call(lambda: self.server.deploy.direct(data))
+
     POST_ROUTES = ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel',
-                   '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin', '/api/nav/connect', '/api/deploy/act')
+                   '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin', '/api/nav/connect') + DEPLOY_POST_ROUTES
 
     def do_POST(self):
         if not self.authorize_local():
             return
         path = urlparse(self.path).path
+        if path in ESTOP_PATHS:
+            return self.deploy_estop(path)
         workbench = self.server.catalog.workbench
         if not workbench or path not in self.POST_ROUTES:
             return self.respond({'error': 'No hardware/control endpoint; only local preparation and owned CPU tests are supported'}, status=405)
@@ -706,12 +863,13 @@ class Handler(BaseHTTPRequestHandler):
                 result = workbench.nav_twin(data)
             elif path == '/api/nav/connect':
                 result = workbench.connect_robot(data)
-            elif path == '/api/deploy/act':
-                try:
-                    status, obj = self.server.deploy.act(data)
-                except DeployError as error:
-                    return self.respond({'error': str(error)}, status=error.status)
-                return self.respond(obj, status=status)
+            elif path in DEPLOY_POST_ROUTES:
+                deploy = self.server.deploy
+                handler = {'/api/deploy/act': deploy.act,
+                           '/api/deploy/lease': lambda d: (200, deploy.lease_take(d)),
+                           '/api/deploy/lease/renew': lambda d: (200, deploy.lease_renew(d)),
+                           '/api/deploy/lease/release': lambda d: (200, deploy.lease_release(d))}[path]
+                return self.deploy_call(lambda: handler(data))
             else:
                 result = workbench.cancel_job(data.get('id'))
             return self.respond(result, status=201)
