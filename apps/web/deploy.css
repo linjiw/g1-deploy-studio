@@ -54,7 +54,7 @@ body.estop-shown #workspace-deploy::after { content: ''; position: absolute; top
 .dpe-small:disabled { opacity: .45; }
 .dpe-status { font-size: 12.5px; font-weight: 750; padding: 4px 10px; border-radius: 8px; background: rgba(255, 255, 255, .16); letter-spacing: .02em; }
 .dpe-status[data-state="sending"], .dpe-status[data-state="sent"] { background: #ffd54a; color: #3d2a00; }
-.dpe-status[data-state="confirmed"] { background: #e9f8ef; color: #12693c; }
+.dpe-status[data-state="confirmed"], .dpe-status[data-state="acked"] { background: #e9f8ef; color: #12693c; }
 .dpe-status[data-state="failed"] { background: #fff; color: #b11c13; }
 .dpe-fallback { flex-basis: 100%; font-size: 11.5px; opacity: .9; }
 .dpe-fallback b { font-weight: 750; }
@@ -302,6 +302,7 @@ body.ws-deploy #viewport canvas { cursor: grab; }
 .sw-pt { background: radial-gradient(circle at 30% 30%, #8fb8e8 0 2px, transparent 2.5px), radial-gradient(circle at 70% 65%, #1f4fa8 0 2px, transparent 2.5px); }
 .sw-ign { background: radial-gradient(circle at 30% 30%, #b9c2cb 0 2px, transparent 2.5px), radial-gradient(circle at 70% 65%, #c6b2e6 0 2px, transparent 2.5px); }
 .sw-route { background: #0f9e94; height: 4px !important; vertical-align: 2px !important; }
+.sw-walked { background: #2a333d; height: 4px !important; vertical-align: 2px !important; }
 .sw-gap { background: linear-gradient(90deg, #2f74d0 2px, transparent 2px 9px, #2f74d0 9px); }
 .sw-block { background: #dc5348; }
 .sw-unseen { background: repeating-linear-gradient(90deg, #a3adb8 0 3px, transparent 3px 5px); height: 3px !important; vertical-align: 3px !important; }

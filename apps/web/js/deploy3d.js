@@ -19,7 +19,7 @@ export const COLORS = {
   floor: [214, 230, 237], step: 0xf2c25c, obstacleLow: 0xf09a52, obstacleHigh: 0xa9503f, overhead: 0x9d7cc9, overheadLow: 0x6f47bd,
   pointLow: 0x8fb8e8, pointHigh: 0x1f4fa8, pointFloor: 0xc3cdd6, selfFiltered: 0xb9c2cb, rearBlind: 0xc6b2e6,
   route: C.travelled, goal: C.goal, gap: 0x2f74d0, block: C.red, pass: C.green, warn: 0xe0a030, pending: hex(UI.faint),
-  exact: 0x0f9e94, drift: 0xe0a030, offset: 0x8a63d2, plan: C.future, scanGhost: 0x55657a, lost: 0x9aa3ad,
+  exact: 0x0f9e94, drift: 0xe0a030, offset: 0x8a63d2, plan: C.future, scanGhost: 0x55657a, lost: 0x9aa3ad, walked: 0x2a333d,
 };
 export const STEP_OVER_M = 0.25, FLOOR_M = 0.05, HEAD_CLEAR_M = 1.35, ROBOT_DISC_M = 0.30, ROUTE_MARGIN_M = 0.35;
 const RING = 8, RING_CAP = 6000, FADE_S = 1.5;
@@ -103,24 +103,23 @@ export function quickCheck(lookup, xy, radius = ROBOT_DISC_M) {
 // in an architectural cutaway: the room's walls behind the robot never hide the robot or the floor ahead of it.
 export const CUT = { uCutCam: { value: new THREE.Vector2() }, uCutDir: { value: new THREE.Vector2(1, 0) }, uCutDist: { value: -1e9 }, uCutStub: { value: 0.12 } };
 function cutaway(material) {
+  // The column's height is clamped in the vertex shader (a closed, shorter box: no inner faces, no z-fighting), and
+  // the clamped stub is drawn in a pale section colour.
   material.onBeforeCompile = shader => {
     Object.assign(shader.uniforms, CUT);
-    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;')
-      .replace('#include <project_vertex>', `#include <project_vertex>
-        vec4 cutW = vec4(transformed, 1.0);
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', `#include <common>
+        uniform vec2 uCutCam; uniform vec2 uCutDir; uniform float uCutDist; uniform float uCutStub; varying float vCut;`)
+      .replace('#include <project_vertex>', `vCut = 0.0;
         #ifdef USE_INSTANCING
-          cutW = instanceMatrix * cutW;
+          vec4 cutBase = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          float cutH = length((instanceMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz);
+          if (dot(cutBase.xy - uCutCam, uCutDir) < uCutDist && cutH > uCutStub) { transformed.z = min(transformed.z, uCutStub / cutH); vCut = 1.0; }
         #endif
-        vCutWorld = (modelMatrix * cutW).xyz;`);
-    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `#include <common>
-        varying vec3 vCutWorld; uniform vec2 uCutCam; uniform vec2 uCutDir; uniform float uCutDist; uniform float uCutStub;`)
-      .replace('void main() {', `void main() {
-        if (dot(vCutWorld.xy - uCutCam, uCutDir) < uCutDist && vCutWorld.z > uCutStub) discard;`)
-      // The inside of a cut column reads as a pale section fill, not a dark hole.
+        #include <project_vertex>`);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vCut;')
       .replace('#include <dithering_fragment>', `#include <dithering_fragment>
-        if (!gl_FrontFacing) gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.96, 0.94, 0.92), 0.82);`);
+        if (vCut > 0.5) gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.95, 0.93, 0.91), 0.78);`);
   };
-  material.side = THREE.DoubleSide;   // a cut column shows its inside, darker, not a hole
   return material;
 }
 function updateCut() {
@@ -221,7 +220,6 @@ class MemoryLayer {
     const ghost = this.style === 'ghost';
     for (const [k, m] of Object.entries(this.mats)) {
       m.transparent = ghost || k === 'overhead'; m.opacity = ghost ? 0.16 : k === 'overhead' ? 0.62 : 1; m.depthWrite = !m.transparent;
-      m.side = ghost || k === 'overhead' ? THREE.FrontSide : THREE.DoubleSide;
       m.color.set(ghost ? 0x8a96a3 : 0xffffff); m.needsUpdate = true;
     }
     if (this.floor) this.floor.material.opacity = ghost ? 0.35 : 1;
@@ -489,7 +487,7 @@ export async function setLive(v, { now = performance.now(), slot = 'robot', hide
     const q = v.qpos; D.liveOdomPose = [q[0], q[1], frames.yawOf(q.slice(3, 7))];
     D.liveScenePose = align ? frames.compose(align.scene_from_odom, D.liveOdomPose) : D.liveOdomPose;
     D.liveRole = role;
-    if (role === 'live') setFrame(D.robotAnchors, D.liveScenePose);
+    if (role === 'live') { setFrame(D.robotAnchors, D.liveScenePose); if (align) extendTrail(D.liveScenePose); }
   }
   if (role === 'live') show('rehearsalLive', false); else show('live', false);
   // Plan futures: 2 ghosts + the plan path; the node's route; the node's goal.
@@ -508,6 +506,19 @@ export async function setLive(v, { now = performance.now(), slot = 'robot', hide
   markDirty();
   return { aligned: D.aligned, scenePose: D.liveScenePose };
 }
+// The path the live robot walked, in the scene (only while aligned): a band behind it, kept for Review.
+function extendTrail(p) {
+  const pts = D.trailPts ??= [], last = pts.at(-1);
+  if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.03) return;
+  pts.push([p[0], p[1]]); if (pts.length > 4000) pts.shift();
+  if (pts.length < 2) return;
+  if (D.trail) { D.sceneOnly.remove(D.trail); D.trail.geometry.dispose(); D.trail.material.dispose(); }
+  D.trail = ribbon(pts, 0.022, COLORS.walked, 0.8, 0.034); D.trail.name = 'walked'; D.sceneOnly.add(D.trail);
+}
+export function clearTrail() {
+  D.trailPts = [];
+  if (D.trail) { D.sceneOnly.remove(D.trail); D.trail.geometry.dispose(); D.trail.material.dispose(); D.trail = null; markDirty(); }
+}
 export function clearLive() {
   init();
   setFrame(D.robotAnchors, IDENTITY);
@@ -520,6 +531,7 @@ export function clearLive() {
 }
 export function stepFade(now = performance.now()) { return D.ring.step(now); }
 export const pointCounts = () => D.ring.counts;
+export const hasTrail = () => (D.trailPts?.length ?? 0) > 1;
 export const liveScenePose = () => D.liveScenePose;
 export const isAligned = () => D.aligned;
 export const liveCounts = () => D.liveMem.counts ?? null;

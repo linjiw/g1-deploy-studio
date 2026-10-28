@@ -212,8 +212,8 @@ function onState(before, wasScanning) {
   // Session started or ended.
   const sess = session(), name = sess?.name ?? null;
   if (name !== S.sessionName) {
-    if (S.sessionName && !name) { S.reviewName = S.sessionName; d3.clearLive(); S.view = null; S.panel = null; S.lease.lost = S.lease.lost; }
-    if (name) { S.cursors = { cloud: -1, mem: -1 }; S.view = null; S.sendResult = null; S.goResult = null; S.startCheck = null; S.autoCheckKey = null; S.clearedAt = null; S.ladderNote = {}; if (S.estop.state !== 'sending') S.estop = { state: null, targets: [], t0: 0, error: null }; }
+    if (S.sessionName && !name) { S.reviewName = S.sessionName; d3.clearLive(); S.view = null; S.panel = null; }
+    if (name) { d3.clearTrail(); S.cursors = { cloud: -1, mem: -1 }; S.view = null; S.sendResult = null; S.goResult = null; S.startCheck = null; S.autoCheckKey = null; S.clearedAt = null; S.ladderNote = {}; if (S.estop.state !== 'sending') S.estop = { state: null, targets: [], t0: 0, error: null }; }
     S.sessionName = name;
   }
   if (!viewSlot() && S.view) { S.view = null; d3.clearLive(); }
@@ -445,15 +445,16 @@ export async function estop() {
     const targets = Array.isArray(data.targets) ? data.targets : [];
     if (res?.ok) {
       S.estop.targets = targets;
-      if (!targets.length) { S.estop.state = 'none'; renderBar(); break; }
-      if (targets.every(t => t.ok)) { S.estop.state = targets.every(t => t.confirmed) ? 'confirmed' : 'sent'; renderBar(); break; }
-      S.estop.state = 'sent'; S.estop.error = targets.filter(t => !t.ok).map(t => `${t.slot}: ${t.error ?? 'no answer'}`).join('; ');
+      // No console known to the gateway while the bar believed one live: nothing was stopped. Say so plainly.
+      if (!targets.length) { S.estop = { ...S.estop, state: 'failed', error: data.error ?? 'Studio knows no live console' }; renderBar(); return; }
+      if (targets.every(t => t.ok)) { S.estop.state = targets.every(t => t.confirmed) ? 'confirmed' : 'acked'; S.estop.retrying = false; renderBar(); break; }
+      S.estop.state = 'sent'; S.estop.retrying = true; S.estop.error = targets.filter(t => !t.ok).map(t => `${t.slot}: ${t.error ?? 'no answer'}`).join('; ');
     } else if (res) S.estop.error = data.error ?? `refused (${res.status})`;
     renderBar();
     await new Promise(r => setTimeout(r, 300));
   }
   if (gen !== S.estopGen) return;
-  if (!['confirmed', 'sent', 'none'].includes(S.estop.state) || (S.estop.state === 'sent' && S.estop.targets.some(t => !t.ok))) S.estop.state = 'failed';
+  if (!['confirmed', 'acked'].includes(S.estop.state)) S.estop.state = 'failed';
   renderBar(); pollState();
 }
 async function direct(actName) {
@@ -636,8 +637,8 @@ function renderBar() {
   $('dpe-sub').textContent = m.unreachable ? 'A console may still be running: Studio cannot see it.'
     : `${sess?.name ?? ''}${sess?.panel?.phase ? ` · ${PHASE[sess.panel.phase] ?? sess.panel.phase}` : ''}`;
   $('dpe-alarm').hidden = !age.some(a => a > 1);
-  const es = S.estop, text = { sending: 'SENDING…', sent: 'SENT · waiting for every console', confirmed: 'CONFIRMED · E-STOP in the runner',
-    failed: `FAILED · ${es.error ?? 'no acknowledgement'} — use the physical E-stop`, none: `No live console: ${es.error ?? 'nothing to stop'}` }[es.state] ?? '';
+  const es = S.estop, text = { sending: 'SENDING…', sent: `SENT · retrying: ${es.error ?? 'a console has not answered'}`, acked: 'SENT · every console acknowledged',
+    confirmed: 'CONFIRMED · E-STOP in the runner', failed: `FAILED · ${es.error ?? 'no acknowledgement'} — use the physical E-stop` }[es.state] ?? '';
   const status = $('dpe-status'); status.hidden = !text; status.textContent = text; status.dataset.state = es.state ?? '';
   $('dp-estop').dataset.state = es.state ?? '';
   const mine = !!session();
@@ -913,7 +914,7 @@ function deployBody() {
     lead: `${sess.name} · ${PHASE[p.phase] ?? p.phase ?? 'starting'}${p.runner ? ` · runner ${p.runner}` : ''}`,
     html: `
       ${estopped ? '<div class="callout danger" role="alert"><strong>E-STOP is active.</strong> The runner holds the robot in its safe mode and the console refuses every other press. End the session; start a new one to try again.</div>' : ''}
-      <ol class="dp-ladder${estopped ? ' stopped' : ''}">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}">${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.detail || r.sub)}</small>${r === nowRow && r.lock ? `<em>${escape(r.lock)}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' ? `<em class="${S.ladderNote[r.key].kind}">${escape(S.ladderNote[r.key].text)}</em>` : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}${r.state === 'done' && r.key === 'goal' && !walking() && goalUsable() ? '<button class="link-button" data-action="send-goal">Resend</button>' : ''}</li>`).join('')}</ol>
+      <ol class="dp-ladder${estopped ? ' stopped' : ''}">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}">${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.detail || r.sub)}</small>${r === nowRow && r.lock && !estopped ? `<em>${escape(r.lock)}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' && !estopped ? `<em class="${S.ladderNote[r.key].kind}">${escape(S.ladderNote[r.key].text)}</em>` : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}${r.state === 'done' && r.key === 'goal' && !walking() && goalUsable() ? '<button class="link-button" data-action="send-goal">Resend</button>' : ''}</li>`).join('')}</ol>
       ${S.sendResult ? `<div class="callout ${S.sendResult.ok ? 'ok' : 'warning'}" role="status">${S.sendResult.ok ? `Goal confirmed by the node${S.sendResult.check ? `. Start check: moved ${num(S.sendResult.check.moved_m, 2)} m, turned ${num(S.sendResult.check.turned_deg, 0)}° (${escape(S.sendResult.check.within_offset_envelope ? 'inside the rehearsed envelope' : 'outside the rehearsed envelope')})` : ''}.` : `Send goal refused: ${escape(S.sendResult.text)}`}</div>` : ''}
       ${S.goResult && !S.goResult.ok ? `<div class="callout warning" role="status">GO refused by the console: ${escape(S.goResult.text)}</div>` : ''}
       ${sc ? `<p class="tiny">Robot now vs its scan pose: ${num(sc.moved_m, 2)} m, ${num(sc.turned_deg, 0)}° · ${escape(envelope)} (grey ghost in 3D).</p>` : ''}
@@ -1171,7 +1172,7 @@ function playTimeline(on) {
 function renderLegend() {
   const el = $('dp-legend'); if (!el) return;
   const live = !!S.view;
-  el.innerHTML = `<span><i class="sw-ob"></i>Obstacle (by height)</span><span><i class="sw-st"></i>Step-over</span><span><i class="sw-oh"></i>Overhead</span><span><i class="sw-floor"></i>Seen floor</span>${live || S.scanLive?.running ? '<span><i class="sw-pt"></i>Lidar</span><span><i class="sw-ign"></i>Ignored by the planner</span>' : ''}${S.goal ? '<span><i class="sw-route"></i>Route</span>' : ''}`;
+  el.innerHTML = `<span><i class="sw-ob"></i>Obstacle (by height)</span><span><i class="sw-st"></i>Step-over</span><span><i class="sw-oh"></i>Overhead</span><span><i class="sw-floor"></i>Seen floor</span>${live || S.scanLive?.running ? '<span><i class="sw-pt"></i>Lidar</span><span><i class="sw-ign"></i>Ignored by the planner</span>' : ''}${S.goal ? '<span><i class="sw-route"></i>Route</span>' : ''}${d3.hasTrail() ? '<span><i class="sw-walked"></i>Walked</span>' : ''}`;
 }
 // The overlays' footprint on the canvas: the camera centres the free area (deploy3d.setInsets).
 function updateInsets() {
@@ -1260,7 +1261,12 @@ function hover(at) {
   S.hover = { xy: hit.xy, status: q.status, text: q.text, columnTop: hit.hit === 'column' ? hit.columnTop : null };
   d3.setHover(S.hover);
   const tip = $('dp-hover-tip');
-  if (tip) { tip.hidden = false; tip.textContent = q.text; tip.dataset.status = q.status; const box = $('viewport-shell').getBoundingClientRect(); tip.style.transform = `translate(${at[0] - box.left + 16}px, ${at[1] - box.top + 14}px)`; }
+  if (tip) {
+    tip.hidden = false; tip.textContent = q.text; tip.dataset.status = q.status;
+    // Beside the pointer, flipped to the left near the stage's right edge.
+    const box = $('viewport-shell').getBoundingClientRect(), w = tip.offsetWidth, x = at[0] - box.left, y = at[1] - box.top;
+    tip.style.transform = `translate(${x + 16 + w > box.width - 8 ? Math.max(8, x - 16 - w) : x + 16}px, ${y + 14}px)`;
+  }
 }
 
 // ------------------------------------------------------------------------------------------------ keyboard
