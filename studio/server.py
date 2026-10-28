@@ -19,6 +19,7 @@ import time
 from urllib.parse import parse_qs, unquote, urlparse
 
 from studio import paths
+from studio.deploy_link import GET_ROUTES as DEPLOY_GET_ROUTES, DeployError, DeployLink
 from studio.model import RobotModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -343,7 +344,15 @@ class Gateway(ThreadingHTTPServer):
         self.static = {}
         self.static_lock = threading.Lock()
         self.identity = build_identity()
+        self._deploy = None
         super().__init__(address, Handler)
+
+    @property
+    def deploy(self):
+        """The deploy link (studio/deploy_link.py), built on first use from config/local.json."""
+        if self._deploy is None:
+            self._deploy = DeployLink()
+        return self._deploy
 
     def server_bind(self):
         if self.address_family == socket.AF_INET6:
@@ -510,6 +519,8 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(route.query)
             catalog = self.server.catalog
             workbench = catalog.workbench
+            if path in DEPLOY_GET_ROUTES:
+                return self.deploy_get(path, query)
             if path == '/api/version':
                 return self.respond(dict(self.server.identity, hardware_enabled=False))
             if path == '/api/workbench' and workbench:
@@ -644,8 +655,15 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self.respond({"error": f"Internal error: {type(error).__name__}"}, status=500)
 
+    def deploy_get(self, path, query):
+        try:
+            status, obj = self.server.deploy.get(path, {k: v[0] for k, v in query.items()})
+        except DeployError as error:
+            return self.respond({'error': str(error)}, status=error.status)
+        return self.respond(obj, status=status)
+
     POST_ROUTES = ('/api/scenarios', '/api/maps/import', '/api/jobs', '/api/jobs/cancel',
-                   '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin', '/api/nav/connect')
+                   '/api/arenas', '/api/suites', '/api/suites/cancel', '/api/nav/start', '/api/nav/command', '/api/nav/twin', '/api/nav/connect', '/api/deploy/act')
 
     def do_POST(self):
         if not self.authorize_local():
@@ -688,6 +706,12 @@ class Handler(BaseHTTPRequestHandler):
                 result = workbench.nav_twin(data)
             elif path == '/api/nav/connect':
                 result = workbench.connect_robot(data)
+            elif path == '/api/deploy/act':
+                try:
+                    status, obj = self.server.deploy.act(data)
+                except DeployError as error:
+                    return self.respond({'error': str(error)}, status=error.status)
+                return self.respond(obj, status=status)
             else:
                 result = workbench.cancel_job(data.get('id'))
             return self.respond(result, status=201)
