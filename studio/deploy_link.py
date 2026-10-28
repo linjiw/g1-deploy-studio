@@ -833,6 +833,17 @@ class Deploy:
         path_mem = result.get("path_xy")
         gap = goal_check.route_gap(twin, path_mem) if twin is not None and path_mem else None
         result["checks"].append(goal_check.gap_check(gap, twin is not None, path_mem is not None))
+        # The straight line too: the route pads obstacles by its 0.35 m margin, so it walks around a gap narrower than
+        # 0.7 m (the 0.69 m towers of 2026-10-27) and never measures it, while a policy may still go through it.
+        direct = goal_check.route_gap(twin, [robot_mem, goal_mem]) if twin is not None else None
+        if direct is not None and (gap is None or direct["width_m"] < gap["width_m"] - 0.05):
+            row = result["checks"][-1]
+            around = (f"; the route goes around it ({result['path_m']:.1f} m instead of {result['straight_m']:.1f} m)"
+                      if result.get("path_m") and result.get("straight_m") else "")
+            row["detail"] = (row.get("detail") or "").rstrip(".") + (". " if row.get("detail") else "") + \
+                f"The straight line to the goal passes a {direct['width_m']:.2f} m gap{around}."
+            if row["status"] == "pass" and direct["width_m"] < goal_check.GAP_WARN_M:
+                row["status"], row["label"] = "warn", "Narrow gap on the straight line"
         result["ok"] = not any(c["status"] == "block" for c in result["checks"])
         blocking = goal_check.blocking_cells(grid, result, robot_mem, goal_mem, gap=gap, limit=MAX_BLOCKING_CELLS)
         r4 = lambda p: [round(p[0], 4), round(p[1], 4)]
@@ -843,6 +854,9 @@ class Deploy:
                    gap=None if gap is None else {"width_m": round(gap["width_m"], 3),
                                                  "at_xy": r4(apply(scene_from_memory, gap["at_xy"])),
                                                  "sides_xy": [r4(p) for p in apply(scene_from_memory, gap["sides_xy"])]},
+                   direct_gap=None if direct is None else {
+                       "width_m": round(direct["width_m"], 3), "at_xy": r4(apply(scene_from_memory, direct["at_xy"])),
+                       "sides_xy": [r4(p) for p in apply(scene_from_memory, direct["sides_xy"])]},
                    frame="scene", scan=scan, goal_scene=goal_scene, start_S=[round(v, 6) for v in start])
         out["grid"] = dict(result["grid"], frame="memory_S (scan memory; geometry above is in scene)")
         check_id = uuid.uuid4().hex
