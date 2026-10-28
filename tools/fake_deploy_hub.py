@@ -1248,6 +1248,8 @@ class FakeHub:
     def attempt_row(c, a):
         row = public_attempt(a)
         row.setdefault("tag_history", [])
+        # like the kit: where the attempt starts on Studio's Replay timeline (the fake's recording starts with it)
+        row.setdefault("replay_t_s", round(float(a["t_go"]), 2) if a.get("t_go") is not None else None)
         return row
 
     def tag(self, name, body):
