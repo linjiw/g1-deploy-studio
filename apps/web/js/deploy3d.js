@@ -20,6 +20,8 @@ export const COLORS = {
   pointLow: 0x8fb8e8, pointHigh: 0x1f4fa8, pointFloor: 0xc3cdd6, selfFiltered: 0xb9c2cb, rearBlind: 0xc6b2e6,
   route: C.travelled, goal: C.goal, gap: 0x2f74d0, block: C.red, pass: C.green, warn: 0xe0a030, pending: hex(UI.faint),
   exact: 0x3d6fb5, drift: 0xc2408f, offset: 0x7d8794, plan: C.future, scanGhost: 0x55657a, lost: 0x9aa3ad, walked: 0x2a333d,
+  // The planner's own live route: dashed ink, never the teal of Studio's route check (two different computations).
+  liveRoute: 0x1b2530,
 };
 export const STEP_OVER_M = 0.25, FLOOR_M = 0.05, HEAD_CLEAR_M = 1.35, ROBOT_DISC_M = 0.30, ROUTE_MARGIN_M = 0.35;
 const RING = 8, RING_CAP = 6000, FADE_S = 1.5;
@@ -319,7 +321,9 @@ export function init() {
   D.sceneOnly.add(D.scanGroup, D.goalGroup, D.hoverGroup, D.rehearsalGroup, D.anchorGroup);
   D.root.add(D.sceneOnly, D.liveGroup, D.cloudGroup, D.robotAnchors);
   // Live overlays in the odom frame: route, plan path, node goal.
-  D.lines = { route: polyline(COLORS.route, 0.95, 512), plan: polyline(COLORS.plan, 1, 256) };
+  D.lines = { route: polyline(COLORS.liveRoute, 0.9, 512), plan: polyline(COLORS.plan, 1, 256) };
+  D.lines.route.material = new THREE.LineDashedMaterial({ color: COLORS.liveRoute, dashSize: 0.12, gapSize: 0.07, transparent: true, opacity: 0.9 });
+  D.lines.route.name = 'planner-route'; D.lines.plan.name = 'plan-path';
   D.liveGroup.add(D.lines.route, D.lines.plan);
   view.scene.add(D.root);
   window.addEventListener('resize', () => D.active && applyViewOffset());
@@ -497,7 +501,8 @@ export async function setLive(v, { now = performance.now(), slot = 'robot', hide
     if (g) g.root.visible = D.layers.robot && !hideRobot && !!frames2[i] && poseRobot(g, frames2[i], v.joint_names);
   }
   setPolyline(D.lines.plan, (plan?.path ?? []).map(p => [p[0], p[1], 0.03]), 0.03);
-  setPolyline(D.lines.route, (v.route ?? []).map(p => [p[0], p[1], 0.022]), 0.022);
+  setPolyline(D.lines.route, (v.route ?? []).map(p => [p[0], p[1], 0.04]), 0.04);
+  D.lines.route.computeLineDistances();
   D.lines.plan.visible = !!plan?.path?.length && !hideRobot; D.lines.route.visible = !!v.route?.length && !hideRobot;
   disposeLabel(D.liveLabel); D.liveLabel = null;
   if (label && D.liveOdomPose) D.liveLabel = tag(label, COLORS.exact, [D.liveOdomPose[0], D.liveOdomPose[1], 1.62], D.liveGroup);
@@ -649,6 +654,19 @@ export function setGoal(goal) {
     const sill = polyline(gc, 0.9, 2); setPolyline(sill, [[at[0] - n[0] * w, at[1] - n[1] * w, 0.03], [at[0] + n[0] * w, at[1] + n[1] * w, 0.03]]); gate.add(sill);
     tag(`Gap ${goal.gap.width_m.toFixed(2)} m`, gc, [at[0], at[1], 1.06], gate);
     gate.name = 'gap-gate'; D.goalGroup.add(gate);
+  }
+  // The operator's "must pass through this gap": a gold gate between the passage's two sides.
+  const pa = goal.passage?.a, pb = goal.passage?.b;
+  if (Array.isArray(pa) && Array.isArray(pb)) {
+    const gate = new THREE.Group(), gc = COLORS.goal;
+    for (const q of [pa, pb]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 1.2, 10).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: gc }));
+      post.position.set(q[0], q[1], 0.6); gate.add(post);
+    }
+    const bar = polyline(gc, 1, 2); setPolyline(bar, [[pa[0], pa[1], 1.2], [pb[0], pb[1], 1.2]]); gate.add(bar);
+    const sill = polyline(gc, 1, 2); setPolyline(sill, [[pa[0], pa[1], 0.035], [pb[0], pb[1], 0.035]]); gate.add(sill);
+    tag(`Must pass · ${Number(goal.passage.width_m ?? Math.hypot(pb[0] - pa[0], pb[1] - pa[1])).toFixed(2)} m`, gc, [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, 1.28], gate);
+    gate.name = 'passage-gate'; D.goalGroup.add(gate);
   }
   const blocks = goal.blocking ?? [];
   if (blocks.length) {

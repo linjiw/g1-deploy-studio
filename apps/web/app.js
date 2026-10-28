@@ -591,10 +591,16 @@ on('arena:saved', async () => {
   state.catalog = null;
   try { emit('catalog:refreshed', await ensureCatalog()); } catch (error) { emit('workbench:error', error.message); }
 });
-on('open-session', async id => {
+// An id, or (Deploy's Review) {id, time}: the exact catalog id, opened at that attempt's time.
+on('open-session', async arg => {
+  const id = typeof arg === 'string' ? arg : arg?.id, time = typeof arg === 'object' ? arg?.time : null;
+  if (!id) return;
   await setWorkspace('replay');
   await refreshSessionList(id);
-  if (await loadSession(id)) { selectTab('health', state); }
+  if (await loadSession(id)) {
+    selectTab('health', state);
+    if (finite(time)) { setPlaying(false); seek(Math.max(state.session.frames[0].time, Math.min(Number(time), state.session.metadata.duration_s))); updateView({ time: Number(time).toFixed(1) }); }
+  }
 });
 on('runs:compare', list => { if (state.workspace === 'runs') scene.setComparison(list.map(r => ({ ...r, color: parseInt(runColor(r).slice(1), 16) }))); });
 

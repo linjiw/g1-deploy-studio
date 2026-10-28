@@ -65,7 +65,7 @@ const S = () => page.evaluate(() => {
   return { step: d.step, stateOk: d.stateOk, scan: d.scanName, goal: d.goal?.xy ?? null, goalOk: d.goal?.check?.ok ?? null, goalStatus: d.goal?.status,
     session: Object.values(d.state?.live ?? {}).find(v => v?.running)?.name ?? null, phase: d.panel?.phase ?? null, runner: d.panel?.runner ?? null,
     ladder: Object.fromEntries((d.panel?.ladder ?? []).map(l => [l.key, l.state])), locks: d.panel?.go_locks ?? [], attempts: d.panel?.attempts ?? [],
-    rehearsal: (d.state?.rehearsals ?? []).at(-1) ?? null, tracks: d.tracks ? Object.keys(d.tracks) : null, estop: d.estop.state, lease: !!d.lease.id };
+    rehearsal: d.match?.data?.running ?? d.match?.data?.complete ?? (d.state?.rehearsals ?? [])[0] ?? null, tracks: d.tracks ? Object.keys(d.tracks) : null, estop: d.estop.state, lease: !!d.lease.id };
 });
 const until = async (what, fn, timeout = 30000, every = 250) => {
   const t0 = Date.now(); let last;
@@ -181,7 +181,7 @@ try {
   step('rehearse');
   allowed.push({ status: 404, path: '/api/deploy/live' });
   await primary().click();
-  assert.match(await primaryText(), /Rehearse 3 runs/);
+  assert.match(await primaryText(), /Rehearse 3 cases/);
   await primary().click();
   await until('the rehearsal to run', s => s.rehearsal?.running, 10000);
   await page.waitForTimeout(3500);
@@ -328,7 +328,7 @@ try {
   await until('GO 2', async () => /GO/.test(await primaryText()) && !(await primary().isDisabled()), 15000);
   await primary().click(); await page.waitForSelector('.dp-sheet');
   // Goal 2 was never rehearsed: the GO sheet says so in amber instead of a green all-clear.
-  assert.match(await page.locator('.dp-sheet .dp-caution').textContent(), /No console lock, but:.*no rehearsal/s);
+  assert.match(await page.locator('.dp-sheet .dp-caution').textContent(), /No console lock, but:.*no matching completed rehearsal/is);
   assert.equal(await page.locator('.dp-sheet .tiny.ok').count(), 0, 'no green all-clear beside a caution');
   await shot('19-go2-caution');
   await page.click('#dp-sheet-ok');
