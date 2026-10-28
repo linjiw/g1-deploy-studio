@@ -542,7 +542,8 @@ class Handler(BaseHTTPRequestHandler):
             return ok
         self._headers_read = True
         self._deadline.cancel()
-        if ok and not (self.command == 'POST' and urlparse(self.path).path in ESTOP_PATHS):
+        # the reserve slots also renew the operator lease: a stalled deploy service must not cost the operator control
+        if ok and not (self.command == 'POST' and urlparse(self.path).path in (*ESTOP_PATHS, '/api/deploy/lease/renew')):
             self.respond({'error': 'Studio is busy: only E-STOP, Stand and Takeover are served right now; retry'},
                          status=503)
             return False

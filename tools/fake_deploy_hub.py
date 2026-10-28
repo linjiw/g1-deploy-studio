@@ -1046,7 +1046,30 @@ class FakeHub:
             chk("operator", "operator", "Gantry or spotter ready; E-stop tested; remote holder briefed (Select = "
                 "E-STOP, D-up = stand only); rope held above 1.6 m", "pass" if c else "unknown", "OPERATOR",
                 "confirmed at session start" if c else "", "session"),
+            *self.rehearsal_readiness(slot, c, chk),
         ]}
+
+    def rehearsal_readiness(self, slot, c, chk):
+        """As the kit's readiness `scene.rehearsal`, judged on the goal in force (the one sent in this session): on
+        the robot a missing or non-robust set is a block the operator may override at GO (`overridable`), in practice a
+        warning."""
+        ctx = self.goal_ctx.get(slot) or {}
+        if c is None or ctx.get("session") != getattr(c, "name", None):
+            return [chk("scene.rehearsal", "scene", "Rehearsal set", "unknown", "DERIVED", "after a goal is sent",
+                        "rehearsal")]
+        reh = self.rehearsal_in_force(ctx.get("scan"), ctx.get("goal_scene"), slot, passage=ctx.get("passage"))
+        robot = slot == "robot" and not c.practice
+        if reh.get("match") and reh.get("verdict") == "robust":
+            return [chk("scene.rehearsal", "scene", "Rehearsal set", "pass", "DERIVED", f"{reh.get('name')}: robust",
+                        "rehearsal")]
+        detail = (f"{reh.get('name')}: {reh.get('verdict')}" if reh.get("match") else
+                  reh.get("reason") or "no complete rehearsal set for this goal, profile and odometry")
+        detail += "; GO needs the operator's override (recorded with the attempt)" if robot else "; practice: GO is not held for it"
+        row = chk("scene.rehearsal", "scene", "Rehearsal set", "block" if robot else "warn", "DERIVED", detail,
+                  "rehearsal", fix={"hint": "rehearse this goal (three runs), or tick the override at GO (recorded)"})
+        if robot:
+            row["overridable"] = "rehearsal_override"
+        return [row]
 
     def start_check(self, slot, scan, goal=None, passage=None):
         """As the kit's hub._start_check: the robot now against the scan (the fake's registration is perfect), and

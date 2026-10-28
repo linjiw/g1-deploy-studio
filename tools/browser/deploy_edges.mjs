@@ -346,6 +346,20 @@ try {
     return m;
   });
 
+  await check('N3', 'a stalled (slow, not down) deploy service for 8 s: the operator keeps the controls', async () => {
+    const before = await A.evaluate(() => window.__deploy.S.lease.id);
+    assert(before, 'holding the lease before the stall');
+    faultWindow = true; await faults({ hub_delay_s: 4 });
+    await A.waitForTimeout(8000);
+    const during = await A.evaluate(() => ({ id: window.__deploy.S.lease.id, lost: window.__deploy.S.lease.lost ?? null }));
+    await resetFaults(); faultWindow = false;
+    await A.waitForTimeout(3000);
+    const after = await A.evaluate(() => ({ id: window.__deploy.S.lease.id, lost: window.__deploy.S.lease.lost ?? null }));
+    assert(during.id === before && !during.lost, `the lease survived the stall: ${JSON.stringify(during)}`);
+    assert(after.id === before && !after.lost, `and after it: ${JSON.stringify(after)}`);
+    return { during, after };
+  });
+
   // ================================================================== F07: an act whose reply is lost
   await check('F07', 'dropped act reply: "acknowledgement unavailable", never "refused", never resent, then known', async () => {
     assert(A, 'needs the attached page');

@@ -99,7 +99,7 @@ export const S = {
 const inflight = new Set();
 let pollsInFlight = 0;
 async function api(path, { method = 'GET', body, timeout = 1500, headers = {}, csrf = false, retried = false } = {}) {
-  const ctl = new AbortController(); inflight.add(ctl);
+  const ctl = new AbortController(); ctl.meta = { method, at: performance.now() }; inflight.add(ctl);
   const timer = setTimeout(() => ctl.abort(), timeout);
   try {
     const options = { method, cache: 'no-store', signal: ctl.signal, headers: { ...headers } };
@@ -502,12 +502,18 @@ async function takeLease(takeOver = false) {
 }
 async function renewLease() {
   if (!S.lease.id) return;
-  const r = await api('/api/deploy/lease/renew', { method: 'POST', body: { lease_id: S.lease.id }, csrf: true });
-  if (r.ok) { S.lease.until = r.data.until ?? S.lease.until; if (S.lease.lost) { S.lease.lost = null; renderAll(); } }
+  // A stalled deploy service must not cost the operator the controls: free a connection for the renewal by aborting
+  // the oldest polls (GETs, safe to repeat; never an act), and renew with a short timeout (the gateway also serves it
+  // on its reserve slots).
+  const gets = [...inflight].filter(c => c.meta?.method === 'GET').sort((a, b) => a.meta.at - b.meta.at);
+  for (const c of gets.slice(0, Math.max(0, inflight.size - 3))) c.abort();
+  const r = await api('/api/deploy/lease/renew', { method: 'POST', body: { lease_id: S.lease.id }, csrf: true, timeout: 1200 });
+  if (r.ok) { S.lease.until = r.data.until ?? S.lease.until; S.lease.slow = null; if (S.lease.lost) { S.lease.lost = null; renderAll(); } }
   else if (r.status === 409 || r.status === 404) {
-    S.lease.lost = r.data.holder ? `${r.data.holder} took the controls` : 'the lease expired (this tab was hidden or offline)';
+    S.lease.lost = r.data.holder ? `${r.data.holder} took the controls`
+      : 'the lease expired: no renewal reached Studio for 3 s (the deploy service or the network was slow, or this tab was hidden)';
     S.lease.id = null; renderAll();
-  }
+  } else S.lease.slow = `the last lease renewal got no answer (${reason(r)})`;  // not lost: the next renewal may land
 }
 function releaseLease() {
   if (!S.lease.id) return;
@@ -1075,7 +1081,7 @@ function renderContext() {
     : S.stateOk === false ? `<span class="dpc-chip bad" title="${escape(S.stateError ?? '')}">● Deploy service not answering</span>` : '<span class="dpc-chip">Connecting…</span>';
   const who = id ? `<span class="dpc-mode ${id.kind === 'robot' ? 'robot' : 'practice'}" title="The running session, from its receipt">${id.kind === 'robot' ? `Robot session · ${escape(id.robot)}` : 'Practice session'}</span>`
     : `<span class="dpc-mode next ${S.mode === 'robot' ? 'robot' : 'practice'}" title="No session is running: the next session's mode (Connect)">Next: ${S.mode === 'robot' ? `Robot · ${escape(st().robot_link?.robot ?? 'lab-g1')}` : 'Practice'}</span>`;
-  const op = S.operator.trim() ? `<span class="dpc-chip" title="${holdsLease() ? 'You hold the controls' : 'Not holding the controls'}">${holdsLease() ? '◆' : '◇'} ${escape(S.operator.trim())}</span>` : '';
+  const op = S.operator.trim() ? `<span class="dpc-chip${holdsLease() && S.lease.slow ? ' warn' : ''}" title="${holdsLease() ? (S.lease.slow ? `You hold the controls; ${escape(S.lease.slow)}` : 'You hold the controls') : 'Not holding the controls'}">${holdsLease() ? '◆' : '◇'} ${escape(S.operator.trim())}${holdsLease() && S.lease.slow ? ' · renewal slow' : ''}</span>` : '';
   const audit = S.link?.audit && S.link.audit.ok === false ? `<span class="dpc-chip bad" title="${escape(S.link.audit.last_error ?? '')}">! Audit log not writing</span>` : '';
   el.innerHTML = `${who}${op}${service}${id ? `<span class="dpc-chip live">● ${escape(id.name)}</span>` : ''}${audit}`;
 }
@@ -1143,10 +1149,15 @@ function recordingWords(rec) {
     if (last.length) parts.push(`last write ${ageText(Math.min(...last))}`);
     tone = bad.length || (rec.ok === false && problems.length) ? 'block' : drops || waiting.length || rec.ok === false ? 'warn' : 'pass';
   }
+  // An ended recording (finalized or not) is about what was written, not about the disk now; its problems never repeat
+  // the line's own lead (the kit lists "not finalized" among them too).
+  const over = closed || ['not finalized', 'lost', 'absent'].includes(state);
   if (drops) parts.push(`${drops} dropped`);
-  if (disk && !closed) parts.push(disk);
-  if (finite(rec.disk_free_gb) && rec.disk_free_gb < 20 && tone === 'pass') tone = 'warn';
-  if (problems.length) parts.push(problems.slice(0, 2).join('; '));
+  if (disk && !over) parts.push(disk);
+  if (!over && finite(rec.disk_free_gb) && rec.disk_free_gb < 20 && tone === 'pass') tone = 'warn';
+  const said = `${lead} ${parts.join(' ')}`.toLowerCase();
+  const extra = problems.filter(x => !(over && /finaliz/i.test(x)) && !said.includes(String(x).toLowerCase()));
+  if (extra.length) parts.push(extra.slice(0, 2).join('; '));
   return { tone, text: `${lead} · ${parts.join(' · ')}`, state };
 }
 // One line: every source that is not fresh gets its own chip (stale amber, lost red, unknown hollow) with its age; the
@@ -1565,6 +1576,9 @@ function goCautions() {
     const fused = ['fused', 'zmq'].includes(odomName()) && ['fails with drift', 'other way'].includes(rec.verdict);
     out.push(`The rehearsal says: ${v?.title.toLowerCase() ?? rec.verdict}${fused ? ` (the injected drift models leg odometry; this walk uses ${odomLabel(odomName())}, not yet validated walking on the robot)` : ''}`);
   }
+  // the service's own overridable block (its GO gate), when the page's matching did not already say why
+  const over = (S.readiness ?? []).find(c => c.overridable && checkShown(c).status === 'block');
+  if (over && !out.length) out.push(`${over.label}: ${over.detail}`);
   if (rec && S.goal?.passage?.required && !rec.passage) out.push('The rehearsal did not score the required gap');
   if (sc?.within_offset_envelope === false) out.push('The robot stands outside the start offset the rehearsal covered');
   // A failing start-offset case is its own caution unless the start check places the robot inside a passing envelope.
@@ -1572,7 +1586,8 @@ function goCautions() {
   return out;
 }
 function firstBlock(groups = null) {
-  return (S.readiness ?? []).find(c => (!groups || groups.includes(c.group)) && checkShown(c).status === 'block') ?? null;
+  // an overridable block (the rehearsal gate) is not a blocker: the GO sheet asks for its tick
+  return (S.readiness ?? []).find(c => (!groups || groups.includes(c.group)) && !c.overridable && checkShown(c).status === 'block') ?? null;
 }
 const blockText = c => `${c.label}${c.detail ? ` — ${c.detail}` : ''}${c.fix?.hint ? ` · ${c.fix.hint}` : ''}`;
 // On the real robot a Link or Robot block (lidar, FAST-LIO, the link, temperatures) locks Start session and Arm.
@@ -1781,7 +1796,8 @@ function manifestHtml(m, { stale = null } = {}) {
 }
 function attemptHtml(name, a, sel, live) {
   const out = a.outcome ?? a.result ?? null, key = `review:${name}:${a.n}`, draft = S.tagDraft[key] ??= { tag: a.tag ?? null, note: a.note ?? '' };
-  const passage = a.passage === 'crossed' ? 'passed the gap' : a.passage === 'missed' ? 'went AROUND the gap' : null;
+  const passage = a.passage === 'crossed' ? 'passed the gap' : a.passage === 'missed' ? 'went AROUND the gap'
+    : a.passage === 'n/a' ? `not scored: ${a.passage_note ?? 'started past the gate'}` : null;
   const reh = a.rehearsal ? `${a.rehearsal.name ?? 'set'}${a.rehearsal.verdict ? ` · ${a.rehearsal.verdict}` : ''}` : 'none in force';
   const sc = a.start_check, rt = replayTime(a);
   const facts = [
@@ -2003,7 +2019,8 @@ function sheetModel() {
   }
   if (k === 'go') {
     const rec = rehearsalFor(), v = verdictText(rec), locks = S.panel?.go_locks ?? [], sc = S.startCheck ?? S.sendResult?.check;
-    const blocking = (S.readiness ?? []).filter(c => c.status === 'block').map(c => c.label);
+    // a block the operator may override at GO (the kit's rehearsal gate) is a caution with its tick, not a lock
+    const blocking = (S.readiness ?? []).filter(c => c.status === 'block' && !c.overridable).map(c => c.label);
     const moved = goalSentStale();
     const items = [...locks.map(l => `Console: ${l}`), ...(moved ? [moved] : []), ...blocking.map(b => `Readiness: ${b}`)];
     const cautions = goCautions(), needAck = robot && cautions.length && !items.length;
