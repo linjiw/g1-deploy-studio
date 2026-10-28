@@ -15,12 +15,17 @@ A separate process the gateway spawns; the HTTP server never imports ZMQ. On the
   `session.json` (a replayable recording) and, last, `result.json`.
 
 Config: {"endpoints": {"odom", "control", optional "cloud", "pose", "debug"}, "limits": {...}, optional "label",
-"capture": {"topics": [...], "max_bytes": n}}. A non-loopback endpoint, an unknown key or an out-of-range limit
+"capture": {"topics": [...], "max_bytes": n}, "deploy_service": {"url", "token_file"}}. A non-loopback endpoint, an unknown key or an out-of-range limit
 refuses the whole config (exit 2, result.json says why).
 
 Labels: the pose is the LIO estimate (`estimated`, frame `odom`); joints are `measured` (g1_debug) or null; the
 reference is `commanded`; phase, goal and standing are what the node reports. Stale or missing data is shown as
 stale or unavailable, never as a healthy default.
+
+While the deploy kit runs a robot session the link only observes: the kit's console owns the robot then, and a goal
+or stand straight to its node would bypass the console's gates (docs/DEPLOY.md). With `deploy_service` in the config
+the link asks the kit's deploy service every second; goal and stand are refused while it reports a robot session, and
+while it last reported one and cannot be reached. The gateway refuses them before writing the inbox as well.
 
 A goal is sent only when all of these hold (fail closed; the reason is recorded otherwise):
   * the gateway checked it on a map (`check.ok is True`);
@@ -154,7 +159,7 @@ def load_config(document):
     """Validate a config document (dict). Loopback endpoints only; unknown keys and bad limits refuse it."""
     if not isinstance(document, dict):
         raise ConfigError("config must be a JSON object")
-    unknown = set(document) - {"endpoints", "limits", "label", "capture", "session_id"}
+    unknown = set(document) - {"endpoints", "limits", "label", "capture", "session_id", "deploy_service"}
     if unknown:
         raise ConfigError(f"unknown config keys: {sorted(unknown)}")
     endpoints = document.get("endpoints")
@@ -211,7 +216,20 @@ def load_config(document):
             raise ConfigError("capture max_bytes must be an integer in [1 KiB, 128 MiB] (the gateway stops a job "
                               "whose output exceeds 256 MiB)")
         capture = {"topics": list(dict.fromkeys(topics)), "max_bytes": max_bytes}
-    return {"endpoints": clean, "limits": values, "label": label, "capture": capture, "session_id": session_id}
+    deploy_service = document.get("deploy_service")
+    if deploy_service is not None:
+        if (not isinstance(deploy_service, dict) or set(deploy_service) - {"url", "token_file"}
+                or not isinstance(deploy_service.get("url"), str)
+                or not isinstance(deploy_service.get("token_file", ""), str)):
+            raise ConfigError("deploy_service must be {url, token_file}")
+        from .deploy_link import DeployLink
+        try:
+            DeployLink(deploy_service["url"], deploy_service.get("token_file") or None)
+        except ValueError as exc:
+            raise ConfigError(f"deploy_service refused: {exc}") from None
+        deploy_service = {"url": deploy_service["url"], "token_file": deploy_service.get("token_file") or None}
+    return {"endpoints": clean, "limits": values, "label": label, "capture": capture, "session_id": session_id,
+            "deploy_service": deploy_service}
 
 
 def yaw_of(quat_wxyz):
@@ -508,6 +526,8 @@ class RobotLink:
         self.unverified_note = None
         self.frame_nav = {"phase": None, "walk": None, "goal_xy": None}
         self.pending = None
+        # The deploy kit's robot session, as its deploy service last reported it (None: none, or not configured).
+        self.deploy_session = None
         self.last_seq = 0
         self.stream_status = {}
         self.perception_json, self.perception_t = "null", -math.inf
@@ -1091,6 +1111,10 @@ class RobotLink:
         standing = self._standing()
         if self.ended:
             reasons.update(goal="the link has ended", stand="the link has ended", end="the link has ended")
+        elif self.deploy_session is not None:
+            why = (f"the deploy kit runs a robot session ({self.deploy_session}): this link only observes; "
+                   "use the Deploy workspace, where every press goes through the kit's console")
+            reasons.update(goal=why, stand=why)
         elif self.pending is not None:
             reasons["goal"] = reasons["stand"] = f"waiting for the node on command {self.pending['seq']}"
         else:
@@ -1707,6 +1731,29 @@ class RobotLink:
             self.snapshot_thinning += 1
 
     # ------------------------------------------------------------------ lifecycle
+    def _deploy_loop(self):
+        """Ask the deploy kit's deploy service once a second whether it runs a robot session. Unreachable keeps the last
+        answer (a robot session the service last reported stays in force)."""
+        from .deploy_link import DeployError, DeployLink
+        service = self.cfg["deploy_service"]
+        link = DeployLink(service["url"], service.get("token_file"))
+        while not self.stop_event.is_set():
+            session = self.deploy_session
+            try:
+                status, state = link.state(timeout=1.0)
+                live = state.get("live") if status == 200 and isinstance(state, dict) else None
+                if isinstance(live, dict):
+                    robot = [e for e in live.values() if isinstance(e, dict) and e.get("running") is not False
+                             and e.get("mode") == "robot" and not e.get("practice")]
+                    session = (str(robot[0].get("name") or "unnamed") if robot else None)
+            except DeployError:
+                pass
+            if session != self.deploy_session:
+                self.deploy_session = session
+                self.event("deploy", f"deploy kit robot session {session}: goal and stand refused" if session
+                           else "no deploy kit robot session: goal and stand allowed again", session=session)
+            self.stop_event.wait(1.0)
+
     def _guard(self, target, name):
         try:
             target()
@@ -1729,8 +1776,10 @@ class RobotLink:
                                  "topics": self.cfg["capture"]["topics"], "mode": "loopback_read_only_telemetry",
                                  "hardware_command_path": False, "dds_participant": False,
                                  "note": "Robot link capture; the link also sent status/goal/stand on the control socket."})
-        for target, name in ((self._receive_loop, "link-receive"), (self._map_loop, "link-map"),
-                             (self._control_loop, "link-control")):
+        loops = [(self._receive_loop, "link-receive"), (self._map_loop, "link-map"), (self._control_loop, "link-control")]
+        if self.cfg.get("deploy_service"):
+            loops.append((self._deploy_loop, "link-deploy"))
+        for target, name in loops:
             thread = threading.Thread(target=self._guard, args=(target, name), name=name, daemon=True)
             thread.start()
             self.threads.append(thread)

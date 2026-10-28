@@ -432,6 +432,9 @@ class Workbench:
         self.worker_python = Path(worker_python or REFERENCE_ROOT / '.venv/bin/python')
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
+        # The deploy kit's live sessions (studio/deploy_link.py Deploy, wired by the gateway): CPU jobs and Navigate's
+        # direct robot commands are refused while the kit runs a session. None (tests, tools) = no deploy service.
+        self.deploy_guard = None
         self.maps = {}
         self.map_warnings = []
         self.scenarios = {}
@@ -855,9 +858,20 @@ class Workbench:
             self.scenarios[scenario['id']] = scenario
         return {'scenario': scenario, 'validation': scenario['validation']}
 
+    def _deploy_refusal(self, kind):
+        """A reason to refuse (str) from the deploy kit's live sessions, or None. kind 'cpu' (any live session: the
+        real-time chain keeps the machine) or 'robot' (a robot session: Navigate's robot link only observes)."""
+        guard = self.deploy_guard
+        if guard is None:
+            return None
+        return guard.cpu_guard() if kind == 'cpu' else guard.robot_guard()
+
     def start_job(self, scenario_id, suite_id=None):
         from studio import policies
         scenario_id = ident(scenario_id, 'scenario_id')
+        refusal = self._deploy_refusal('cpu')  # asked before the workbench lock: it may wait up to 1 s on the kit
+        if refusal:
+            raise ValueError(refusal)
         with self.lock:
             if scenario_id not in self.scenarios:
                 raise KeyError('Unknown saved scenario')
@@ -957,6 +971,9 @@ class Workbench:
         # The worker's rehearsal-parity mode (a goal and Go at t = 0, unchecked) is for tests that run it directly;
         # the public API never offers it (review L7).
         initial_goal = None
+        refusal = self._deploy_refusal('cpu')
+        if refusal:
+            raise ValueError(refusal)
         with self.lock:
             if map_id not in self.maps:
                 raise KeyError('Unknown map')
@@ -1070,7 +1087,8 @@ class Workbench:
                 self._persist_job(job)
                 request = {'endpoints': config['endpoints'], 'session_id': key, 'label': config.get('label') or 'deploy PC',
                            **({'limits': config['limits']} if config.get('limits') else {}),
-                           **({'capture': config['capture']} if config.get('capture') else {})}
+                           **({'capture': config['capture']} if config.get('capture') else {}),
+                           **({'deploy_service': service} if (service := self._deploy_service()) else {})}
                 atomic_json(output/'request.json', request)
                 env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PYTHONPATH=str(ROOT))
                 with (output/'worker.log').open('wb') as log:
@@ -1094,6 +1112,17 @@ class Workbench:
                 raise
             return self.job(key)
 
+    def _deploy_service(self):
+        """Where the robot link asks whether the deploy kit runs a robot session (it refuses goal and stand then);
+        None when no deploy service is configured."""
+        if self.deploy_guard is None:
+            return None
+        try:
+            link = self.deploy_guard.link
+        except Exception:  # a malformed deploy_service config: the gateway's own guard still applies
+            return None
+        return {'url': link.url, 'token_file': str(link.token_file)}
+
     def _active_session(self, key):
         key = ident(key, 'session id')
         job = self.jobs.get(key)
@@ -1115,6 +1144,12 @@ class Workbench:
             body['xy'] = vector(document.get('xy'), 'goal XY', low=-50, high=50)
         with self.lock:
             kind = self._active_session(key).get('kind')
+        if kind == 'robot' and cmd in ('goal', 'stand'):
+            # The deploy kit's console owns the robot while it runs a session (docs/DEPLOY.md): a goal or stand straight
+            # to its node would bypass the console's gates. robot_link.py refuses them too (defence in depth).
+            refusal = self._deploy_refusal('robot')
+            if refusal:
+                raise ValueError(f'{cmd.capitalize()} not sent: {refusal}')
         if kind == 'robot':
             if cmd == 'takeover':
                 raise ValueError("Use the remote's D-up to take over on the robot (only if nothing is overhead); Studio cannot")
@@ -1529,6 +1564,9 @@ class Workbench:
     def start_suite(self, document):
         if not isinstance(document, dict):
             raise ValueError('Suite must be an object')
+        refusal = self._deploy_refusal('cpu')
+        if refusal:
+            raise ValueError(refusal)
         ids = document.get('scenario_ids')
         if not isinstance(ids, list) or not 1 <= len(ids) <= MAX_SUITE_RUNS:
             raise ValueError(f'A suite needs 1–{MAX_SUITE_RUNS} saved scenario IDs')

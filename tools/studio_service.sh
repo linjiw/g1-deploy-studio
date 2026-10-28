@@ -8,7 +8,17 @@
 #   tools/studio_service.sh release [REV]   # check out REV (default HEAD) and restart
 #   tools/studio_service.sh install         # write + enable the user unit (once)
 #   tools/studio_service.sh start|stop|restart|status|logs|url
+#   tools/studio_service.sh guard           # would release/stop/restart be refused now? (changes nothing)
+#
+# release, stop and restart refuse while owned runs are active or while the deploy kit reports a live session (Deploy's
+# E-STOP, Stand and Takeover live in this gateway; docs/DEPLOY.md). --force (or FORCE=1) overrides both, explicitly.
 set -euo pipefail
+
+ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == --force ]]; then FORCE=1; else ARGS+=("$arg"); fi
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="$REPO/.venv/bin/python"
@@ -61,9 +71,30 @@ guard_idle() {
   busy="$(active_runs | xargs)"
   if [[ -n "$busy" && "${FORCE:-0}" != 1 ]]; then
     echo "Refusing to $1: active runs/suites would be killed: $busy" >&2
-    echo "Wait for them to finish, cancel them in Rehearse, or rerun with FORCE=1." >&2
+    echo "Wait for them to finish, cancel them in Rehearse, or rerun with --force." >&2
     return 3
   fi
+  guard_deploy "$1"
+}
+
+guard_deploy() {
+  # The deploy kit's live sessions, asked of its deploy service, else of the served gateway's cache
+  # (studio/deploy_link.py live: exit 0 none, 1 live, 2 nobody could say).
+  local text code=0
+  text="$(cd "$REPO" && PYTHONPATH="$REPO" "$PYTHON" -m studio.deploy_link live --gateway "http://127.0.0.1:$PORT" 2>&1)" || code=$?
+  case "$code" in
+    0) return 0 ;;
+    1)
+      if [[ "${FORCE:-0}" == 1 ]]; then
+        echo "Forced $1 although $text" >&2
+        return 0
+      fi
+      echo "Refusing to $1: $text" >&2
+      echo "While the gateway restarts, Deploy's E-STOP, Stand and Takeover are gone (the phone panel, the remote and the" >&2
+      echo "physical E-stop are not). End the session first, or rerun with --force." >&2
+      return 3 ;;
+    *) echo "Note: could not tell whether a deploy-kit session is live ($text); continuing." >&2; return 0 ;;
+  esac
 }
 
 release() {
@@ -109,11 +140,12 @@ case "${1:-status}" in
     wait_ready ;;
   start) systemctl --user start "$UNIT"; wait_ready ;;
   stop|restart) guard_idle "$1" || exit 3; systemctl --user "$1" "$UNIT"; [[ "$1" == stop ]] || wait_ready ;;
+  guard) guard_idle "release, stop or restart" && echo "release/stop/restart would proceed." ;;
   status) systemctl --user status "$UNIT" --no-pager | head -12; echo "Served commit: $(cat "$DATA/release.commit" 2>/dev/null || echo unknown)" ;;
   logs) journalctl --user -u "$UNIT" --no-pager -n "${2:-80}" ;;
   url) echo "http://127.0.0.1:$PORT/" ;;
   uninstall)
     systemctl --user disable --now "$UNIT" || true
     rm -f "$UNIT_FILE"; systemctl --user daemon-reload ;;
-  *) echo "usage: $0 release [REV]|install|start|stop|restart|status|logs [N]|url|uninstall" >&2; exit 2 ;;
+  *) echo "usage: $0 release [REV]|install|start|stop|restart|status|logs [N]|url|uninstall|guard [--force]" >&2; exit 2 ;;
 esac

@@ -22,7 +22,7 @@ Frames (docs/DEPLOY.md): poses are [x, y, yaw]; "A_from_B" is the pose of B's or
 scene_from_memory = inverse(start_S) and goals cross the API only as goal_scene.
 
 Configuration: `config/local.json` -> `deploy_service: {url, token_file}`; defaults http://127.0.0.1:8769 and
-~/.config/g1-deploy/panel_token (G1_PANEL_TOKEN wins when set). The token stays in the gateway: the browser never sees
+~/.config/g1-deploy/panel_token. G1_DEPLOY_SERVICE (a URL) and G1_PANEL_TOKEN win when set. The token stays in the gateway: the browser never sees
 it. Loopback only, and no HTTP proxy is ever used.
 
 Standard library only (numpy only inside the goal check, lazily): Navigate's robot link and tools/studio_service.sh
@@ -166,7 +166,7 @@ class DeployLink:
 
     def __init__(self, url=None, token_file=None):
         cfg = paths.local_config().get("deploy_service", {})
-        self.url = (url or cfg.get("url") or DEFAULT_URL).rstrip("/")
+        self.url = (url or os.environ.get("G1_DEPLOY_SERVICE") or cfg.get("url") or DEFAULT_URL).rstrip("/")
         parsed = urllib.parse.urlparse(self.url)
         if parsed.scheme != "http" or parsed.hostname not in LOOPBACK:
             raise ValueError("deploy_service.url must be an http:// loopback address")
