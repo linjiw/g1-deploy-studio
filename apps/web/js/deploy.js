@@ -1126,6 +1126,7 @@ function sourceDots() {
   const nodeUp = !!S.view || !!S.src.view || (S.panel?.phase && S.panel.phase !== 'BOOT');
   const rows = Object.entries(SOURCES).filter(([name]) => sess || !SESSION_SOURCES.includes(name)).filter(([name]) => name !== 'plan' || walking_)
     .filter(([name]) => nodeUp || !['view', 'lidar', 'map'].includes(name))
+    .filter(([name]) => name !== 'recorder' || !recordingHealth()?.unsupported)
     .map(([name, def]) => ({ name, def, s: srcState(name), a: srcAge(name) }));
   const fresh = rows.filter(r => r.s === 'fresh'), other = rows.filter(r => r.s !== 'fresh');
   const chip = r => `<span class="dpi-src ${r.s}" title="${escape(r.s === 'unknown' ? (srcReason(r.name) ?? `${r.def.label}: no data yet`) : `${r.def.label}: ${ageText(r.a)} old (${r.s}; stale above ${r.def.stale} s)`)}" data-src="${r.name}"><i aria-hidden="true"></i>${escape(r.def.short)}<em>${r.s === 'unknown' ? 'no data' : escape(ageText(r.a))}</em></span>`;
@@ -1282,6 +1283,10 @@ function connectTiles() {
   const busy = pc.busy?.length ? pc.busy.join(', ') : pc.chains?.length ? `${pc.chains.length} other deploy chain(s)` : '';
   tiles.push({ label: 'PC load', value: finite(pc.load) ? `${pc.load.toFixed(1)} on ${pc.cpus ?? '?'} cores${busy ? ` · ${busy}` : ''}` : 'Unavailable', status: busy ? 'warn' : finite(pc.load) ? (pc.load > (pc.cpus ?? 28) * 0.5 ? 'warn' : 'pass') : 'unknown', ev: 'MEASURED', hint: busy ? 'Real-time runs need a quiet machine' : '' });
   tiles.push({ label: 'Disk free', value: finite(pc.disk_free_gb) ? `${Math.round(pc.disk_free_gb)} GB` : 'Unavailable', status: !finite(pc.disk_free_gb) ? 'unknown' : pc.disk_free_gb < 20 ? 'block' : pc.disk_free_gb < 60 ? 'warn' : 'pass', ev: 'MEASURED', hint: 'A robot session records about 2 GB' });
+  // Which Studio this is: the installed release, or a candidate build served from a worktree (contract v3 F09).
+  const rel = S.studioVersion?.release;
+  if (rel) tiles.push({ label: 'Studio build', value: rel.is_installed ? `installed ${String(rel.commit ?? '').slice(0, 7)}${rel.dirty ? ' · modified tree' : ''}` : `CANDIDATE ${String(rel.commit ?? '').slice(0, 7)}${rel.dirty ? ' · modified tree' : ''} (installed: ${String(rel.installed_commit ?? 'none').slice(0, 7)})`,
+    status: rel.is_installed && !rel.dirty ? 'pass' : 'warn', ev: 'CONFIGURED', hint: rel.is_installed ? '' : `Served from ${rel.served_from ?? 'a worktree'}, not the installed release` });
   const v = s.version ?? {};
   tiles.push({ label: 'Deploy kit', value: v.kit_commit ? `${String(v.kit_commit).slice(0, 7)}${v.kit_dirty ? ' · modified tree' : ''}` : 'Unavailable', status: v.kit_dirty ? 'warn' : v.kit_commit ? 'pass' : 'unknown', ev: 'CONFIGURED' });
   const doc = s.doctor;
@@ -2323,6 +2328,7 @@ export function initDeploy(ctx) {
   window.addEventListener('pointerup', () => { if (S.pointerHeld) { S.pointerHeld = false; setTimeout(() => { renderPanel(); renderSheet(); renderStage(); }, 0); } }, true);
   window.addEventListener('pointercancel', () => { S.pointerHeld = false; }, true);
   for (const p of Object.values(pollers)) p.start(p === pollers.state ? 0 : 300);
+  api('/api/version', { timeout: 4000 }).then(r => { if (r.ok) { S.studioVersion = r.data; renderPanel(); } });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     S.returnedAt = performance.now();   // a tab coming back treats every source as stale until it arrives again
