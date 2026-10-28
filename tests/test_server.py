@@ -42,7 +42,8 @@ class ServerBoundaryTests(unittest.TestCase):
         self.assertFalse(json.loads(self.get('/api/sessions')[1])['sessions'][0]['available'])
 
     def test_http_boundaries(self):
-        for path in ['/../AGENTS.md', '/%2e%2e/config/references.json', '/vendor/three/../../package.json', '/api/session?id=bad']:
+        for path in ['/../AGENTS.md', '/%2e%2e/config/references.json', '/vendor/three/../../package.json',
+                     '/vendor/fonts/../../../../package.json', '/api/session?id=bad']:
             self.assertEqual(self.get(path)[0], 404)
         self.assertEqual(self.get('/api/sessions', {'Host': 'attacker.invalid'})[0], 403)
         self.assertEqual(self.get('/api/sessions', {'Origin': 'https://attacker.invalid'})[0], 403)
@@ -52,6 +53,13 @@ class ServerBoundaryTests(unittest.TestCase):
         status, body = self.get('/api/session?id=missing')
         self.assertEqual(status, 404)
         self.assertIn('no replayable recording', json.loads(body)['error'])
+
+    @unittest.skipUnless((Path(__file__).resolve().parents[1] / 'node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2').is_file(),
+                         'Inter is installed by npm ci')
+    def test_serves_the_interface_font(self):
+        status, body = self.get('/vendor/fonts/inter-latin-wght-normal.woff2')
+        self.assertEqual(status, 200)
+        self.assertEqual(body[:4], b'wOF2')
 
     def test_fails_closed_on_public_binding(self):
         for host in ['0.0.0.0', '::', 'localhost', '192.0.2.1']:

@@ -15,7 +15,7 @@ They keep their own licenses and are not redistributed here.
 Third-party components used by Studio (installed, not vendored)
 ---------------------------------------------------------------
 three.js                 MIT License          https://github.com/mrdoob/three.js      (npm, browser app and site)
-Inter (fontsource)       SIL Open Font License 1.1  https://github.com/rsms/inter        (npm, site only)
+Inter (fontsource)       SIL Open Font License 1.1  https://github.com/rsms/inter        (npm; the site and Studio's gateway serve it)
 Playwright               Apache License 2.0   https://github.com/microsoft/playwright  (npm, development only)
 meshoptimizer            MIT License          https://github.com/zeux/meshoptimizer    (npm, development only)
 Python packages          see requirements.txt; each under its own license

@@ -19,16 +19,22 @@ import subprocess
 import threading
 import time
 
-DEPLOY_ROOT = Path('/home/linjiw/code/g1-student-deploy')
-FLOW_ROOT = Path('/home/linjiw/flow')
+from studio import paths
+
+DEPLOY_ROOT = paths.get('deploy_root')
+FLOW_ROOT = paths.get('flow_root')
 BEST_MODEL = FLOW_ROOT / 'research/BEST_MODEL.md'
 DEFAULT_POLICY = 'flow-bundle-20261008'
-# The deploy bundle's planner is student-s2-kcsc (frozen 2026-10-08). Flow's current LiDAR student is student-sk1
-# (research/ROUND_ST_PLAN.md), which no deployable bundle carries yet: say so wherever the bundle is named.
-BUNDLE_LABEL = "student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1"
+# The deploy bundle's planner is student-s2-kcsc (frozen 2026-10-08), not Flow's current LiDAR student, which no
+# deployable bundle carries yet: say so wherever the bundle is named.
+BUNDLE_LABEL = "student-s2-kcsc (2026-10-08 bundle), not Flow's current LiDAR student"
 # Pinned Flow bundles under POLICY_ROOT: flow-wx-rf-* (WX, retrieval-free) and any other block built by
-# tools/build_policy_bundle.py --block (e.g. flow-wxd-rf-*); the id pattern is studio.policy_bundle.BUNDLE_ID.
+# tools/build_policy_bundle.py --block (flow-<block>-rf-*); the id pattern is studio.policy_bundle.BUNDLE_ID.
 BUNDLE_GLOB = 'flow-*'
+# Without these the bundle cannot run: a missing one makes the profile unavailable (others are adapters that
+# only some deploy commits carry, pinned when present).
+BUNDLE_REQUIRED = ('bundle/MANIFEST.json', 'bundle/config/student.json', 'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt',
+                   'bundle/sonic/sonic_release_g1.onnx', 'sim/lockstep.py', 'g1deploy/bundle.py')
 STUDIO = Path(__file__).resolve().parent
 # Studio code that executes the policy is part of its identity (a changed adapter = a different run).
 WORKER_SOURCES = {'deploy-bundle': ['policy_worker.py', 'pipeline.py', 'replay.py', 'actuators.py'],
@@ -135,8 +141,7 @@ def _bundle_profile():
         'id': 'flow-bundle-20261008',
         'label': BUNDLE_LABEL,
         'short_label': 'Bundle s2-kcsc 2026-10-08',
-        'student': {'id': 'student-s2-kcsc_s0', 'frozen': '2026-10-08', 'current_flow_student': 'student-sk1',
-                    'deployable_current_student': False},
+        'student': {'id': 'student-s2-kcsc_s0', 'frozen': '2026-10-08', 'deployable_current_student': False},
         'family': 'flow', 'research_block': None,
         'research_lineage': 'closed-loop-v2-main planner snapshot + student-s2-kcsc_s0 (pre-dates SKX2/WX)',
         'loader': 'deploy-bundle',
@@ -152,14 +157,14 @@ def _bundle_profile():
             'bundle/flow/artifacts/student-s2-kcsc_s0/model.pt', 'bundle/sonic/sonic_release_g1.onnx',
             'sim/lockstep.py', 'sim/episode.py', 'g1deploy/bundle.py', 'g1deploy/route_compat.py',
             'g1deploy/planner_compat.py', 'g1deploy/goal_guard.py', 'g1deploy/scoring.py', 'g1deploy/sonic.py',
-            'g1deploy/contract.py', 'sim/assets/g1_29dof.xml') if (DEPLOY_ROOT / p).exists()]
+            'g1deploy/contract.py', 'sim/assets/g1_29dof.xml') if p in BUNDLE_REQUIRED or (DEPLOY_ROOT / p).exists()]
             + [STUDIO / f for f in WORKER_SOURCES['deploy-bundle']],
         'repositories': [DEPLOY_ROOT],
         'limits': {'candidates': [1, 16], 'ode_steps': [1, 10], 'duration_s': [1, 10], 'wall_s': 180},
         'default_planner': {'candidates': 4, 'ode_steps': 6},
         'limitations': [
             'Frozen 2026-10-08 planner snapshot; not the Flow research adopted block.',
-            "Planner student-s2-kcsc_s0, not Flow's current LiDAR student student-sk1 (no deployable bundle carries sk1 yet).",
+            "Planner student-s2-kcsc_s0, not Flow's current LiDAR student (no deployable bundle carries it yet).",
             'Includes Studio-authorized g1-student-deploy route adapters (codex/near-goal-route).',
         ],
     }
@@ -248,14 +253,25 @@ def get_profile(policy_id):
     return table[policy_id]
 
 
+def portable(path):
+    """A path named by its root ('<deploy_root>/bundle/...', '<studio>/studio/...'), so the same files hash to the same
+    identity on any machine; paths under no known root stay as they are."""
+    text = str(path)
+    roots = [('studio', str(STUDIO.parent))] + [(key, str(paths.get(key))) for key in paths.ROOTS]
+    for name, root in sorted(roots, key=lambda r: -len(r[1])):
+        if text == root or text.startswith(root + '/'):
+            return f'<{name}>' + text[len(root):]
+    return text
+
+
 def identity(profile):
-    """Resolved, hashable identity pinned into each scenario/run."""
+    """Resolved, hashable identity pinned into each scenario/run (machine-independent: see portable())."""
     artifacts = [file_identity(p) for p in profile.get('artifacts', [])]
     missing = list(dict.fromkeys([a['path'] for a in artifacts if not a['available']] + list(profile.get('missing', []))))
     repos = [git_identity(r) for r in profile.get('repositories', [])]
     pinned = hashlib.sha256(json.dumps({'id': profile['id'],
-                                        'artifacts': [(a['path'], a['sha256']) for a in artifacts],
-                                        'repositories': [(r['path'], r['head'], r['dirty']) for r in repos],
+                                        'artifacts': [(portable(a['path']), a['sha256']) for a in artifacts],
+                                        'repositories': [(portable(r['path']), r['head'], r['dirty']) for r in repos],
                                         'config_sha256': profile.get('config_sha256')},
                                        sort_keys=True).encode()).hexdigest()
     return {'policy_id': profile['id'], 'artifacts': artifacts, 'repositories': repos,

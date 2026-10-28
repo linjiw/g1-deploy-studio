@@ -20,7 +20,7 @@ Owner decision, 2026-10-21, confirmed 2026-10-22 ("Recorded only, live in local 
 
 ## The demo
 
-The 3D view fills the stage; the chrome floats over it and lets clicks through except on its controls.
+The 3D view fills a white, quiet stage (a pale floor and grid that fade into the backdrop, the robot's map in light tints, colours chosen to read on white, as in SuperMimic's project page and Studio itself, which shares this palette); the chrome floats over it as white glass and lets clicks through except on its controls.
 
 - **Top left:** the layer toggles, which are also the legend: Robot, Plan body, Its map, LiDAR, Plan, Real room (ghost, solid, off) and Outcomes. `?` opens the full legend and the keys.
 - **At the robot:** a hint, *Click the floor. It has to find its own way.*, which goes away after the first goal. Above the dock, until the first walk plays, the operator's three steps light up in turn: pick a goal, send it, Go.
@@ -162,5 +162,6 @@ A change to `site/` alone redeploys with the same data.
 | `site-v1` | 2026-10-21 | 415: wall detour 107, alternating walls 106, corridor 66, doorway 72, cluttered room 64 | Levels 0 and 1 in the first two rooms, level 0 in the others | data 17 MB (61 MB unpacked, with the mesh licence and NOTICE), media 25 MB |
 | `site-v2` | 2026-10-22 | 473: wall detour 107, alternating walls 106, corridor 124, doorway 72, cluttered room 64 | Levels 0 and 1 in the first three rooms, level 0 in the others. Schema 2: every walk carries the plan body; rooms list their walks; split-view scenarios; findings stills | data 24 MB (76 MB unpacked), media 25 MB (with the stills) |
 | `site-v3` | 2026-10-22 | the same 473 | as `site-v2` | Contact per frame is the peak over the ticks it stands for. Walk rows carry the goal's x, y and rooms their start pose, for the room menu's directions and the chart | data 24 MB, media 25 MB (unchanged) |
+| `site-v4` | 2026-10-22 | the same 473 | as `site-v2` | The data of `site-v3`, byte for byte. The findings stills are rendered again on the white stage | data 24 MB (unchanged), media 25 MB |
 
 The batch can keep recording the remaining levels at the lowest priority for a later release. Nothing on the published site changes until `tools/site/release.json` names a new tag.

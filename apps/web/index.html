@@ -3,24 +3,25 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light">
   <title>G1 Deploy Studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315232b'/%3E%3Ctext x='4' y='23' fill='%2356d9d0' font-size='20' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2310161c'/%3E%3Ctext x='16' y='21.5' fill='%23ffffff' font-size='14' font-weight='800' text-anchor='middle' font-family='sans-serif'%3EG1%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/focus.css">
   <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.min.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
 </head>
 <body>
   <a class="skip-link" href="#studio-main">Skip to Studio</a>
   <header class="topbar">
     <a class="brand" href="/" aria-label="G1 Deploy Studio home"><span class="brand-icon">G1</span><span class="brand-name">Deploy <strong>Studio</strong></span></a>
-    <span id="mode-badge" class="mode-badge" title="Data source mode">REPLAY</span>
     <div class="run-picker"><label for="session-picker">Run</label><select id="session-picker" aria-label="Select recording or rehearsal" data-testid="session-select"><option>Loading…</option></select></div>
     <span id="run-outcome" class="run-outcome"></span>
-    <span id="policy-chip" class="policy-chip" hidden></span>
     <div class="topbar-right">
+      <button id="hardware-chip" class="hardware-off" aria-controls="evidence-legend" title="Studio has no DDS participant and no motor-command path. On a real robot it may only stage a goal and ask for a stand on node.py; Go stays with the operator."><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 10 4-1.7 7-5.6 7-10V6z"/></svg><span>No motor commands</span></button>
       <button id="evidence-button" class="ghost" aria-expanded="false" aria-controls="evidence-legend">Evidence key</button>
+      <button id="inspector-toggle" class="ghost inspector-toggle" aria-expanded="false" aria-controls="focus-inspector" title="Show the inspector: intent, joints, health, map, pipeline, graph and source">Details</button>
       <button id="help-button" class="ghost" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-expanded="false" aria-controls="help-overlay">?</button>
-      <span id="hardware-chip" class="hardware-off" title="Studio has no DDS participant and no motor-command path. On a real robot it may only stage a goal and ask for a stand on node.py; Go stays with the operator.">◈ No motor commands</span>
+      <button id="focus-enter" class="stage-enter" title="A full-screen view of this run: the robot, its reference and the room, with the same data and controls"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg><span>Stage</span></button>
     </div>
   </header>
   <div id="evidence-legend" class="popover legend" role="dialog" aria-label="Evidence vocabulary" hidden></div>
@@ -30,18 +31,19 @@
     <dt>J / K / L</dt><dd>Slower · pause · faster</dd><dt>F / T / O / G / R</dt><dd>Follow · Top · Orbit · Fit scene · Robot view</dd>
     <dt>M</dt><dd>Toggle observed map</dd><dt>1 – 7</dt><dd>Inspector tabs</dd><dt>?</dt><dd>This help</dd></dl>
     <p class="tiny">Arena editor: Del removes · D duplicates · R rotates 15° · arrows nudge · Esc deselects.</p>
+    <button id="help-evidence" class="link-button">What the evidence chips mean</button>
   </div>
   <div id="error-banner" class="error-banner" role="alert" hidden></div>
 
   <main class="shell" id="studio-main" tabindex="-1">
     <nav class="rail" aria-label="Workspaces">
-      <button id="workspace-replay" data-workspace="replay" class="active" aria-pressed="true" title="Replay recordings and runs"><i>▶</i><span>Replay</span></button>
-      <button id="workspace-navigate" data-workspace="navigate" aria-pressed="false" title="Put goals on the robot's own map and watch it walk"><i>⌖</i><span>Navigate</span></button>
-      <button id="workspace-arena" data-workspace="arena" aria-pressed="false" title="Build a navigation arena: obstacles, start, goal"><i>▦</i><span>Arena</span></button>
-      <button id="workspace-rehearse" data-workspace="rehearse" aria-pressed="false" title="Run a policy in the isolated CPU simulation"><i>⚙</i><span>Rehearse</span></button>
-      <button id="workspace-runs" data-workspace="runs" aria-pressed="false" title="Compare rehearsal outcomes"><i>☰</i><span>Runs</span></button>
-      <button id="workspace-sensors" data-workspace="sensors" aria-pressed="false" title="What the robot perceives"><i>◉</i><span>Sensors</span></button>
-      <button id="workspace-system" data-workspace="system" aria-pressed="false" title="Pipeline, transports and the Unitree contract"><i>⇄</i><span>System</span></button>
+      <button id="workspace-replay" data-workspace="replay" class="active" aria-pressed="true" title="Replay recordings and runs"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m10 8.6 5.2 3.4-5.2 3.4z"/></svg></i><span>Replay</span></button>
+      <button id="workspace-navigate" data-workspace="navigate" aria-pressed="false" title="Put goals on the robot's own map and watch it walk"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-10.5a6.5 6.5 0 0 1 13 0C18.5 15.4 12 21 12 21z"/><circle cx="12" cy="10.5" r="2.3"/></svg></i><span>Navigate</span></button>
+      <button id="workspace-arena" data-workspace="arena" aria-pressed="false" title="Build a navigation arena: obstacles, start, goal"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><rect x="7" y="7" width="4" height="6" rx="1"/><rect x="13" y="12" width="4" height="5" rx="1"/></svg></i><span>Arena</span></button>
+      <button id="workspace-rehearse" data-workspace="rehearse" aria-pressed="false" title="Run a policy in the isolated CPU simulation"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 3.5h5M10.5 3.5v5.2L5.6 17.4A2.2 2.2 0 0 0 7.5 20.5h9a2.2 2.2 0 0 0 1.9-3.1l-4.9-8.7V3.5"/><path d="M7.6 14.5h8.8"/></svg></i><span>Rehearse</span></button>
+      <button id="workspace-runs" data-workspace="runs" aria-pressed="false" title="Compare rehearsal outcomes"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16M7 16.5V10M12 16.5V5.5M17 16.5v-4"/></svg></i><span>Runs</span></button>
+      <button id="workspace-sensors" data-workspace="sensors" aria-pressed="false" title="What the robot perceives"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="1.8"/><path d="M8.3 8.3a5.2 5.2 0 0 0 0 7.4M15.7 8.3a5.2 5.2 0 0 1 0 7.4M5.4 5.4a9.3 9.3 0 0 0 0 13.2M18.6 5.4a9.3 9.3 0 0 1 0 13.2"/></svg></i><span>Sensors</span></button>
+      <button id="workspace-system" data-workspace="system" aria-pressed="false" title="Pipeline, transports and the Unitree contract"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6.5" r="2.3"/><circle cx="18" cy="6.5" r="2.3"/><circle cx="12" cy="17.5" r="2.3"/><path d="M8.3 6.5h7.4M7.1 8.5l3.8 7M16.9 8.5l-3.8 7"/></svg></i><span>System</span></button>
     </nav>
 
     <aside id="tool-panel" class="tool-panel" aria-label="Workspace tools" hidden>
@@ -65,8 +67,10 @@
           <canvas id="runs-canvas" class="stage-canvas" aria-label="Run trajectory comparison" hidden></canvas>
           <div id="system-stage" class="stage-doc" hidden></div>
 
+          <div class="vp-top">
           <div class="vp-title" id="vp-title">
-            <div class="vp-title-row"><h1 id="session-title">Opening…</h1><span id="source-badge" class="chip chip-sim-truth">SIM-TRUTH</span><span id="privileged-badge" class="chip chip-commanded" title="This policy planned from the exact configured boxes (simulator ground truth), not from LiDAR. Perception views are unavailable by design." hidden>PRIVILEGED MAP</span></div>
+            <h1 id="session-title">Opening…</h1>
+            <div class="vp-chips"><span id="mode-badge" class="mode-badge" title="Data source mode">Replay</span><span id="source-badge" class="chip chip-sim-truth">Sim truth</span><span id="privileged-badge" class="chip chip-commanded" title="This policy planned from the exact configured boxes (simulator ground truth), not from LiDAR. Perception views are unavailable by design." hidden>Privileged map</span><span id="policy-chip" class="policy-chip" hidden></span></div>
             <p id="navigation-caption" class="navigation-caption"></p>
           </div>
           <div class="vp-toolbar" role="toolbar" aria-label="Camera and layers">
@@ -74,26 +78,29 @@
               <button id="camera-orbit" data-camera="orbit" class="active" aria-pressed="true" title="Orbit (O)">Orbit</button><button id="camera-follow" data-camera="follow" aria-pressed="false" title="Follow (F)">Follow</button><button id="camera-top" data-camera="top" aria-pressed="false" title="Top (T)">Top</button><button id="camera-scene" data-camera="scene" aria-pressed="false" title="Fit scene + goal (G)">Fit</button>
             </div>
             <button id="robot-view" aria-pressed="false" title="Inset from the LiDAR mount along the pelvis heading (R)">Robot view</button>
-            <button id="layers-button" aria-expanded="false" aria-controls="layers-popover">Layers ▾</button>
+            <button id="layers-button" aria-expanded="false" aria-controls="layers-popover">Layers</button>
+          </div>
           </div>
           <div id="layers-popover" class="popover layers-popover" hidden>
-            <label><input id="layer-robot" type="checkbox" checked><span class="sw bone"></span>Robot<span class="chip chip-sim-truth">SIM-TRUTH</span></label>
-            <label><input id="layer-reference" type="checkbox" checked><span class="sw cyan"></span>Reference ghost<span class="chip chip-commanded">COMMANDED</span></label>
-            <label><input id="layer-future" type="checkbox" checked><span class="sw amber"></span>Planned future<span class="chip chip-commanded">COMMANDED</span></label>
+            <label><input id="layer-robot" type="checkbox" checked><span class="sw bone"></span>Robot<span class="chip chip-sim-truth">Sim truth</span></label>
+            <label><input id="layer-reference" type="checkbox" checked><span class="sw ref"></span>Reference ghost<span class="chip chip-commanded">Commanded</span></label>
+            <label><input id="layer-future" type="checkbox" checked><span class="sw amber"></span>Planned future<span class="chip chip-commanded">Commanded</span></label>
             <label><input id="layer-trajectory" type="checkbox" checked><span class="sw slate"></span>Path (full · travelled)</label>
-            <label><input id="layer-environment" type="checkbox" checked><span class="sw purple"></span>Collision scene<span class="chip chip-configured">CONFIGURED</span></label>
-            <label><input id="layer-navigation" type="checkbox" checked><span class="sw amber"></span>Start / goal</label>
-            <label><input id="layer-perception" type="checkbox"><span class="sw green"></span>Observed map<span class="chip chip-estimated">ESTIMATED</span></label>
+            <label><input id="layer-environment" type="checkbox" checked><span class="sw purple"></span>Collision scene<span class="chip chip-configured">Configured</span></label>
+            <label><input id="layer-navigation" type="checkbox" checked><span class="sw nav"></span>Start / goal</label>
+            <label><input id="layer-perception" type="checkbox"><span class="sw green"></span>Observed map<span class="chip chip-estimated">Estimated</span></label>
             <label><input id="layer-sensors" type="checkbox" checked><span class="sw green"></span>Pinned point clouds</label>
-            <label><input id="layer-frames" type="checkbox" checked><span class="sw axis"></span>Coordinate frames</label>
+            <label><input id="layer-frames" type="checkbox"><span class="sw axis"></span>Coordinate frames</label>
           </div>
-          <div id="render-rate" class="render-rate" hidden title="The browser renders fewer frames than the data rate (for example software WebGL). Simulated time still advances in real time; only intermediate frames are skipped.">RENDER-LIMITED</div>
-          <div id="robot-view-label" class="robot-view-label" hidden>ROBOT VIEW · MID-360 mount pose, facing pelvis heading · renders the simulated scene, not a camera sensor</div>
+          <div id="render-rate" class="render-rate" hidden title="The browser renders fewer frames than the data rate (for example software WebGL). Simulated time still advances in real time; only intermediate frames are skipped.">Render-limited</div>
+          <div id="robot-view-label" class="robot-view-label" hidden>Robot view · MID-360 mount pose, facing pelvis heading · renders the simulated scene, not a camera sensor</div>
           <div class="vp-hud" id="hud" aria-live="off"></div>
+          <div id="nav-stagebar" class="nav-stagebar" role="region" aria-label="Navigate: goal, send and go" hidden></div>
           <div id="preview-note" class="preview-note" hidden></div>
           <div class="viewport-meta"><span id="pose-caption">Pose unavailable</span><span id="reference-caption"></span></div>
           <div id="recording-warning" class="recording-warning" role="status" hidden></div>
           <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite"><div class="loader"></div><span>Decoding recorded robot state…</span></div>
+          <div id="no-recordings" class="scene-unavailable no-recordings" hidden><h3>No recordings on this machine yet</h3><p>Start a session in Navigate or a run in Rehearse: its recording opens here and joins the run picker. Recordings from another machine are listed in config/local.json (docs/INSTALL.md).</p><button type="button" id="no-recordings-open" class="go-action">Open Navigate</button></div>
           <div id="scene-unavailable" class="scene-unavailable" hidden><h3>World pose was not captured</h3><p>This transport recording contains real reference values and receiver observations. Inspect Intent, Joints and Graph for available data. No root pose is inferred from reference joints.</p></div>
         </div>
         <div id="sensor-dock" class="sensor-dock" aria-label="Pinned sensor views" hidden></div>
@@ -101,14 +108,14 @@
 
       <section class="dock" aria-label="Session playback">
         <div class="transport">
-          <button class="icon-button" id="restart" aria-label="Restart" title="Restart">⏮</button>
-          <button class="icon-button" id="step-back" aria-label="Step back one tick" title="Step −20 ms (←)">◂</button>
-          <button class="play-button" id="play" data-testid="play" aria-label="Play recording">▶ <span>Play</span></button>
-          <button class="icon-button" id="step-forward" aria-label="Step forward one tick" title="Step +20 ms (→)">▸</button>
+          <button class="icon-button" id="restart" aria-label="Restart" title="Restart"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5v14M18 6l-8 6 8 6z"/></svg></button>
+          <button class="icon-button" id="step-back" aria-label="Step back one tick" title="Step −20 ms (←)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14.5 6-6 6 6 6"/></svg></button>
+          <button class="play-button" id="play" data-testid="play" aria-label="Play recording"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5 11 7-11 7z" fill="currentColor"/></svg><span>Play</span></button>
+          <button class="icon-button" id="step-forward" aria-label="Step forward one tick" title="Step +20 ms (→)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>
           <div class="time-readout"><strong id="current-time" data-testid="current-time">00:00.000</strong><span>/ <span id="duration-time">—</span></span><span id="frame-counter" class="frame-counter">tick — / —</span></div>
-          <span class="badge" id="playback-state">PAUSED</span>
+          <span class="badge" id="playback-state">Paused</span>
           <div class="transport-right">
-            <label class="check"><input id="loop" type="checkbox"> Loop</label>
+            <label class="check loop-check"><input id="loop" type="checkbox"> Loop</label>
             <label class="speed-label" for="speed">Speed<select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
             <button id="copy-view" title="Copy a link to this run, time, panel, camera and sensors">Link</button>
             <button id="lanes-toggle" class="ghost" aria-expanded="true" aria-controls="timeline-lanes">Hide lanes</button>
@@ -119,7 +126,7 @@
       </section>
     </section>
 
-    <aside class="inspector" aria-label="Deployment inspector">
+    <aside class="inspector" id="focus-inspector" aria-label="Deployment inspector">
       <div class="inspector-resize" id="inspector-resize" role="separator" aria-orientation="vertical" aria-label="Resize inspector" tabindex="0"></div>
       <div class="tabs" role="tablist" aria-label="Inspector views">
         <button role="tab" id="tab-intent" aria-controls="panel-intent" aria-selected="true" class="active" data-tab="intent">Intent</button><button role="tab" id="tab-joints" aria-controls="panel-joints" aria-selected="false" data-tab="joints" tabindex="-1">Joints</button><button role="tab" id="tab-health" aria-controls="panel-health" aria-selected="false" data-tab="health" tabindex="-1">Health</button><button role="tab" id="tab-perception" aria-controls="panel-perception" aria-selected="false" data-tab="perception" tabindex="-1">Map</button><button role="tab" id="tab-pipeline" aria-controls="panel-pipeline" aria-selected="false" data-tab="pipeline" tabindex="-1">Pipeline</button><button role="tab" id="tab-graph" aria-controls="panel-graph" aria-selected="false" data-tab="graph" tabindex="-1">Graph</button><button role="tab" id="tab-source" aria-controls="panel-source" aria-selected="false" data-tab="source" tabindex="-1">Source</button>
@@ -133,9 +140,10 @@
         <section role="tabpanel" id="panel-graph" aria-labelledby="tab-graph" hidden><div id="graph-content"></div></section>
         <section role="tabpanel" id="panel-source" aria-labelledby="tab-source" hidden><div id="source-content"></div></section>
       </div>
-      <div class="inspector-footer"><span id="inspector-time">SYNCHRONIZED · 00:00.000</span></div>
+      <div class="inspector-footer"><span id="inspector-time">Synchronized · 00:00.000</span></div>
     </aside>
   </main>
+  <button id="inspector-backdrop" class="inspector-backdrop" aria-label="Close details" tabindex="-1" hidden></button>
   <footer class="statusbar"><span id="footer-mode"><i></i> Loopback only · replay, owned CPU simulation and the robot link (goal and stand only)</span><span id="footer-source" class="footer-source"></span><span id="build-info">build —</span></footer>
   <script type="module" src="/app.js"></script>
 </body>

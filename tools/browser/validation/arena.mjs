@@ -66,7 +66,7 @@ await R.check('3.2', 'Start from existing maps (Flow arenas, beam scene)', async
     const a = await arena(), m = (await api(page, `/api/map?id=${id}`)).body;
     assert(a.boxes.length === m.boxes.length, `${id}: ${a.boxes.length} vs ${m.boxes.length}`);
     assert(a.label.endsWith('· edited') && a.savedId === null, `${id}: label ${a.label} saved ${a.savedId}`);
-    assert(/UNSAVED DRAFT/.test(await statusText()), 'draft chip');
+    assert(/unsaved draft/i.test(await statusText()), 'draft chip');
     out[id] = a.boxes.length;
   }
   await R.shot('start-from-flow-corridor');
@@ -335,12 +335,12 @@ await R.check('3.13', 'Save arena is immutable: edit + save creates a new id; th
   await page.click('#arena-save');
   await page.waitForFunction(() => window.__studio.arena.savedId, null, { timeout: 15000 });
   saved1 = (await arena()).savedId;
-  assert(/Saved ✓/.test(await page.locator('#arena-save').textContent()) && /SAVED/.test(await statusText()), 'saved state');
+  assert(/Saved ✓/.test(await page.locator('#arena-save').textContent()) && /(^|[^n])Saved [0-9a-z]{6}/.test(await statusText()), 'saved state');
   const m1 = (await api(page, `/api/map?id=${saved1}`)).body;
   assert(m1.boxes.length === 2 && m1.presets.length === 2 && m1.label === 'Validation arena A', `server copy ${JSON.stringify(m1).slice(0, 200)}`);
   await page.click('#arena-fit'); await tool('select'); await click([2.5, 0.6]);
   await setField('box-x', 2.7);
-  assert((await arena()).savedId === null && /UNSAVED DRAFT/.test(await statusText()), 'edit invalidates saved id');
+  assert((await arena()).savedId === null && /unsaved draft/i.test(await statusText()), 'edit invalidates saved id');
   await page.click('#arena-save');
   await page.waitForFunction(() => window.__studio.arena.savedId, null, { timeout: 15000 });
   saved2 = (await arena()).savedId;

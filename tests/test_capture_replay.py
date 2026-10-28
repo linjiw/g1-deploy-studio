@@ -9,11 +9,12 @@ import unittest
 
 import numpy as np
 
+from studio import paths
 from studio.capture_replay import load_capture
 from studio.protocols import HEADER_SIZE, ISAAC_JOINTS, MJ_JOINTS, decode_packet
 from studio.replay import ReplayError, frame_at
 
-REAL_CAPTURE = Path('/home/linjiw/research-data/g1-deploy-studio/evidence/wire-20261015/wire_capture.jsonl')
+REAL_CAPTURE = paths.get('data_root') / 'evidence/wire-20261015/wire_capture.jsonl'
 ENDPOINT = 'tcp://127.0.0.1:34567'
 
 

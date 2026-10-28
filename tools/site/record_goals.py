@@ -29,6 +29,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from studio import paths  # noqa: E402
 from tools.site.worlds import WORLDS, world_map  # noqa: E402
 
 # The robot's deploy configuration (docs/NAVIGATE.md): the bundle's planner budget, the deploy PC's 160 ms planner
@@ -42,7 +43,7 @@ PROFILES = {
               'label': 'Quick budget (K 2, ODE 4), no latency, simulator-truth odometry'},
 }
 # The worker runs on the deploy repository's interpreter (torch, onnxruntime, mujoco), as the gateway launches it.
-WORKER_PYTHON = Path('/home/linjiw/code/g1-student-deploy/.venv/bin/python')
+WORKER_PYTHON = paths.deploy_python()
 MIN_GOAL_M = 0.8          # closer goals are inside twice the arrival radius: nothing to watch
 BOOT_TIMEOUT_S = 600
 WALK_TIMEOUT_S = 3600     # wall clock for one session; the worker's own limits are 60 s per walk, 180 s motion

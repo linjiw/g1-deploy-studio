@@ -1,11 +1,11 @@
 // Rehearse: choose a policy profile + arena preset, run the owned CPU worker,
 // follow it live and run bounded suites. Simulation only; no hardware path.
-import { $, escape, num, vector, fact, chip, request, outcomeChip, finite, emit, on, ago } from './util.js';
+import { $, escape, num, vector, fact, chip, request, outcomeChip, finite, emit, on, ago, distinctLabels } from './util.js';
 import { ACTUATOR_SHORT } from './runs.js';
 
 export const rh = {
   catalog: null, policyId: null, mapId: null, map: null, presetIndex: 0,
-  settings: { duration_s: 8, seed: 0, candidates: 4, ode_steps: 6, criterion: 'arrive_hold', latency_ms: 0, anchor: 'measured' }, seeds: 1,
+  settings: { duration_s: 8, seed: 0, candidates: 4, ode_steps: 6, criterion: 'arrive_hold', latency_ms: 0, anchor: 'measured', guards: 'off', lookahead: '' }, seeds: 1,
   job: null, suite: null, timer: null, suiteTimer: null, attached: null, busy: false, lastPerception: -Infinity,
 };
 
@@ -62,7 +62,7 @@ function policyCard(p, research) {
     : escape(p.research_lineage ?? 'Not a Flow research block');
   return `<label class="policy-card ${selected ? 'selected' : ''} ${p.available ? '' : 'unavailable'}">
     <input type="radio" name="policy" value="${escape(p.id)}" ${selected ? 'checked' : ''} ${p.available ? '' : 'disabled'}>
-    <div><div class="policy-title"><strong>${escape(p.label)}</strong>${p.available ? '' : chip('unavailable', (p.missing ?? []).join('; '))}${p.matches_adopted ? '<span class="adopted">ADOPTED BLOCK</span>' : ''}</div>
+    <div><div class="policy-title"><strong>${escape(p.label)}</strong>${p.available ? '' : chip('unavailable', (p.missing ?? []).join('; '))}${p.matches_adopted ? '<span class="adopted">Adopted block</span>' : ''}</div>
     <div class="policy-meta">${lineage}</div>
     <div class="policy-meta">Tracker ${escape(p.tracker?.name ?? '—')} · runtime ${escape(p.runtime?.kind ?? 'cpu-lockstep')} · identity <code>${escape((p.identity?.identity_sha256 ?? '').slice(0, 10))}</code></div>
     ${(p.limitations ?? []).length ? `<details><summary>Limitations (${p.limitations.length})</summary><ul>${p.limitations.map(t => `<li>${escape(t)}</li>`).join('')}</ul></details>` : ''}</div></label>`;
@@ -84,7 +84,7 @@ export function render() {
       ${rh.catalog.policies.some(p => p.matches_adopted) ? '' : '<p class="tiny warn-text">No deployable Studio profile matches the adopted block yet.</p>'}</div>
     <div class="panel-section"><h4>Policy profile</h4><div class="policy-list">${rh.catalog.policies.map(p => policyCard(p, research)).join('')}</div></div>
     <div class="panel-section"><h4>Arena & preset</h4>
-      <label class="field">Arena<select id="rh-map">${runnable.map(m => `<option value="${escape(m.id)}" ${m.id === rh.mapId ? 'selected' : ''}>${escape(m.label)}${m.origin === 'arena-editor' ? ' · custom' : ''}</option>`).join('')}</select></label>
+      <label class="field">Arena<select id="rh-map">${(labels => runnable.map(m => `<option value="${escape(m.id)}" ${m.id === rh.mapId ? 'selected' : ''}>${escape(labels.get(m.id))}${m.origin === 'arena-editor' ? ' · custom' : ''}</option>`).join(''))(distinctLabels(runnable))}</select></label>
       <label class="field">Preset<select id="rh-preset">${list.map((x, i) => `<option value="${i}" ${i === rh.presetIndex ? 'selected' : ''}>${escape(x.label)}</option>`).join('')}</select></label>
       ${q ? `<div class="preset-readout">${fact('Start · heading', `[${vector(q.start_xy, 2)}] m · ${num((q.start_yaw_rad ?? 0) * 180 / Math.PI, 0)}°`)}${fact('Goal', `[${vector(q.goal_xy, 2)}] m · ${num(Math.hypot(q.goal_xy[0] - q.start_xy[0], q.goal_xy[1] - q.start_xy[1]), 2, 'm')} away`)}</div>` : ''}
       <button id="rh-edit-arena" class="link-button">Edit this arena →</button></div>
@@ -95,10 +95,11 @@ export function render() {
       <div class="grid-fields"><label>Planner latency<select id="rh-latency">${[0, 100, 160, 200, 300, 500].map(v => `<option value="${v}" ${v === rh.settings.latency_ms ? 'selected' : ''}>${v ? `${v} ms` : 'none (L1)'}</option>`).join('')}</select></label>
         <label>Anchor<select id="rh-anchor" ${!rh.settings.latency_ms ? 'disabled' : ''}><option value="measured" ${rh.settings.anchor === 'measured' ? 'selected' : ''}>measured</option><option value="predict" ${rh.settings.anchor === 'predict' ? 'selected' : ''}>predict (latency-aware)</option></select></label><span></span></div>
       <p class="tiny">${rh.settings.latency_ms ? `L2: each replan starts ${rh.settings.latency_ms} ms after it is requested while physics keeps running${pol?.loader === 'flow-callback' ? ` (Studio delayed-execution approximation for the Flow callback, L2≈${rh.settings.anchor === 'predict' ? ' predict: Studio gives the planner the state predicted at request + latency from the landed plan, the g1-student-deploy method; route and tight-mode decisions stay measured' : ''})` : ' (source lockstep latency model)'}.` : 'L1: physics waits for every replan, hiding planner latency.'}</p>
+      ${guardFields(pol)}
       <label class="field" title="${escape((rh.catalog.actuators ?? []).find(a => a.id === rh.settings.actuators)?.hardware ?? '')}">Actuator limits (hip pitch / roll / yaw)<select id="rh-actuators">${(rh.catalog.actuators ?? []).map(a => `<option value="${escape(a.id)}" ${a.id === rh.settings.actuators ? 'selected' : ''} title="${escape(a.description)}">${escape(a.label)}</option>`).join('')}</select></label>
       <label class="field">Success criterion<select id="rh-criterion">${(rh.catalog.criteria ?? [{ id: 'arrive_hold', label: 'Arrive and hold' }]).map(c => `<option value="${escape(c.id)}" ${c.id === rh.settings.criterion ? 'selected' : ''} title="${escape(`radius ${c.goal_radius_m} m · speed ≤ ${c.goal_speed_m_s} m/s for ${c.goal_hold_s} s · collision > ${c.obstacle_contact_threshold_n} N`)}">${escape(c.label)}</option>`).join('')}</select></label>
       <p class="tiny">CPU lockstep pauses physics while planning, so larger budgets cost wall time, not simulated time. Wall limit for this profile: ${pol?.limits?.wall_s ?? 180} s.</p></div>
-    <div class="panel-section sticky-actions"><button id="rh-run" class="primary-action" ${active || !pol?.available ? 'disabled' : ''}>▶ Run preset</button><button id="rh-suite" ${active || !pol?.available || suiteRuns > suiteLimit ? 'disabled' : ''} title="${suiteRuns > suiteLimit ? `A suite holds at most ${suiteLimit} runs` : 'Run every preset of this arena (× seeds) one after another'}">Run suite · ${suiteRuns} run${suiteRuns === 1 ? '' : 's'}${suiteRuns > suiteLimit ? ` (max ${suiteLimit})` : ''}</button>${active ? '<button id="rh-cancel" class="danger">Cancel</button>' : ''}</div>
+    <div class="panel-section sticky-actions"><button id="rh-run" class="primary-action" ${active || !pol?.available ? 'disabled' : ''}>Run preset</button><button id="rh-suite" ${active || !pol?.available || suiteRuns > suiteLimit ? 'disabled' : ''} title="${suiteRuns > suiteLimit ? `A suite holds at most ${suiteLimit} runs` : 'Run every preset of this arena (× seeds) one after another'}">Run suite · ${suiteRuns} run${suiteRuns === 1 ? '' : 's'}${suiteRuns > suiteLimit ? ` (max ${suiteLimit})` : ''}</button>${active ? '<button id="rh-cancel" class="danger">Cancel</button>' : ''}</div>
     <div id="rh-job" class="panel-section"></div><div id="rh-suite-status" class="panel-section"></div>`;
   bind();
   renderJob(); renderSuite();
@@ -126,6 +127,8 @@ function bind() {
   $('rh-actuators')?.addEventListener('change', e => { rh.settings.actuators = e.target.value; render(); });
   $('rh-latency').addEventListener('change', e => { rh.settings.latency_ms = Number(e.target.value); render(); });
   $('rh-anchor').addEventListener('change', e => { rh.settings.anchor = e.target.value; render(); });
+  $('rh-guards')?.addEventListener('change', e => { rh.settings.guards = e.target.value; render(); });
+  $('rh-lookahead')?.addEventListener('change', e => { rh.settings.lookahead = e.target.value; render(); });
   $('rh-seeds').addEventListener('change', e => { rh.seeds = Math.max(1, Math.min(4, Number(e.target.value) || 1)); render(); });
   document.querySelectorAll('[data-budget]').forEach(b => b.addEventListener('click', () => {
     const [k, o] = b.dataset.budget.split(',').map(Number); Object.assign(rh.settings, { candidates: k, ode_steps: o }); rh.budgetChosen = true; render();
@@ -147,14 +150,26 @@ async function guarded(task) {
   try { await task(); } catch (error) { report(error); } finally { rh.busy = false; render(); }
 }
 
+// Deploy-side guards (g1-student-deploy g1deploy/guards.py) and walking speed: what node.py runs with on the robot.
+function guardFields(pol) {
+  const g = rh.catalog.guards;
+  if (pol?.loader !== 'deploy-bundle') return '';
+  const presets = g?.presets ?? { off: 'Off · the frozen planner alone' };
+  if (!(rh.settings.guards in presets)) rh.settings.guards = 'off';
+  return `<div class="grid-fields"><label>Guards<select id="rh-guards">${Object.entries(presets).map(([k, v]) => `<option value="${escape(k)}" ${k === rh.settings.guards ? 'selected' : ''} title="${escape(v)}">${escape(k)}</option>`).join('')}</select></label>
+      <label>Walking speed<select id="rh-lookahead"><option value="" ${rh.settings.lookahead === '' ? 'selected' : ''}>evaluated · lookahead 1.5 m</option><option value="1.0" ${rh.settings.lookahead === '1.0' ? 'selected' : ''}>slow · 1.0 m (first hardware walks)</option></select></label><span></span></div>
+      <p class="tiny">${escape(presets[rh.settings.guards] ?? '')}${g?.available ? '' : ` ${escape(g?.note ?? '')}`}</p>`;
+}
+
 function scenarioRequest(q, seed) {
   const pol = policy();
-  const label = `${rh.map.label} · ${q.label} · ${pol?.short_label ?? rh.policyId} · K${rh.settings.candidates}/ODE${rh.settings.ode_steps} · s${seed}${rh.settings.criterion === 'arena_reach' ? ' · reach' : ''}${rh.settings.latency_ms ? ` · lat ${rh.settings.latency_ms}${rh.settings.anchor === 'predict' ? 'p' : ''}` : ''}${rh.settings.actuators && rh.settings.actuators !== rh.catalog.default_actuators ? ` · ${rh.settings.actuators}` : ''}`.slice(0, 100);
+  const label = `${rh.map.label} · ${q.label} · ${pol?.short_label ?? rh.policyId} · K${rh.settings.candidates}/ODE${rh.settings.ode_steps} · s${seed}${rh.settings.criterion === 'arena_reach' ? ' · reach' : ''}${rh.settings.latency_ms ? ` · lat ${rh.settings.latency_ms}${rh.settings.anchor === 'predict' ? 'p' : ''}` : ''}${rh.settings.actuators && rh.settings.actuators !== rh.catalog.default_actuators ? ` · ${rh.settings.actuators}` : ''}${pol?.loader === 'deploy-bundle' && rh.settings.guards !== 'off' ? ` · guards ${rh.settings.guards}` : ''}${pol?.loader === 'deploy-bundle' && rh.settings.lookahead ? ` · la ${rh.settings.lookahead}` : ''}`.slice(0, 100);
   // The anchor only matters with latency; without it every plan is anchored on the measured state.
   const latency = { ms: rh.settings.latency_ms, anchor: rh.settings.latency_ms ? rh.settings.anchor : 'measured' };
   return { label, preset_label: q.label, map_id: rh.mapId, backend_id: 'flow-sonic-cpu', policy_id: rh.policyId, criterion: rh.settings.criterion, latency, actuators: rh.settings.actuators, duration_s: rh.settings.duration_s,
     start_xy: q.start_xy, goal_xy: q.goal_xy, start_yaw_rad: q.start_yaw_rad ?? 0, seed,
-    planner: { candidates: rh.settings.candidates, ode_steps: rh.settings.ode_steps } };
+    planner: { candidates: rh.settings.candidates, ode_steps: rh.settings.ode_steps },
+    ...(pol?.loader === 'deploy-bundle' ? { guards: rh.settings.guards, goal_lookahead_m: rh.settings.lookahead ? Number(rh.settings.lookahead) : null } : {}) };
 }
 async function saveScenario(q, seed) {
   const saved = await request('/api/scenarios', scenarioRequest(q, seed));

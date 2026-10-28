@@ -9,11 +9,12 @@ import unittest
 import msgpack
 import numpy as np
 
+from studio import paths
 from studio.protocols import decode_packet
 from studio.replay import DEFAULT_DDS_SESSION, DEFAULT_SESSION, FLOW_ROOT, ReplayError, load_session
 from studio.sensors import get_sensor_catalog, get_sensor_snapshot, load_sensor_capture
 
-FRESH_SESSION = Path("/home/linjiw/research-data/g1-deploy-studio/evidence/policy-workbench/run-boxes-verified/session.json")
+FRESH_SESSION = paths.get('data_root') / "evidence/policy-workbench/run-boxes-verified/session.json"
 
 
 def by_id(snapshot):
@@ -273,6 +274,7 @@ class WireSensorParityTests(unittest.TestCase):
         path.write_text(json.dumps(start) + "\n" + json.dumps(envelope) + "\n")
         return path
 
+    @unittest.skipUnless((DEFAULT_DDS_SESSION / "node_memory.npz").is_file(), "designated DDS rehearsal unavailable")
     def test_actual_packer_bytes_redecoded_not_trusting_saved_payload(self):
         # Real observed map heights are used as representative cloud payload;
         # this checks transport decoding, not a claim of raw LiDAR history.

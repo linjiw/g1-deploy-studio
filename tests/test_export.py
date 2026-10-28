@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from mcap.reader import make_reader
+from studio import paths
 from studio.export import encode_mcap, load_mcap
 
 
@@ -36,7 +37,7 @@ class McapTests(unittest.TestCase):
 
     def test_capture_mcap_preserves_unknown_pose_and_observed_graph(self):
         from studio.capture_replay import load_capture
-        source_path = Path.home() / 'research-data/g1-deploy-studio/evidence/wire-20261015/wire_capture.jsonl'
+        source_path = paths.get('data_root') / 'evidence/wire-20261015/wire_capture.jsonl'
         if not source_path.exists():
             self.skipTest('Local wire acceptance capture not installed')
         source = load_capture(source_path)

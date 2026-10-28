@@ -22,6 +22,8 @@ import xml.etree.ElementTree as ET
 from functools import lru_cache
 from pathlib import Path
 
+from studio import paths
+
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "config" / "robots" / "g1_29dof.json"
 ORDERS = ("unitree_motor", "mujoco", "isaaclab")
 INDEX_KEY = {"unitree_motor": "unitree_motor_index", "mujoco": "mujoco_index", "isaaclab": "isaaclab_index"}
@@ -37,7 +39,8 @@ class ProfileError(ValueError):
 
 # ----------------------------------------------------------------------------------- loading
 def load_profile(path=None) -> dict:
-    profile = json.loads(Path(path or DEFAULT_PATH).read_text())
+    # Cited paths are recorded as on the inspecting machine; relocate them onto this machine's roots (studio/paths.py).
+    profile = paths.relocate_tree(json.loads(Path(path or DEFAULT_PATH).read_text()))
     validate(profile)
     return profile
 

@@ -1,5 +1,6 @@
 // Local scenario preparation, owned CPU jobs and read-only sensor views.
 // All coordinates and sensor values originate in server-normalized data.
+import { UI, SERIES } from './js/palette.js';
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? 'Unavailable').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const finite = value => typeof value === 'number' && Number.isFinite(value);
@@ -162,7 +163,7 @@ function renderJob() {
   const job=wb.job;if(!job||!$('job-status'))return;
   const terminal=!['queued','starting','running','cancelling'].includes(job.status);
   $('cancel-job').hidden=terminal;$('start-job').disabled=!terminal;
-  $('job-status').innerHTML=`<span class="sensor-state ${job.status==='completed'?'available':job.status==='failed'?'missing':'unknown'}">${escape(job.status.toUpperCase())}</span> <strong>${escape(job.id)}</strong>${fact('Simulated time',number(job.latest?.frame?.time??job.latest?.progress?.simulation_time_s,2,'s'))}${job.latest?.progress?`${fact('Worker wall time',number(job.latest.progress.wall_time_s,2,'s'))}${fact('Real-time factor',number(job.latest.progress.real_time_factor,3,'×'))}`:''}${job.runtime?`${fact('Worker process',job.runtime.worker_alive===null?'Ownership unavailable':job.runtime.worker_alive?'Running · PID '+job.runtime.worker_pid:'Exited')}${fact('Telemetry receipt',`${job.runtime.telemetry_status??'Unavailable'} · ${number(job.runtime.telemetry_age_ms,0,'ms')}`)}`:''}${job.error?`<p class="job-error">${escape(job.error)}</p>`:''}`;
+  $('job-status').innerHTML=`<span class="sensor-state ${job.status==='completed'?'available':job.status==='failed'?'missing':'unknown'}">${escape(job.status)}</span> <strong>${escape(job.id)}</strong>${fact('Simulated time',number(job.latest?.frame?.time??job.latest?.progress?.simulation_time_s,2,'s'))}${job.latest?.progress?`${fact('Worker wall time',number(job.latest.progress.wall_time_s,2,'s'))}${fact('Real-time factor',number(job.latest.progress.real_time_factor,3,'×'))}`:''}${job.runtime?`${fact('Worker process',job.runtime.worker_alive===null?'Ownership unavailable':job.runtime.worker_alive?'Running · PID '+job.runtime.worker_pid:'Exited')}${fact('Telemetry receipt',`${job.runtime.telemetry_status??'Unavailable'} · ${number(job.runtime.telemetry_age_ms,0,'ms')}`)}`:''}${job.error?`<p class="job-error">${escape(job.error)}</p>`:''}`;
   const summary={...(job.summary??{}),...(job.summary?.report??{})};
   $('job-results').innerHTML=`${summary.outcome?`<div class="result-outcome"><span>POLICY OUTCOME</span><strong>${escape(summary.outcome)}</strong>${fact('Final goal distance',number(summary.final_goal_distance_xy_m,3,'m'))}<p class="tiny">Worker completion and the policy outcome are separate. The source evaluator determines this result.</p></div>`:''}${job.latest?.frame&&!terminal?'<button id="watch-job" class="wide-button">'+(wb.live?'Detach live preview':'Attach running simulation to viewport')+'</button>':''}${job.result_session_id?'<button id="open-job-replay" class="primary-action wide-button">'+(job.status==='failed'?'Inspect recorded failure':'Open recorded test result')+'</button>':''}${Object.keys(summary).length?`<details open><summary>Measured run summary</summary>${summary.plan_latency_s?fact('Planner p50 / p95',`${number(summary.plan_latency_s.p50*1000,1,'ms')} / ${number(summary.plan_latency_s.p95*1000,1,'ms')}`):''}${summary.sonic_inference_ms?fact('SONIC p50 / p95',`${number(summary.sonic_inference_ms.p50,2,'ms')} / ${number(summary.sonic_inference_ms.p95,2,'ms')}`):''}${Object.entries(summary).filter(([,v])=>typeof v!=='object').map(([key,value])=>fact(key.replaceAll('_',' '),typeof value==='number'?number(value,3):value)).join('')}</details>`:''}`;
   $('watch-job')?.addEventListener('click',()=>{wb.live=!wb.live;if(wb.live)showLiveFrame().catch(report);renderJob();});
@@ -201,15 +202,15 @@ function sensorCard(sensor,pinned=false) {
 }
 function drawSensorPreview(canvas,sensor) {
   const width=Math.max(1,canvas.clientWidth),height=Math.max(1,canvas.clientHeight),ratio=Math.min(2,devicePixelRatio||1);canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
-  const points=sensor?.payload?.points??[];const context=canvas.getContext('2d');context.setTransform(ratio,0,0,ratio,0,0);context.fillStyle='#101a23';context.fillRect(0,0,width,height);
+  const points=sensor?.payload?.points??[];const context=canvas.getContext('2d');context.setTransform(ratio,0,0,ratio,0,0);context.fillStyle=UI.canvas;context.fillRect(0,0,width,height);
   const selected=points.filter((_,index)=>index%Math.max(1,Math.ceil(points.length/2500))===0);if(!selected.length)return;
   const pose=api()?.state.measuredFrame,robot=sensor.overlay_compatible&&Array.isArray(pose?.position)?pose.position:null;
   const xy=robot?[...selected,robot]:selected,xs=xy.map(point=>point[0]),ys=xy.map(point=>point[1]);
   const lo=[Math.min(...xs),Math.min(...ys)],hi=[Math.max(...xs),Math.max(...ys)],extent=[Math.max(.1,hi[0]-lo[0]),Math.max(.1,hi[1]-lo[1])];const scale=Math.min((width-24)/extent[0],(height-28)/extent[1]);
   const toPixel=point=>[12+(point[0]-lo[0])*scale,height-12-(point[1]-lo[1])*scale];
-  context.fillStyle='#83cdbb';for(const point of selected){const[x,y]=toPixel(point);context.fillRect(x,y,1.7,1.7);}
-  if(robot){const[x,y]=toPixel(robot),q=pose.quaternion_wxyz??[1,0,0,0],yaw=Math.atan2(2*(q[0]*q[3]+q[1]*q[2]),1-2*(q[2]*q[2]+q[3]*q[3]));context.save();context.translate(x,y);context.rotate(-yaw);context.fillStyle='#efbb70';context.strokeStyle='#101a23';context.lineWidth=1.5;context.beginPath();context.moveTo(7,0);context.lineTo(-5,-4);context.lineTo(-3,0);context.lineTo(-5,4);context.closePath();context.fill();context.stroke();context.restore();}
-  context.font='9px monospace';context.fillStyle='#a8bbc8';context.fillText(`${number(lo[0],1)}…${number(hi[0],1)} m X → · Y ↑`,8,11);
+  context.fillStyle=UI.dim;for(const point of selected){const[x,y]=toPixel(point);context.fillRect(x,y,1.7,1.7);}
+  if(robot){const[x,y]=toPixel(robot),q=pose.quaternion_wxyz??[1,0,0,0],yaw=Math.atan2(2*(q[0]*q[3]+q[1]*q[2]),1-2*(q[2]*q[2]+q[3]*q[3]));context.save();context.translate(x,y);context.rotate(-yaw);context.fillStyle=SERIES.robot;context.strokeStyle=UI.canvas;context.lineWidth=1.5;context.beginPath();context.moveTo(7,0);context.lineTo(-5,-4);context.lineTo(-3,0);context.lineTo(-5,4);context.closePath();context.fill();context.stroke();context.restore();}
+  context.font='9px monospace';context.fillStyle=UI.dim;context.fillText(`${number(lo[0],1)}…${number(hi[0],1)} m X → · Y ↑`,8,11);
 }
 
 function renderSensors() {

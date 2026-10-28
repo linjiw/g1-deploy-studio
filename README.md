@@ -13,30 +13,43 @@ A local cockpit for rehearsing Unitree G1 navigation policies before deployment.
 
 Recorded SONIC/MuJoCo and C++/DDS rehearsals and ZMQ captures replay through the same timeline.
 
+![Studio replaying a WX-RF rehearsal through an offset doorway: the executed robot, its pink SONIC reference, the amber planned futures, the timeline lanes and the inspector](docs/img/studio-replay.jpg)
+
 **No motor commands, ever.** Studio has no DDS participant and no motor-command path: it never publishes `rt/lowcmd`, hand commands or ZMQ `pose`. With the real robot (Navigate's robot link, on the deploy PC, loopback only) it may send the planner node's control socket a goal, only while the robot stands and only after the goal passed its checks, or a stand request, and read the node's status. It never sends Go or quit; the operator starts every walk with `g` on the node console and keeps the remote and the physical E-stop. A simulation result is not hardware readiness, and the robot link has been tested against a protocol fixture only. **Nothing in this repository has run on a robot.**
 
-**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md). The narrated 10-minute tour is on the [site](https://linjiw.github.io/g1-deploy-studio/#tour).
+**Current state, results and open issues:** [docs/STATUS.md](docs/STATUS.md). The documentation index is [docs/README.md](docs/README.md). The narrated 10-minute tour is on the [site](https://linjiw.github.io/g1-deploy-studio/#tour) (recorded before the white redesign).
 
-**What you need.** This repository is Studio: the gateway, the browser app, the simulated robot and robot link adapters, their tests and the site. It contains no robot model, meshes, weights or recordings. Replay works on your own recordings. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack from local checkouts (`g1-student-deploy` with the frozen Flow student bundle and the SONIC release policy, and Flow for the WX profiles; paths in `studio/workbench.py` and `config/references.json`), which are not part of this repository.
+**What you need.** This repository is Studio: the gateway, the browser app, the simulated robot and robot link adapters, their tests and the site. It contains no robot model, meshes, weights or recordings. Replay works on your own recordings. Rehearsals, Navigate's simulated robot and the robot link read the deploy stack from local checkouts (`g1-student-deploy` with the frozen Flow student bundle and the SONIC release policy, and Flow for the WX profiles), which are not part of this repository. The deploy stack and the navigation policy are pinned in `config/deploy.json` (a private repo and its release), and every machine path comes from `studio/paths.py` (`config/local.json`, ignored).
 
 ## Open it
 
-The gateway runs as a durable user service on loopback:
+On the development machine the gateway runs as a durable user service on loopback (on a new machine, install it first: [below](#install-on-another-machine) and [docs/INSTALL.md](docs/INSTALL.md)):
 
 ```bash
 cd g1-deploy-studio
 tools/studio_service.sh status        # served commit + unit state
 ```
 
-Open **http://127.0.0.1:8790/**. From another computer, use an SSH tunnel: `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open `http://localhost:8790/`. See [service and access](docs/SERVICE.md).
+Open **http://127.0.0.1:8790/**. The layout adapts from a big screen down to a tablet or a phone (reached through a tunnel: the gateway listens on loopback only). On narrow screens the 3D view comes first, the workspaces move to a tab bar at the bottom, and Navigate's steps (start, pick a goal, send it, Go) sit on the map itself. From another computer, use an SSH tunnel: `ssh -N -L 8790:127.0.0.1:8790 <user>@<host>`, then open `http://localhost:8790/`. See [service and access](docs/SERVICE.md).
 
-First-time setup on a new machine:
+**Stage:** choose **Stage** in the top bar, or open [the rehearsal stage](http://127.0.0.1:8790/?workspace=rehearse&focus=1), for one run full screen: the robot, its reference and plan, and the room. It has floating layer pills, one dock and a **Setup** sheet for the existing policy and arena controls. It labels the displayed recording's policy apart from the next run's. See [Stage](docs/STAGE.md).
+
+![Stage: the same run full screen, with what is shown and where its map came from, the facts at the cursor and one dock](docs/img/studio-stage.jpg)
+
+### Install on another machine
+
+Full guide: [docs/INSTALL.md](docs/INSTALL.md).
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && npm ci
-.venv/bin/python tools/build_policy_bundle.py   # pins Flow's WX-RF block (read-only to Flow); WXD: --block WXD, see the script
-tools/studio_service.sh install                 # release worktree + systemd --user unit
+git clone https://github.com/linjiw/g1-deploy-studio ~/code/g1-deploy-studio && cd ~/code/g1-deploy-studio
+tools/install.sh                     # Studio: venv, packages, browser files              -> Replay
+gh auth login && tools/install.sh --deploy   # deploy stack at the pinned tag + the navigation policy bundle -> Simulation
+tools/install.sh --runner --robot-link       # deploy PC only: SONIC runner checkout, config/robot_link.json -> Robot link
+.venv/bin/python tools/doctor.py     # read-only check: what is ready, and the fix for what is not
+tools/studio_service.sh install      # optional: release worktree + systemd --user unit on 127.0.0.1:8790
 ```
+
+The privileged Flow WX-RF profile needs a local Flow checkout: `.venv/bin/python tools/build_policy_bundle.py` pins it read-only.
 
 ## Workspaces
 
@@ -55,17 +68,17 @@ Every value carries an evidence chip: MEASURED, SIM-TRUTH, ESTIMATED, COMMANDED,
 
 | Profile | Planner | Notes |
 |---|---|---|
-| `flow-wxd-rf-5658a6d-s0` | **Flow WXD, retrieval-free** (WX + the DP2 duck keys): the block `flow/research/BEST_MODEL.md` names as adopted since 2026-10-20. Pinned at Flow `5658a6d`, config `closed_loop_dp2_xdg.json` arm `XGD-g-s0` (the guard config's arm uses clips), teacher `sk1_s0`, WM-v2 execution check. Built locally with `tools/build_policy_bundle.py --block WXD` | Same adapter and caveats as WX-RF; privileged. Studio smoke (2026-10-22, K8/ODE6, CPU, no latency): ducked under a 1.05 m beam (pelvis 0.65 m), no contact, timed out at the 6 s cap |
-| `flow-wx-rf-23326aa-s0` | **Flow WX, retrieval-free**: adopted 2026-10-16, superseded by WXD on 2026-10-20. Pinned at Flow `23326aa`, config `closed_loop_wxr0_c3.json` (sha `1ffc4069…`), teacher `sk1_s0`, WM-v2 execution check | Flow's own closed-loop callback on MuJoCo. Privileged: plans from the exact boxes, not LiDAR. Default budget K8/ODE6 (evaluated 16/10) |
-| `flow-bundle-20261008` | Frozen g1-student-deploy bundle: student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1 | LiDAR-driven sensor route through `sim.lockstep`; the only profile Navigate and the robot run |
+| `flow-wx-rf-23326aa-s0` | **Flow WX, retrieval-free**: the block `flow/research/BEST_MODEL.md` names as adopted (2026-10-16). Pinned at Flow `23326aa`, config `closed_loop_wxr0_c3.json` (sha `1ffc4069…`), teacher `sk1_s0`, WM-v2 execution check | Flow's own closed-loop callback on MuJoCo. Privileged: plans from the exact boxes, not LiDAR. Default budget K8/ODE6 (evaluated 16/10) |
+| `flow-bundle-20261008` | Frozen g1-student-deploy bundle: student-s2-kcsc, the 2026-10-08 bundle student (not Flow's current LiDAR student) | LiDAR-driven sensor route through `sim.lockstep`; the only profile Navigate and the robot run |
 
 Details, caveats and how to add a policy: [docs/POLICIES.md](docs/POLICIES.md). Rehearse shows the Flow research sync status and pins the identity hash into every scenario and run.
 
 ## Verify
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v       # unit + integration (no policy runtime needed)
+.venv/bin/python -m unittest discover -s tests -v       # unit + integration; without the deploy stack its tests skip
 python3 tools/check_references.py                        # read-only reference drift check
+.venv/bin/python tools/doctor.py                         # read-only machine readiness (docs/INSTALL.md)
 .venv/bin/python tools/build_policy_bundle.py --verify-only
 STUDIO_URL=http://127.0.0.1:8790 npm run test:browser            # read-only UI acceptance (FK parity, honesty checks, mobile)
 STUDIO_URL=http://127.0.0.1:8790 npm run test:browser:forwarded  # same through a Host-preserving tunnel

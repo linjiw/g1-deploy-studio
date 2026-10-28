@@ -21,13 +21,13 @@ from pathlib import Path
 import sys
 import time
 
-from studio import actuators
+from studio import actuators, paths
 from studio.policy_worker import (CRITERIA, MAX_DURATION_S, TorqueTracker, _atomic, _hash, contact_interval,
                                   executed_native_recording, task_thresholds, validate_request)
 from studio.policy_bundle import bundle_path, load_manifest, verify
 
-DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
-LFH_PARENT = Path('/home/linjiw/flow/.bridge-deps')  # humanoid_lfh symlink to the pinned bridge worktree
+DEPLOY = paths.get('deploy_root')
+LFH_PARENT = paths.get('flow_root') / '.bridge-deps'  # humanoid_lfh symlink to the pinned bridge worktree
 BACKEND_ID = 'flow-wx-sonic-mujoco-cpu'
 DT = 0.02
 

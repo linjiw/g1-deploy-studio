@@ -1,4 +1,5 @@
-// The 3D view: rendered only when something changed, on a transparent canvas over the stage's backdrop.
+// The 3D view: rendered only when something changed, on a transparent canvas over the stage's light backdrop
+// (a white, quiet studio: colours below are chosen to read on it).
 // World frame as in Studio and MuJoCo: right-handed, Z up, metres; quaternions w, x, y, z.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -8,12 +9,13 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 
 export const COLORS = {
-  teal: 0x56d9d0, amber: 0xefbb70, red: 0xf07870, violet: 0xc4a0d9,
-  green: 0x7be0a5, box: 0x8fa4b3, white: 0xe6eef2, pink: 0xff6fb5, blue: 0x7fb4ff, ghost: 0xff8fcf,
+  teal: 0x0f9e94, amber: 0xe0a030, red: 0xdc5348, violet: 0x9d7cc9,
+  green: 0x2fae6a, box: 0x9aa8b6, ink: 0x2a333d, pink: 0xe8458f, blue: 0x2f74d0, ghost: 0xff7fc4,
 };
-// The robot's map, one texel per 5 cm memory cell (Studio's palette): never observed cells stay transparent.
-const MAP_RGBA = { 1: [38, 92, 96, 150], 2: [239, 187, 112, 215], 3: [240, 120, 112, 235], 4: [196, 160, 217, 215] };
-const VOXEL_RGB = { 2: new THREE.Color(0xefbb70), 3: new THREE.Color(0xf07870), 4: new THREE.Color(0xc4a0d9) };
+// The robot's map, one texel per 5 cm memory cell (Studio's hues, tuned for a light floor): never observed cells
+// stay transparent.
+const MAP_RGBA = { 1: [126, 200, 194, 72], 2: [232, 170, 72, 215], 3: [226, 120, 110, 230], 4: [160, 128, 205, 210] };
+const VOXEL_RGB = { 2: new THREE.Color(0xeab35a), 3: new THREE.Color(0xe2786e), 4: new THREE.Color(0xa88ad2) };
 const MAX_VOXELS = 24000;
 const FLOOR_M = 32;   // the backdrop floor: a square this wide, fading to transparent at its edge
 
@@ -38,8 +40,8 @@ export class Viewer {
     controls.maxPolarAngle = Math.PI * 0.49; controls.minDistance = 1.2; controls.maxDistance = 22;
     controls.addEventListener('change', () => this.dirty());
     controls.addEventListener('start', () => this.start());
-    scene.add(new THREE.HemisphereLight(0xdcecf4, 0x1a2228, 1.2));
-    const sun = this.sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    scene.add(new THREE.HemisphereLight(0xf4f8fb, 0x8a96a2, 1.35));
+    const sun = this.sun = new THREE.DirectionalLight(0xffffff, 1.5);
     sun.position.set(-3, -4, 8); sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     Object.assign(sun.shadow.camera, { left: -2.5, right: 2.5, top: 2.5, bottom: -2.5, near: 0.5, far: 20 });
@@ -234,7 +236,7 @@ export class Viewer {
     for (const box of world.boxes) this.boxes.add(boxMesh(box));
     this.groups.world.add(this.boxes);
     // The start mark, as taped on the floor (build sheet): a cross and the heading arrow.
-    const mark = new THREE.Group(), mat = new THREE.MeshBasicMaterial({ color: COLORS.white, transparent: true, opacity: 0.8 });
+    const mark = new THREE.Group(), mat = new THREE.MeshBasicMaterial({ color: COLORS.ink, transparent: true, opacity: 0.8 });
     for (const [sx, sy] of [[0.5, 0.025], [0.025, 0.5]]) { const m = new THREE.Mesh(new THREE.PlaneGeometry(sx, sy), mat); m.position.z = 0.003; mark.add(m); }
     const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.16, 3), mat); arrow.rotation.z = -Math.PI / 2; arrow.position.set(0.36, 0, 0.003); arrow.scale.z = 0.05;
     mark.add(arrow);
@@ -264,7 +266,7 @@ export class Viewer {
       mesh.renderOrder = 1; mesh.userData.n = n;
       this.groups.map.add(mesh); this.mapMesh = mesh;
       clear(this.groups.voxels);
-      const voxels = this.voxels = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.7, transparent: true, opacity: 0.9 }), MAX_VOXELS);
+      const voxels = this.voxels = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.8, transparent: true, opacity: 0.84 }), MAX_VOXELS);
       voxels.count = 0; voxels.frustumCulled = false;
       voxels.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_VOXELS * 3), 3);
       this.groups.voxels.add(voxels);
@@ -327,7 +329,7 @@ export class Viewer {
     const count = Math.min(pts.length / 3, 1200), c = new THREE.Color();
     for (let k = 0; k < count; k++) {
       pos[k * 3] = pts[k * 3] / 100; pos[k * 3 + 1] = pts[k * 3 + 1] / 100; pos[k * 3 + 2] = pts[k * 3 + 2] / 100;
-      c.setHSL(0.47 - Math.min(1, Math.max(0, pts[k * 3 + 2] / 200)) * 0.3, 0.75, 0.62);
+      c.setHSL(0.5 - Math.min(1, Math.max(0, pts[k * 3 + 2] / 200)) * 0.32, 0.8, 0.42);
       col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
     }
     geom.setDrawRange(0, count);
@@ -364,7 +366,7 @@ export class Viewer {
   setOutcomes(cells, colorOf) {  // recorded goals as small floor discs, coloured by outcome
     clear(this.groups.outcomes);
     if (!cells?.length) { this.dirty(); return; }
-    const mesh = new THREE.InstancedMesh(new THREE.CircleGeometry(0.075, 20), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.8, depthWrite: false }), cells.length);
+    const mesh = new THREE.InstancedMesh(new THREE.CircleGeometry(0.06, 20), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.72, depthWrite: false }), cells.length);
     cells.forEach((c, k) => {
       tmp.m.makeTranslation(c.xy[0], c.xy[1], 0.009);
       mesh.setMatrixAt(k, tmp.m); mesh.setColorAt(k, new THREE.Color(colorOf(c)));
@@ -374,7 +376,7 @@ export class Viewer {
     this.dirty();
   }
   dimOutcomes(dim) {
-    for (const m of this.groups.outcomes.children) m.material.opacity = dim ? 0.25 : 0.8;
+    for (const m of this.groups.outcomes.children) m.material.opacity = dim ? 0.2 : 0.72;
     this.dirty();
   }
 
@@ -539,18 +541,18 @@ function poseRobot(robot, qpos) {
   }
 }
 
-// The backdrop floor: a dark slab with a half-metre grid that fades to transparent, so it melts into the stage.
+// The backdrop floor: a pale slab with a half-metre grid that fades to transparent, so it melts into the stage.
 function floorTexture(renderer) {
   const px = 1024, c = document.createElement('canvas');
   c.width = c.height = px;
   const g = c.getContext('2d'), per = px / FLOOR_M;
   const fade = g.createRadialGradient(px / 2, px / 2, px * 0.1, px / 2, px / 2, px / 2);
-  fade.addColorStop(0, 'rgba(30, 38, 47, 1)'); fade.addColorStop(0.5, 'rgba(25, 32, 40, 0.92)'); fade.addColorStop(1, 'rgba(20, 26, 33, 0)');
+  fade.addColorStop(0, 'rgba(252, 253, 254, 1)'); fade.addColorStop(0.5, 'rgba(246, 248, 250, 0.92)'); fade.addColorStop(1, 'rgba(240, 243, 246, 0)');
   g.fillStyle = fade; g.fillRect(0, 0, px, px);
   g.globalCompositeOperation = 'source-atop';
   for (let k = 0; k <= FLOOR_M * 2; k++) {
     const at = Math.round(k * per / 2) + 0.5;
-    g.strokeStyle = k % 2 === 0 ? 'rgba(128, 152, 170, 0.34)' : 'rgba(128, 152, 170, 0.14)'; g.lineWidth = 1;
+    g.strokeStyle = k % 2 === 0 ? 'rgba(52, 70, 88, 0.11)' : 'rgba(52, 70, 88, 0.045)'; g.lineWidth = 1;
     g.beginPath(); g.moveTo(at, 0); g.lineTo(at, px); g.moveTo(0, at); g.lineTo(px, at); g.stroke();
   }
   const t = new THREE.CanvasTexture(c);
@@ -570,11 +572,11 @@ function paintCell(data, m, idx) {
 function boxMesh(b) {
   const height = b.z_top - b.z_bottom, overhead = b.z_bottom > 0.3;
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(b.half_xy[0] * 2, b.half_xy[1] * 2, height),
-    new THREE.MeshStandardMaterial({ color: overhead ? 0x9a86b0 : COLORS.box, roughness: 0.8, transparent: true, opacity: 0.8 }));
+    new THREE.MeshStandardMaterial({ color: overhead ? 0xb7a5cf : COLORS.box, roughness: 0.85, transparent: true, opacity: 0.8 }));
   mesh.position.set(b.center_xy[0], b.center_xy[1], b.z_bottom + height / 2);
   mesh.rotation.z = b.yaw ?? 0;
   mesh.castShadow = true; mesh.receiveShadow = true;
-  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: overhead ? 0xc9a8e6 : 0xb8c8d4, transparent: true, opacity: 0.75 })));
+  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: overhead ? 0x8a6fb5 : 0x6f7f8e, transparent: true, opacity: 0.6 })));
   return mesh;
 }
 

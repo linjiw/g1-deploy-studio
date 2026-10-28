@@ -36,6 +36,7 @@ async function demo({ walk, at, width, height, file, chrome = false, margin = 0.
     D.viewer.dirty();
   }, { at, margin, chrome, look });
   await page.waitForTimeout(chrome ? 2000 : 1200);
+  await page.evaluate(() => document.activeElement?.blur?.());   // a still shows no keyboard focus ring
   await page.screenshot({ path: file, type: file.endsWith('.png') ? 'png' : 'jpeg', quality: file.endsWith('.png') ? undefined : 82 });
   await page.context().close();
   console.log('wrote', file);

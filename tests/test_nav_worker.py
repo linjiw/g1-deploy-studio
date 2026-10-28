@@ -13,14 +13,17 @@ import tempfile
 import time
 import unittest
 
+from studio import paths
 from studio import nav_worker
 
 ROOT = Path(__file__).resolve().parents[1]
-DEPLOY_PYTHON = Path('/home/linjiw/code/g1-student-deploy/.venv/bin/python')
+DEPLOY_PYTHON = paths.deploy_python()
 ENABLED = os.environ.get('STUDIO_INTEGRATION') == '1' and DEPLOY_PYTHON.is_file()
 FLAT = {'id': 'flat', 'label': 'Flat', 'kind': 'boxes', 'frame_id': 'world', 'boxes': []}
 PILLAR = {'id': 'pillar', 'label': 'Pillar', 'kind': 'boxes', 'frame_id': 'world',
           'boxes': [{'center_xy': [1.6, 0.0], 'half_xy': [0.2, 0.2], 'yaw': 0, 'z_bottom': 0, 'z_top': 1.0}]}
+# A custom 'pools' latency: first pool, check retry, fallback pools (illustrative values).
+POOLS = {'kind': 'pools', 'first_s': 0.2, 'retry_s': 0.1, 'fallback_s': 1.0}
 
 
 def request(**overrides):
@@ -39,6 +42,13 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(clean['policy']['loader'], 'deploy-bundle')
         self.assertEqual(clean['stand_mode'], 'default')    # node.py stand(): arms to the default pose
         self.assertEqual(nav_worker.validate_request(request(stand_mode='hold_upper'))['stand_mode'], 'hold_upper')
+        self.assertEqual(clean['guards'], 'off')             # the frozen planner alone unless asked
+        self.assertIsNone(clean['goal_lookahead_m'])         # the bundle's evaluated 1.5 m
+        guarded = nav_worker.validate_request(request(guards='walls', goal_lookahead_m=1.0))
+        self.assertEqual((guarded['guards'], guarded['goal_lookahead_m']), ('walls', 1.0))
+        for bad in ({'guards': 'on'}, {'goal_lookahead_m': 3.0}, {'goal_lookahead_m': 'slow'}):
+            with self.assertRaises(ValueError):
+                nav_worker.validate_request(request(**bad))
 
     def test_rejects_bad_values(self):
         for bad in ({'odometry': 'gps'}, {'seed': -1}, {'goal_radius_m': 3}, {'initial_goal': [1]}, {'id': '../x'},
@@ -51,7 +61,7 @@ class RequestTests(unittest.TestCase):
         from studio import policies, policy_worker
         self.assertEqual(nav_worker.BUNDLE_LABEL, policies.BUNDLE_LABEL)
         self.assertEqual(policy_worker.BUNDLE_LABEL, policies.BUNDLE_LABEL)
-        self.assertEqual(policies.BUNDLE_LABEL, "student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1")
+        self.assertEqual(policies.BUNDLE_LABEL, "student-s2-kcsc (2026-10-08 bundle), not Flow's current LiDAR student")
 
     def test_lio_noise_is_the_g4_configuration(self):
         self.assertEqual(nav_worker.ODOMETRY['lio']['noise'],
@@ -171,42 +181,43 @@ class NodeLatencyTests(unittest.TestCase):
         clean = nav_worker.validate_nav_latency({'mode': 'node'})
         self.assertEqual(clean, {'mode': 'node', 'preset': 'bundle-fused', 'guess_s': 0.3,
                                  'distribution': {'kind': 'lognormal', 'p50_s': 0.119, 'p95_s': 0.167}})
-        sk1 = nav_worker.validate_nav_latency({'mode': 'node', 'preset': 'flow-sk1'})['distribution']
-        self.assertEqual(sk1, {'kind': 'pools', 'first_s': 0.19, 'retry_s': 0.09, 'fallback_s': 1.10})
+        pools = nav_worker.validate_nav_latency({'mode': 'node', 'distribution': POOLS})['distribution']
+        self.assertEqual(pools, POOLS)
+        self.assertEqual(sorted(nav_worker.LATENCY_PRESETS), ['bundle-fused'])
         custom = nav_worker.validate_nav_latency({'mode': 'node', 'distribution': {'kind': 'fixed', 's': 0.25}, 'guess_s': 0.2})
         self.assertEqual((custom['preset'], custom['distribution'], custom['guess_s']), ('custom', {'kind': 'fixed', 's': 0.25}, 0.2))
         for bad in ({'mode': 'node', 'preset': 'fastest'}, {'mode': 'node', 'distribution': {'kind': 'gamma'}},
                     {'mode': 'node', 'distribution': {'kind': 'lognormal', 'p50_s': 0.2, 'p95_s': 0.1}},
-                    {'mode': 'node', 'preset': 'flow-sk1', 'distribution': {'kind': 'fixed', 's': 0.1}},
+                    {'mode': 'node', 'preset': 'bundle-fused', 'distribution': {'kind': 'fixed', 's': 0.1}},
                     {'mode': 'node', 'guess_s': -1}, {'mode': 'node', 'ms': 160}, {'mode': 'node', 'guess_s': True}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 nav_worker.validate_nav_latency(bad)
-        self.assertEqual(nav_worker.validate_request(request(latency={'mode': 'node', 'preset': 'flow-wx'}))['latency']['preset'],
-                         'flow-wx')
+        self.assertEqual(nav_worker.validate_request(request(latency={'mode': 'node', 'preset': 'bundle-fused'}))['latency']['preset'],
+                         'bundle-fused')
 
     def test_node_rules(self):
         import numpy as np
         self.assertEqual(nav_worker.node_lead_ticks(0.3), 16)      # node.py from its 0.3 s first guess: ceil(15.0) + 1
         self.assertEqual(nav_worker.node_lead_ticks(0.119), 7)
-        self.assertEqual(nav_worker.node_lead_ticks(1.10), 56)     # after a 1.1 s fallback: longer than a 50-frame plan
+        self.assertEqual(nav_worker.node_lead_ticks(1.0), 51)      # after a 1 s fallback: longer than a 50-frame plan
         lat = [0.1] * 9 + [1.1]
         self.assertAlmostEqual(nav_worker.node_latency_estimate(np, lat), float(np.quantile(lat[-8:], 0.9)))
         self.assertEqual(nav_worker.node_latency_estimate(np, [0.2]), 0.2)
         self.assertEqual(nav_worker.landing_tick(100, 0.0), 101)   # never in the request's own tick
         self.assertEqual(nav_worker.landing_tick(100, 0.12), 106)
         self.assertEqual(nav_worker.landing_tick(100, 0.121), 107)
-        self.assertEqual(nav_worker.landing_tick(100, 1.10), 155)
+        self.assertEqual(nav_worker.landing_tick(100, 1.0), 150)
 
     def test_latency_draws(self):
         import numpy as np
 
         class Planner:
             last_pools = [(None, None, 'go')]
-        dist = nav_worker.validate_nav_latency({'mode': 'node', 'preset': 'flow-sk1'})['distribution']
+        dist = nav_worker.validate_nav_latency({'mode': 'node', 'distribution': POOLS})['distribution']
         draw = nav_worker.LatencyDraw(np, dist, 0)
-        self.assertEqual(draw(Planner, {}), (0.19, 'first pool'))
+        self.assertEqual(draw(Planner, {}), (0.2, 'first pool'))
         Planner.last_pools = [(None, None, 'go'), (None, None, 'go'), (None, None, 'stop')]
-        self.assertEqual(draw(Planner, {'exec_check': {'tries': 3}}), (1.10 + 0.09, 'fallback pools + check retry'))
+        self.assertEqual(draw(Planner, {'exec_check': {'tries': 3}}), (1.0 + 0.1, 'fallback pools + check retry'))
         logn = nav_worker.validate_nav_latency({'mode': 'node'})['distribution']
         a, b = nav_worker.LatencyDraw(np, logn, 5), nav_worker.LatencyDraw(np, logn, 5)
         xs = [a(Planner, {})[0] for _ in range(4000)]
@@ -223,13 +234,15 @@ class NodeLatencyTests(unittest.TestCase):
                      'self.latency_est = float(np.quantile(self.latencies[-8:], 0.9))',
                      'first = self.active is None',
                      'anchor_tick = now_tick  # computed while standing still: start it when it lands',
-                     'if reason or anchor_tick <= self.last_streamed_anchor:',
                      'start = max(anchor_tick, now_tick - 2)',
                      'self.last_streamed_anchor = now_tick + 10**6',
                      'plan = planner.plan(np.asarray(hist), [], goal_fn, map_fn, sel, prev=None, guide_boxes=guide)',
                      'ap.add_argument("--latency-guess-s", type=float, default=0.3)',
                      'ap.add_argument("--inflight", type=int, default=1,'):
             self.assertIn(line, source)
+        # the stale rule: inline at deploy-2026-10-23; with guards (branch robustness) the unguarded form is kept
+        self.assertTrue('if reason or anchor_tick <= self.last_streamed_anchor:' in source
+                        or 'stale = anchor_tick <= self.last_streamed_anchor' in source)
         self.assertEqual((nav_worker.NODE_LATENCY_GUESS_S, nav_worker.NODE_LATENCY_WINDOW, nav_worker.NODE_LATENCY_QUANTILE),
                          (0.3, 8, 0.9))
 
@@ -455,7 +468,7 @@ class NavWorkerIntegrationTests(unittest.TestCase):
 
     def test_node_latency_mode(self):
         """node.py's rule: lead from the q90 of the last 8 latencies, landing after the drawn latency, late plans part-played."""
-        req = request(map=PILLAR, seed=1, latency={'mode': 'node', 'preset': 'flow-sk1'})
+        req = request(map=PILLAR, seed=1, latency={'mode': 'node', 'distribution': POOLS})
         s = Session(Path(self.tmp.name) / 'nav', req)
         self.addCleanup(s.close)
         s.wait(self.standing, what='the first stand')
@@ -472,7 +485,7 @@ class NavWorkerIntegrationTests(unittest.TestCase):
         for p in plans:
             if p is not plans[0]:
                 self.assertEqual(p['lead_ticks'], nav_worker.node_lead_ticks(est))
-            self.assertIn(p['latency_s'], (0.19, 1.10))
+            self.assertIn(p['latency_s'], (0.2, 1.0))
             self.assertEqual(p['land_tick'], nav_worker.landing_tick(p['tick'], p['latency_s']))
             if 'landed_tick' in p:
                 lat.append(p['latency_s'])
@@ -511,6 +524,86 @@ class NavWorkerIntegrationTests(unittest.TestCase):
         worst = max(abs(a - b) for fa, fb in zip(nav['frames'][:n], source['frames'][:n]) for a, b in zip(fa['qpos'], fb['qpos']))
         print(f'\nparity: {n} frames until arrival at {arrived:.2f} s, worst |qpos| difference {worst:.2e}', flush=True)
         self.assertLess(worst, 1e-4, 'nav worker qpos (rounded to 1e-5) diverged from the source rehearsal before arrival')
+
+
+def _guards_available():
+    from studio import workbench
+    return workbench.guard_options()['available']
+
+
+@unittest.skipUnless(ENABLED and _guards_available(), 'needs STUDIO_INTEGRATION=1 and a deploy stack with g1deploy/guards.py')
+class GuardedNavWorkerTests(unittest.TestCase):
+    """Navigate with --guards against the deploy stack's own sim.lockstep run_episode(guards=, goal_lookahead=)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def standing(self, latest):
+        n = latest.get('navigation', {})
+        return n.get('paused') and n.get('phase') in ('WAIT', 'ARRIVED', 'STOPPED')
+
+    def _parity(self, guards, lookahead, goal, seed, world=PILLAR):
+        s = Session(Path(self.tmp.name) / f'nav-{guards}', request(map=world, seed=seed, initial_goal=goal, guards=guards,
+                                                                    goal_lookahead_m=lookahead))
+        self.addCleanup(s.close)
+        s.wait(self.standing, what='arrival')
+        s.send('end')
+        s.wait(lambda l: l.get('status') == 'completed', 60, 'completion')
+        s.process.wait(30)
+        nav = json.loads((s.output / 'session.json').read_text())
+        self.assertEqual(nav['metadata']['guards']['preset'], guards)
+        self.assertEqual(nav['metadata']['goal_lookahead_m'], lookahead or 1.5)  # the effective value
+        arrived = next(e['time'] for e in nav['events'] if e['type'] == 'arrived')
+        req = {'schema_version': 1, 'id': 'parity', 'goal_xy': goal, 'start_xy': [0, 0], 'start_yaw_rad': 0, 'duration_s': 10,
+               'seed': seed, 'planner': {'candidates': 2, 'ode_steps': 4}, 'criterion': 'arena_reach', 'actuators': 'g1-current',
+               'latency': {'ms': 0, 'anchor': 'measured'}, 'map': world, 'guards': guards, 'goal_lookahead_m': lookahead}
+        path = Path(self.tmp.name) / f'bundle-{guards}.json'
+        path.write_text(json.dumps(req))
+        env = dict(os.environ, PYTHONPATH=str(ROOT), CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2', PYTHONDONTWRITEBYTECODE='1')
+        out = Path(self.tmp.name) / f'bundle-{guards}'
+        done = subprocess.run([str(DEPLOY_PYTHON), '-B', str(ROOT / 'studio/policy_worker.py'), '--request', str(path),
+                               '--output', str(out)], capture_output=True, text=True, timeout=900, env=env, cwd=ROOT)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        source = json.loads((out / 'session.json').read_text())
+        self.assertEqual(source['metadata']['planner_configuration']['guards'], guards)
+        n = int(round(arrived / 0.02))
+        self.assertGreater(n, 50)
+        self.assertGreaterEqual(len(source['frames']), n)
+        worst = max(abs(a - b) for fa, fb in zip(nav['frames'][:n], source['frames'][:n]) for a, b in zip(fa['qpos'], fb['qpos']))
+        print(f'\nguards {guards} lookahead {lookahead}: {n} frames until arrival at {arrived:.2f} s, worst |qpos| '
+              f'difference {worst:.2e}; guard events {[e["message"] for e in nav["events"] if e["type"] == "guard"][:5]}', flush=True)
+        self.assertLess(worst, 1e-4, 'guarded nav worker diverged from the guarded source rehearsal before arrival')
+        return nav, source
+
+    def test_walls_slow_matches_the_guarded_source_rehearsal(self):
+        self._parity('walls', 1.0, [2.5, 0.3], 3)
+
+    def test_node_latency_mode_with_guards_walks_and_records_guard_fields(self):
+        """node.py's latency rule (the robot's own) with --guards walls --goal-lookahead 1.0, end to end on open floor.
+        (At the tests' K 2 / ODE 4 budget the planner itself is poor near obstacles; guard parity is the tests above.)"""
+        s = Session(Path(self.tmp.name) / 'nav-node', request(map=FLAT, seed=2, guards='walls', goal_lookahead_m=1.0,
+                                                               latency={'mode': 'node', 'preset': 'bundle-fused'}))
+        self.addCleanup(s.close)
+        s.wait(self.standing, what='standing start')
+        commands = s.send('goal', xy=[2.0, 0.3])
+        self.assertEqual(s.reply(commands, s.seq)['status'], 'applied')
+        commands = s.send('go')
+        self.assertEqual(s.reply(commands, s.seq)['status'], 'applied')
+        latest = s.wait(lambda l: self.standing(l) and l['navigation']['legs'] and l['navigation']['legs'][-1]['outcome'],
+                        900, 'walk end')
+        s.send('end')
+        s.wait(lambda l: l.get('status') == 'completed', 60, 'completion')
+        s.process.wait(30)
+        nav = json.loads((s.output / 'session.json').read_text())
+        self.assertEqual(latest['navigation']['legs'][-1]['outcome'], 'arrived')
+        self.assertTrue(nav['plans'] and all('guard' in p and 'calm_hold' in p for p in nav['plans']))
+        self.assertEqual(nav['metadata']['guards']['preset'], 'walls')
+        self.assertEqual(nav['metadata']['goal_lookahead_m'], 1.0)
+
+    def test_deploy_matches_the_guarded_source_rehearsal(self):
+        nav, _ = self._parity('deploy', None, [2.5, -0.2], 1)
+        self.assertTrue(all('guard' in p for p in nav['plans']))  # every plan row carries the guard fields
 
 
 if __name__ == '__main__':

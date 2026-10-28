@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#11171d">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f2f4f7">
   <title>Navigate demo · G1 Deploy Studio</title>
   <meta name="description" content="Pick a goal on a Unitree G1's own LiDAR map, read Studio's checks, press Go and watch a recorded simulated walk of the deploy stack: the robot, its estimate, its map, the plan and the pose its tracker is chasing.">
   <meta property="og:type" content="website">
@@ -22,12 +22,12 @@
   <link rel="modulepreload" href="../js/demo.js">
   <link rel="modulepreload" href="../js/viewer.js">
   <link rel="preload" href="../data/meshes.bin" as="fetch" crossorigin>
-  <style>html, body { margin: 0; height: 100%; background: #0c1015; overflow: hidden; }</style>
+  <style>html, body { margin: 0; height: 100%; background: #eef1f4; overflow: hidden; }</style>
 </head>
 <body>
 <main id="demo" class="stage standalone" aria-label="Navigate demo" data-tour="../#tour">
   <div class="boot" role="status" aria-live="polite"><div class="boot-card"><b data-boot="label">Loading three.js</b><div class="bar"><i></i></div><small>About 1 MB: three.js, the G1 model and a room. Every walk is a recording; your browser runs no policy.</small></div></div>
-  <noscript><p style="position:absolute;inset:0;display:grid;place-items:center;color:#ffd59a">The demo needs JavaScript and WebGL. <a href="../#tour" style="color:#fff">Watch the tour instead</a>.</p></noscript>
+  <noscript><p style="position:absolute;inset:0;display:grid;place-items:center;color:#8a5a00">The demo needs JavaScript and WebGL. <a href="../#tour" style="color:#10161c">Watch the tour instead</a>.</p></noscript>
 </main>
 <script type="module">
   import { boot } from '../js/stage.js';

@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+from studio import policies
 from studio.workbench import Workbench, atomic_json
 
 
@@ -25,6 +26,11 @@ class Catalog:
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
+        # Lifecycle only: the policy's files are not needed (CI has no deploy stack); its identity is still computed.
+        real_identity = policies.identity
+        patcher = patch('studio.policies.identity', side_effect=lambda profile: dict(real_identity(profile), available=True, missing=[]))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.w = Workbench(Catalog(), self.root, worker_python=sys.executable)

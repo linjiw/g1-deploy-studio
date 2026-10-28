@@ -22,7 +22,7 @@ page.on('response', r => { if (r.status() >= 400) failed.push(`${r.status()} ${r
 const shot = name => page.screenshot({ path: path.join(evidence, `${name}.png`) });
 
 await page.goto(base + '/');
-await page.waitForFunction(() => window.__studio?.state?.session && document.querySelector('#loading-overlay').hidden, null, { timeout: 90000 });
+await page.waitForFunction(() => window.__studio?.state?.ready && document.querySelector('#loading-overlay').hidden, null, { timeout: 90000 });
 await page.click('#workspace-arena');
 await page.waitForSelector('#arena-base');
 await page.selectOption('#arena-base', `tpl:${template}`);

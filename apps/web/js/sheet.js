@@ -105,8 +105,8 @@ function planSvg(m, paths) {
     out.push(`<line class="${k % 2 ? 'g-minor' : 'g-major'}" x1="${x}" x2="${x}" y1="${mT}" y2="${Y(aMin)}"/>`);
     if (k % 2 === 0) out.push(`<text class="g-label" x="${x}" y="${Y(aMin) + 15}" text-anchor="middle">${fx(l, 0)}</text>`);
   }
-  out.push(`<text class="g-caption" x="${mL - 6}" y="${mT - 9}" text-anchor="end">AHEAD m ↑</text>`,
-    `<text class="g-caption" x="${mL}" y="${H - 8}">← LEFT + (m)</text>`, `<text class="g-caption" x="${W - mR}" y="${H - 8}" text-anchor="end">− RIGHT →</text>`);
+  out.push(`<text class="g-caption" x="${mL - 6}" y="${mT - 9}" text-anchor="end">Ahead (m) ↑</text>`,
+    `<text class="g-caption" x="${mL}" y="${H - 8}">← Left + (m)</text>`, `<text class="g-caption" x="${W - mR}" y="${H - 8}" text-anchor="end">− Right →</text>`);
   // Rehearsed paths (simulator ground truth), clipped to the plan.
   out.push(`<g clip-path="url(#sheet-clip)">${paths.map(r => `<polyline class="path" style="stroke:${outcomeColor(r.outcome)}" points="${r.trajectory.map(p => P(toStart([p[1], p[2]], m.start, m.yaw))).join(' ')}"/>`).join('')}</g>`);
   for (const b of m.boxes) out.push(`<polygon id="sheet-box-${b.n}" class="${b.overhead ? 'box-overhead' : 'box-ground'}" points="${b.corners.map(P).join(' ')}"/>`);
@@ -115,12 +115,12 @@ function planSvg(m, paths) {
     `<line class="g-ahead" x1="${sx}" y1="${sy}" x2="${sx}" y2="${mT}"/>`,
     `<circle id="sheet-goal" class="goal-ring" cx="${gx}" cy="${gy}" r="${gr}"/>`,
     `<path class="goal-cross" d="M${gx - 7} ${gy}H${gx + 7}M${gx} ${gy - 7}V${gy + 7}"/>`,
-    `<text class="mark-label" x="${gx + gr + 5 + 40 > W - mR ? gx - gr - 5 : gx + gr + 5}" y="${gy + 4}" text-anchor="${gx + gr + 45 > W - mR ? 'end' : 'start'}">GOAL</text>`);
+    `<text class="mark-label" x="${gx + gr + 5 + 40 > W - mR ? gx - gr - 5 : gx + gr + 5}" y="${gy + 4}" text-anchor="${gx + gr + 45 > W - mR ? 'end' : 'start'}">Goal</text>`);
   const tip = Y(0.6);
   out.push(`<circle class="start-ring" cx="${sx}" cy="${sy}" r="10"/>`, `<path class="heading" d="M${sx - 14} ${sy}H${sx + 14}"/>`,
     `<line class="heading" x1="${sx}" y1="${sy}" x2="${sx}" y2="${tip + 6}"/>`, `<polygon class="heading-tip" points="${sx},${tip - 4} ${sx - 6},${tip + 8} ${sx + 6},${tip + 8}"/>`,
     `<circle id="sheet-start" class="start-dot" cx="${sx}" cy="${sy}" r="4.5"/>`,
-    `<text class="mark-label" x="${sx + 14}" y="${sy + 16}">START · face ahead</text>`);
+    `<text class="mark-label" x="${sx + 14}" y="${sy + 16}">Start · face ahead</text>`);
   for (const b of m.boxes) {
     const [cx, cy] = [X(b.centre[1]), Y(b.centre[0])];
     out.push(`<g class="badge"><circle cx="${cx}" cy="${cy}" r="9"/><text x="${cx}" y="${cy + 4}" text-anchor="middle">${b.n}</text></g>`);

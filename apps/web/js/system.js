@@ -1,6 +1,7 @@
 // System map: the deployment chain with transport-specific, evidence-styled edges.
 // Configured edges are never animated; only observed/recorded edges carry data.
 import { escape, num, chip, fact, finite, tiny } from './util.js';
+import { UI, SERIES } from './palette.js';
 
 // Three-row layout (viewBox 1200 × 490): planning chain on top, tracking chain in the middle,
 // sensing and physics on the bottom with the state feedback along the bottom edge. Every edge is
@@ -50,9 +51,9 @@ const EDGES = [
 ];
 
 const TRANSPORT = {
-  dds: { label: 'Unitree DDS', color: '#7fb4ff' }, zmq: { label: 'ZMQ', color: '#efbb70' },
-  inproc: { label: 'In-process call', color: '#9fb0be' }, http: { label: 'HTTP loopback', color: '#82baa7' },
-  ros2: { label: 'ROS 2', color: '#d58ad6' },
+  dds: { label: 'Unitree DDS', color: SERIES.blue }, zmq: { label: 'ZMQ', color: UI.warn },
+  inproc: { label: 'In-process call', color: UI.dim }, http: { label: 'HTTP loopback', color: UI.ok },
+  ros2: { label: 'ROS 2', color: SERIES.violet },
 };
 
 export function sessionKind(session) {
@@ -158,7 +159,7 @@ const DETAILS = {
   perception: { what: 'Points → world via odometry + FK + mount, robot self-filter, then support (standable height) and ceiling grids at 0.05 m. NaN = unseen.', studio: 'The planner treats unseen cells as free. Studio keeps them visibly unknown.' },
   route: { what: 'A* over the sensed grid every 0.1 s picks a waypoint about 1.5 m ahead.', studio: 'Effective route configuration is recorded per run.' },
   flow: { what: 'Generative flow-matching planner: K candidate 1 s whole-body motions conditioned on history, an ego map and the waypoint; a clearance check selects one.', studio: 'Studio records the first forward call per replan, the selected rule and measured compute time.' },
-  feed: { what: 'Each 20 ms tick a 10-row window (0…0.9 s) is cut from the selected plan: joints, velocities and relative pelvis orientation. Columns 64–66 are diagnostic only.', studio: 'Recorded per frame; the cyan ghost renders this window.' },
+  feed: { what: 'Each 20 ms tick a 10-row window (0…0.9 s) is cut from the selected plan: joints, velocities and relative pelvis orientation. Columns 64–66 are diagnostic only.', studio: 'Recorded per frame; the pink ghost renders this window.' },
   sonic: { what: 'Fused SONIC ONNX tracker: observation [1,1570] → action [1,29]. It tracks the window while balancing; it does not plan.', studio: 'Inputs/outputs sampled at 10 Hz in CPU rehearsals; inference time measured directly.' },
   pd: { what: 'q* = default + action_scale ⊙ action (Isaac→MuJoCo order); fixed kp/kd; 500 Hz LowCmd writer on hardware.', studio: 'CPU rehearsals record PD targets and the clipped simulated PD torques. No DDS LowCmd exists.' },
   robot: { what: 'Unitree G1 29-DoF body. Physical robot or simulator.', studio: 'Studio never publishes rt/lowcmd or hand commands. Hardware is disabled.' },
@@ -204,7 +205,7 @@ export function renderRobotContract(container, robot) {
   const topics = (robot.dds?.topics ?? []).map(t => `<tr><td><code>${escape(t.name)}</code></td><td>${escape((t.type ?? '').split('::').pop())}</td><td>${escape(t.kind ?? '')}</td>
     <td>${(t.publishers ?? []).map(x => `${escape(x.component)}${finite(x.rate_hz_configured) ? ` · ${x.rate_hz_configured} Hz` : ''}`).join('<br>')}</td><td>${(t.subscribers ?? []).map(x => escape(x.component)).join('<br>')}</td></tr>`).join('');
   const thresholds = (robot.safety_thresholds ?? []).map(t => `<tr><td>${escape(t.id)}</td><td>${escape(t.value)} ${escape(t.unit ?? '')}</td><td>${escape(t.owner ?? '—')}</td><td>${escape(t.effect ?? '—')}</td><td><code>${escape(where(t.source))}</code></td></tr>`).join('');
-  container.innerHTML = `<div class="contract-head"><div><span class="eyebrow">UNITREE G1 CONTRACT · ${escape((robot.verification?.status ?? 'source_inspected').replaceAll('_', ' ').toUpperCase())}</span><h3>${escape(robot.title ?? robot.robot_id)}</h3></div>${chip('configured', robot.verification?.statement ?? '')}</div>
+  container.innerHTML = `<div class="contract-head"><div><span class="eyebrow">Unitree G1 contract · ${escape((robot.verification?.status ?? 'source_inspected').replaceAll('_', ' ').toLowerCase())}</span><h3>${escape(robot.title ?? robot.robot_id)}</h3></div>${chip('configured', robot.verification?.statement ?? '')}</div>
     <p class="tiny">${escape(robot.verification?.statement ?? '')} Joints are matched by name. Motor index = LowCmd/LowState slot; MuJoCo order = simulator and recordings; IsaacLab order = ZMQ pose wire and policy tensors.</p>
     ${discrepancies.length ? `<h4>Source discrepancies (${openCount} open of ${discrepancies.length})</h4><div class="discrepancies">${discrepancies.map(d => { const st = d.status ?? 'open';
       return `<div class="discrepancy sev-${escape(d.severity)} st-${escape(st)}"><span class="sev">${escape(st === 'open' ? d.severity : st)}</span><div><strong>${escape(d.id.replaceAll('_', ' '))}</strong>${d.resolution ? `<p class="resolution">${escape(d.resolution)}</p>` : ''}<p>${escape(d.summary)}</p></div></div>`; }).join('')}</div>` : ''}

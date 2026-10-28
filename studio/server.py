@@ -18,6 +18,7 @@ import threading
 import time
 from urllib.parse import parse_qs, unquote, urlparse
 
+from studio import paths
 from studio.model import RobotModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,9 +31,13 @@ COMPRESSIBLE = ('application/json', 'text/', 'application/javascript', 'model/st
                 'image/svg+xml')
 QUIET_PREFIXES = ('/api/sensors', '/api/jobs', '/assets/', '/vendor/', '/api/version')
 # Runs written by tools/l3_rehearsal.sh (outside Git). Discovered read-only; never launched from here.
-L3_BASE = Path.home() / 'research-data/g1-deploy-studio/l3'
+L3_BASE = paths.get('data_root') / 'l3'
+# Real robot sessions recorded by the deploy kit's console (g1deploy/recorder.py): link or copy a session directory
+# (or a robot-day directory of sessions) here and Replay lists it. Read-only.
+CONSOLE_BASE = paths.get('data_root') / 'robot-sessions'
 L3_RESCAN_S = 10.0
 L3_GROUP = 'Real-time rehearsals (L3)'
+CONSOLE_GROUP = 'Robot sessions (deploy kit)'
 INDEX_HTML = ROOT / 'apps/web/index.html'
 INLINE_SCRIPT = re.compile(rb'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', re.S)
 _script_policy = {}
@@ -120,9 +125,12 @@ class NoRecording(LookupError):
 class Catalog:
     def __init__(self, config=ROOT / "config/sessions.json"):
         document = json.loads(Path(config).read_text())
-        entries = document["sessions"]
+        entries = list(document["sessions"])
+        # This machine's own recordings: config/local.json "sessions" (ignored by Git) extend the default list.
+        if Path(config).resolve() == (ROOT / "config/sessions.json").resolve():
+            entries += paths.local_config().get("sessions", [])
         self.entries = {}
-        for item in entries:
+        for item in map(paths.relocate_tree, entries):  # recorded paths -> this machine's roots (studio/paths.py)
             key = item["id"]
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", key) or key in self.entries:
                 raise ValueError("Session IDs must be unique URL-safe identifiers")
@@ -136,10 +144,13 @@ class Catalog:
         self.workbench = None
         self.policies = None
         self.l3_base = L3_BASE
+        self.console_base = CONSOLE_BASE
 
     def enable_workbench(self, data_root=None):
         from studio.workbench import Workbench, DATA_ROOT
         self.workbench = Workbench(self, data_root or DATA_ROOT)
+        if data_root is not None:  # robot sessions live under the gateway's own data root
+            self.console_base = Path(data_root) / 'robot-sessions'
 
     def register(self, key, path, label, provider=None, extra=None):
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', key):
@@ -176,8 +187,44 @@ class Catalog:
                     self.entries[f'l3-{slug}-wire'] = {'id': f'l3-{slug}-wire', 'path': str(run / 'capture.jsonl'),
                                                        'label': f'L3 wire capture · {run.name}', **extra}
 
+    def discover_console(self, base=None, *, force=False):
+        """Register deploy-kit console sessions under data_root/robot-sessions: each session directory (rec/meta.json in
+        format g1deploy.recording.v1), directly or one level down (a robot-day directory). Read-only, throttled."""
+        from studio.replay import console_rec_dir
+        base = Path(base) if base is not None else self.console_base
+        now = time.monotonic()
+        if not force and now - getattr(self, '_console_scanned', -L3_RESCAN_S) < L3_RESCAN_S:
+            return
+        self._console_scanned = now
+        if base is None or not base.is_dir():
+            return
+        found = []
+        for entry in sorted(p for p in base.iterdir() if p.is_dir() and not p.name.startswith('.')):
+            if console_rec_dir(entry) is not None:
+                found.append((entry.name, entry))
+            else:
+                found += [(f'{entry.name}-{sub.name}', sub) for sub in sorted(entry.iterdir())
+                          if sub.is_dir() and not sub.name.startswith('.') and console_rec_dir(sub) is not None]
+        for name, session in found:
+            key = 'robot-' + re.sub(r'[^a-zA-Z0-9_-]', '-', name)[:60]
+            info = {}
+            try:
+                info = json.loads((session / 'session.json').read_text())
+            except (OSError, ValueError):
+                pass
+            real = info.get('mode') in (None, 'robot')
+            note = info.get('note') if isinstance(info.get('note'), str) else None
+            with self.lock:
+                if key not in self.entries:
+                    self.entries[key] = {'id': key, 'path': str(session), 'group': CONSOLE_GROUP,
+                                         'label': f"{'Robot' if real else 'Console sim'} · {name}" + (f' · {note[:60]}' if note else ''),
+                                         'robot': 'real' if real else 'simulated', 'kind': 'robot-session',
+                                         'started_unix_s': (session / 'session.json').stat().st_mtime
+                                         if (session / 'session.json').exists() else None}
+
     def listing(self):
         self.discover_l3()
+        self.discover_console()
         with self.lock:
             items = list(self.entries.items())
             live = set(self.providers)
@@ -566,6 +613,11 @@ class Handler(BaseHTTPRequestHandler):
                 base = ROOT / "node_modules/three"
                 relative = path[len("/vendor/three/"):]
                 cache = "private, max-age=86400"
+            elif path.startswith("/vendor/fonts/"):
+                # Inter (OFL-1.1, see NOTICE), the same variable font the site ships.
+                base = ROOT / "node_modules/@fontsource-variable/inter/files"
+                relative = path[len("/vendor/fonts/"):]
+                cache = "private, max-age=86400"
             else:
                 base = ROOT / "apps/web"
                 relative = "index.html" if path == "/" else path.lstrip("/")
@@ -657,7 +709,7 @@ def main():
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--config", type=Path, default=ROOT / "config/sessions.json")
     parser.add_argument("--data-root", type=Path, default=None,
-                        help="Workbench data root (default ~/research-data/g1-deploy-studio/workbench)")
+                        help="Workbench data root (default <data_root>/workbench; studio/paths.py)")
     args = parser.parse_args()
     catalog = Catalog(args.config)
     catalog.enable_workbench(args.data_root)

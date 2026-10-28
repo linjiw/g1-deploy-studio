@@ -8,7 +8,9 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 out, fail_at = Path(sys.argv[1]), int(sys.argv[2])
-sys.path.insert(0, '/home/linjiw/code/g1-student-deploy')
+from studio import paths  # noqa: E402  (PYTHONPATH=<studio>)
+
+sys.path.insert(0, str(paths.get('deploy_root')))
 import sim.episode as episode  # noqa: E402  (same module object the worker will use)
 
 original = episode.Physics.step

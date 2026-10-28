@@ -24,10 +24,8 @@ default are covered by the unit tests only. Log: `~/research-data/g1-deploy-stud
 node.py `stand()` (`g1deploy/node.py`, `StudentNode.stand`) streams a 4 s chunk from the measured pose. Over 1 s, all
 29 joints blend (smoothstep) to SONIC's default pose; the pose is then held for 3 s. The default pose has the arms out:
 shoulder roll ±0.2 rad and elbow 0.6 rad put the hands about 0.23 m to each side of the pelvis, plus about 5 cm of hand.
-Stopping beside a wall therefore swings the hands outward. In Flow's closed-loop study (round SLR2,
-`closed_loop/callback.py` `stand_chunk(hold_upper=True)`), holding the waist and arms cut stand-time arm contacts from
-26 to 9. Those contacts came 0.2 s later instead, once the next plan landed, and SLR2 was not adopted
-(`research/BEST_MODEL.md`, `research/ROUND_ST_PLAN.md`).
+Stopping beside a wall therefore swings the hands outward. Studio offers a variant that holds the waist and arms, so
+the swing's effect on contact can be measured at the deploy settings.
 
 - **`default`**: node.py's chunk, unchanged (`nav_worker.stand_chunk`, used for every node stand).
 - **`hold_upper`**: the legs (MuJoCo joints 0–11) settle as before. The waist and arms (12–28) stay exactly at the
@@ -64,7 +62,7 @@ most 2 at a time, and start only while `MemAvailable` is at least 11 GiB.
 OUT=~/research-data/g1-deploy-studio/evidence/stand-contacts-<date>
 .venv/bin/python -m tools.stand_contacts --out $OUT --dry-run                  # the plan only
 .venv/bin/python -m tools.stand_contacts --out $OUT --walks 8                  # the walks (resumable)
-/home/linjiw/code/g1-student-deploy/.venv/bin/python -m tools.stand_contacts --out $OUT --clearance   # deploy interpreter
+"$G1_STUDENT_DEPLOY"/.venv/bin/python -m tools.stand_contacts --out $OUT --clearance   # deploy interpreter
 .venv/bin/python -m tools.stand_contacts --out $OUT --summarize-only           # tables, with clearance, into summary.json
 ```
 
@@ -77,11 +75,10 @@ Scenarios, all at the deploy profile (K 16 / ODE 10, 160 ms predictive, LIO-leve
   3.5 s after Go, including the 0.5 s pre-scan) stops the robot mid-passage, as an operator's Stand would.
 
 The deploy route keeps 0.35 m from walls and grows them 0.1 m into unseen space, so it cannot enter a passage much
-narrower than 1.0 m: in smoke runs at 0.75 m and 0.9 m (not archived) the goal check reported "No route". Flow's
-narrow-passage work (tight-mode corridors of 0.3–0.45 m, arm-height constrictions of 0.46–0.60 m; `BEST_MODEL.md`) is
-out of the bundle's reach.
+narrower than 1.0 m: in smoke runs at 0.75 m and 0.9 m (not archived) the goal check reported "No route". Narrower
+passages are out of the bundle's reach.
 
-**Results (2026-10-22, deploy-fixes branch, CPU, 2 workers).** 24 paired walks per mode. In all 24 pairs the physics
+**Results (2026-10-22, CPU, 2 workers).** 24 paired walks per mode. In all 24 pairs the physics
 before the first stand was bitwise equal across modes. Evidence:
 `~/research-data/g1-deploy-studio/evidence/stand-contacts-20261022/` (`summary.json`, one folder per walk). Clearance is
 the smallest distance from an arm collision geom to a wall over the recorded poses, from `--clearance`.
@@ -107,8 +104,8 @@ the smallest distance from an arm collision geom to a wall over the recorded pos
 - **Holding the arms changes the margin by a few centimetres, either way.** Per-world medians differ by at most 2 cm,
   and the minima by up to 4 cm. The smallest margin of all, 6.2 cm on the detour, came with `hold_upper`, with the arm
   held mid-swing towards the end of the wall.
-- **Flow's 26 → 9 does not carry over at these settings.** Flow's narrow-passage work concerns gaps under 0.6 m. The
-  bundle route keeps 0.35 m from walls, so its stops left every arm at least 6 cm from a wall.
+- **Holding the arms brings no measurable benefit at these settings.** The bundle route keeps 0.35 m from walls, so
+  its stops left every arm at least 6 cm from a wall in either mode.
 
 ## 2. Planner latency (`latency`)
 
@@ -137,8 +134,6 @@ t + latency (`g1deploy/latency.py`). Every plan has the same latency, and the pl
 | Preset | Latency per plan | Source |
 |---|---|---|
 | `bundle-fused` | lognormal through p50 0.119 s, p95 0.167 s | g1-student-deploy `docs/PLANNER_SPEED.md`: the fused fp32 planner on 37 recorded states, loaded deploy-PC GPU |
-| `flow-sk1` | 0.19 s first pool, 1.10 s when the fallback pools ran, +0.09 s if the execution check retried (never for the bundle planner: it has no execution check) | Flow `research/ROUND_ST_PLAN.md` round ST-L: FastWXPlanner bench medians for the ST1 student block, on the shared 5080 under Isaac load; applied to the pools the bundle planner used on that replan (Flow's `emulated_latency_s`) |
-| `flow-wx` | 0.11 / 0.47 / +0.05 s, the same way | the same round, WX teacher |
 | `custom` | `{"mode": "node", "distribution": {"kind": "fixed" \| "lognormal" \| "pools", ...}}` | yours |
 
 Each plan row records `latency_s` (the simulated latency), `compute_s`, `lead_ticks`, `anchor_tick`, `land_tick`,
@@ -146,12 +141,11 @@ Each plan row records `latency_s` (the simulated latency), `compute_s`, `lead_ti
 `metadata.latency_model` describes the rules and adds `realized`: drops, clips, late plans, lead ticks and the
 fallback share. `latency_model.ms` holds the preset's nominal value (p50, first-pool time or fixed value) for displays
 that read one number. The inspector's fidelity card therefore reads "L2 predict · lockstep with 119 ms planner latency"
-for `bundle-fused` and 190 ms for `flow-sk1`. It does not show the per-plan spread or the 1.1 s fallbacks; read those in
-the plans and in `realized`.
+for `bundle-fused`. It does not show the per-plan spread; read that in the plans and in `realized`.
 
 `bundle-fused` has no dependence on the planner's work. PLANNER_SPEED.md measures 0.34–0.54 s (fused) when every pool is
-unsafe, in about 4 % of plans in its realistic panel. A `pools` distribution charges its fallback time whenever the
-resample pool ran, which happens more often than that, so it brackets the tail from above:
+unsafe, in about 4 % of plans in its realistic panel. A custom `pools` distribution charges its fallback time whenever
+the resample pool ran, which happens more often than that, so it brackets the tail from above:
 `{"mode": "node", "distribution": {"kind": "pools", "first_s": 0.12, "fallback_s": 0.45}}`.
 
 ## 3. Deploy settings in Navigate
@@ -162,15 +156,17 @@ resample pool ran, which happens more often than that, so it brackets the tail f
 - node.py's latency rule with the bundle planner's timing;
 - LIO-level odometry drift (the G4 configuration);
 - one map for the session (`keep`, as node.py);
-- the current G1 actuator limits.
+- the current G1 actuator limits;
+- when the deploy stack has them: `--guards walls` and `--goal-lookahead 1.0`, the flags the lab G1 walked with on
+  H5–H6 (section 3a).
 
-The latency menu also offers the node rule with Flow student-sk1 timing. The public site's recordings
-(`tools/site/record_goals.py`, profile `deploy`) use the fixed 160 ms predictive model instead.
+The public site's recordings (`tools/site/record_goals.py`, profile `deploy`) use the fixed 160 ms predictive model
+instead.
 
 ## 4. A deploy-settings rehearsal, end to end
 
 1. **Check the inputs.** On the gateway, `GET /api/policies` lists the deploy bundle profile as available. Its label
-   reads "student-s2-kcsc (2026-10-08 bundle), not Flow's current student-sk1".
+   reads "student-s2-kcsc (2026-10-08 bundle), not Flow's current LiDAR student".
 2. **Interactive.** Navigate → *Simulated robot* → pick a world → **Use deploy settings** → **Start session**. Place a
    goal on the robot's map, read its checks, **Send goal**, **Go**. End the session; the recording opens in Replay. The
    timeline's *Planner compute* lane (drawn against the 160 ms deploy replan budget) shows the simulated latency per
@@ -192,33 +188,47 @@ The latency menu also offers the node rule with Flow student-sk1 timing. The pub
 
 ## 5. Policies and labels
 
-- **Navigate and the robot** run the g1-student-deploy bundle. Its planner is **student-s2-kcsc (2026-10-08 bundle),
-  not Flow's current student-sk1**. The policy catalog, Navigate recordings and rehearsal recordings all use this
-  label.
-- **Flow's adopted block** is WXD (WX + the DP2 duck keys, adopted 2026-10-20). It is pinned beside WX-RF as
-  `flow-wxd-rf-5658a6d-s0`. The bundle was built read-only from Flow, and Rehearse preselects it because its block
-  matches `BEST_MODEL.md`:
-
-  ```bash
-  .venv/bin/python tools/build_policy_bundle.py --block WXD --commit 5658a6d \
-      --config configs/closed_loop_dp2_xdg.json --arm XGD-g-s0 --teacher sk1_s0 \
-      --variant 'WXD-RF (WX + DP2 duck keys, retrieval-free; XGD arm)' \
-      --label 'Flow WXD-RF · adopted block (2026-10-20) · teacher sk1_s0' --adopted-commit 5658a6d
-  ```
-
-  The guard config's arm (`closed_loop_dp2_guard.json`, `GD2-g-s0`) uses clips (`retrieval_k` 16), and the builder
-  refuses it. The retrieval-free DP2 arm is `XGD-g-s0` in the xdg config: WX-RF's `WXR0` arm plus the six DP2 keys,
-  without WXR0's two retrieval yaw caps (used only by retrieval, so inert at `retrieval_k` 0). WX-RF now reads
-  "previously adopted (Flow now adopts WXD)".
-- **WXD-RF smoke** (K8/ODE6, CPU, no latency, 6 s, a beam with its bottom at 1.05 m across the path): the robot ducked
-  under the beam with the pelvis down to 0.65 m, without contact. It timed out at the 6 s cap, 0.42 m short of the goal
-  (`evidence/deploy-fidelity-20261022/wxd-rf-smoke/`).
+- **Navigate and the robot** run the g1-student-deploy bundle. Its planner is **student-s2-kcsc, the 2026-10-08 bundle
+  student, not Flow's current LiDAR student**. The policy catalog, Navigate recordings and rehearsal recordings all use
+  this label.
+- **Other Flow blocks** can be pinned beside WX-RF, read-only from Flow, with
+  `tools/build_policy_bundle.py --block <NAME> --commit <sha> --config <path> --arm <arm> --teacher <run>`. The bundle id
+  is `flow-<block>-rf-<commit7>-s<seed>`. The builder refuses an arm that uses retrieval or a different teacher, before
+  it writes anything. Rehearse preselects the profile whose block Flow names as adopted; a bundle labelled "adopted
+  block" when it was built reads "previously adopted" once Flow adopts another.
 - WX-family profiles are privileged: they plan from the exact boxes, not from LiDAR. They run in Rehearse only.
+
+## 3a. Deploy-side guards and walking speed
+
+g1-student-deploy's `g1deploy/guards.py` (branch `robustness`, merged into `integration`) adds opt-in guards between
+the lidar memory, the frozen planner and SONIC: `node.py --guards deploy|walls`. Its `docs/ROBUSTNESS.md` describes
+each guard and the evidence behind it. They are:
+- a self mask for leaked self-returns;
+- guidance boxes that never wrap the robot;
+- a walk envelope (pelvis, knee and tilt);
+- a calm fallback, with a latch that keeps a no-safe streak calm;
+- measured anchoring after a fallback or a missed prediction;
+- under `walls`, low overheads as walls for the planner and the route.
+
+Navigate (Advanced → *Guards*, *Walking speed*) and Rehearse (*Guards*, *Walking speed*, for the deploy bundle student)
+offer the presets the configured deploy stack has. The gateway reads them from `g1deploy/guards.py`; the tagged stack
+`deploy-2026-10-23` has none and offers only *off*.
+
+- **Rehearse and suites** pass them to `sim.lockstep.run_episode(guards=, goal_lookahead=)`. The recorded plan rows
+  follow the guarded plan, the one that drives SONIC, not the frozen selection.
+- **Navigate** runs the same steps in its own loop: the guarded view and selection (`plan_guarded`), the calm latch,
+  walking drops, and measured anchoring. The fixed-latency mode does this as `sim.lockstep` does; node mode does it
+  as `node.py`, with request-ordered staleness. At 0 ms latency a guarded Navigate walk equals the guarded source
+  rehearsal frame for frame. The integration tests `GuardedNavWorkerTests` check this for `walls` + 1.0 m and for
+  `deploy` (worst |qpos| difference 5e-6).
+- **The record:** `metadata.guards` holds the preset and its full configuration, `metadata.goal_lookahead_m` the
+  effective lookahead. Plan rows carry `guard`, `no_safe`, `rejected`, `self_masked`, `calm_hold` and `predicted`,
+  and the events `guard`, `calm_hold`, `calm_release` and `anchor_miss`.
 
 ## 6. Remaining gaps
 
-- **student-sk1 is not deployable.** Flow's current LiDAR student is not in any deploy bundle. Navigate, the site and the
-  robot run student-s2-kcsc. A new bundle would need the deploy repository's freeze tool and Flow artifacts; both are
+- **Flow's current LiDAR student is not deployable.** No deploy bundle carries it. Navigate, the site and the robot run
+  student-s2-kcsc. A new bundle would need the deploy repository's freeze tool and Flow artifacts; both are
   outside Studio.
 - **node.py's `stand()` swings the arms out.** Changing it to hold the upper body is the user's call in
   g1-student-deploy. Studio only measures the option (section 1).

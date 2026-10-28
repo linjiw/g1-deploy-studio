@@ -1,6 +1,7 @@
 // Runs browser and comparison overlay. Every row is an owned CPU rehearsal;
 // outcomes come from the unmodified source scorer and are not hardware results.
 import { $, escape, num, request, outcomeChip, outcomeColor, ago, emit, finite, download } from './util.js';
+import { UI, SERIES, RUN_COLORS, alpha } from './palette.js';
 
 // Wilson 95% interval for k successes in n trials (honest for small n).
 export function wilson(k, n, z = 1.96) {
@@ -83,7 +84,7 @@ function torqueCell(r) {
 }
 
 export const runs = { table: [], selected: new Set(), filters: { map: '', policy: '', outcome: '' }, maps: new Map(), canvas: null, colorBy: 'outcome', hover: null };
-const POLICY_COLORS = ['#56d9d0', '#c4a0d9', '#efbb70', '#7fb4ff', '#5fd39b', '#f08c85'];
+const POLICY_COLORS = RUN_COLORS;
 
 export async function refreshRuns() {
   const data = await request('/api/runs');
@@ -178,20 +179,20 @@ export async function drawCompare() {
   const W = c.clientWidth, H = c.clientHeight, ratio = Math.min(2, devicePixelRatio || 1);
   c.width = Math.round(W * ratio); c.height = Math.round(H * ratio);
   const ctx = c.getContext('2d'); ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  ctx.fillStyle = '#0d151d'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = UI.panel; ctx.fillRect(0, 0, W, H);
   const xs = [], ys = [];
   for (const r of chosen) for (const p of r.trajectory) { xs.push(p[1]); ys.push(p[2]); }
   for (const r of chosen) for (const p of [r.start_xy, r.goal_xy]) if (p) { xs.push(p[0]); ys.push(p[1]); }
   for (const b of map?.boxes ?? []) { const rr = Math.hypot(...b.half_xy); xs.push(b.center_xy[0] - rr, b.center_xy[0] + rr); ys.push(b.center_xy[1] - rr, b.center_xy[1] + rr); }
   if (!xs.length) {
-    ctx.fillStyle = '#8e9aa9'; ctx.font = '14px Inter, system-ui'; ctx.textAlign = 'center';
+    ctx.fillStyle = UI.dim; ctx.font = '14px Inter, system-ui'; ctx.textAlign = 'center';
     ctx.fillText('Select runs on the left to compare their trajectories.', W / 2, H / 2); return;
   }
   const lo = [Math.min(...xs) - 0.6, Math.min(...ys) - 0.6], hi = [Math.max(...xs) + 0.6, Math.max(...ys) + 0.6];
   const scale = Math.min((W - 40) / (hi[0] - lo[0]), (H - 70) / (hi[1] - lo[1]));
   const ox = (W - (hi[0] - lo[0]) * scale) / 2, oy = (H - (hi[1] - lo[1]) * scale) / 2 + 10;
   const px = ([x, y]) => [ox + (x - lo[0]) * scale, H - oy - (y - lo[1]) * scale];
-  ctx.strokeStyle = '#1b2a36'; ctx.lineWidth = 1; ctx.beginPath();
+  ctx.strokeStyle = UI.line; ctx.lineWidth = 1; ctx.beginPath();
   for (let x = Math.ceil(lo[0]); x <= hi[0]; x++) { const [a] = px([x, 0]); ctx.moveTo(a, 0); ctx.lineTo(a, H); }
   for (let y = Math.ceil(lo[1]); y <= hi[1]; y++) { const [, b] = px([0, y]); ctx.moveTo(0, b); ctx.lineTo(W, b); }
   ctx.stroke();
@@ -199,24 +200,25 @@ export async function drawCompare() {
     const c0 = Math.cos(b.yaw ?? 0), s0 = Math.sin(b.yaw ?? 0), [hx, hy] = b.half_xy;
     const pts = [[hx, hy], [-hx, hy], [-hx, -hy], [hx, -hy]].map(([x, y]) => px([b.center_xy[0] + c0 * x - s0 * y, b.center_xy[1] + s0 * x + c0 * y]));
     ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
-    ctx.fillStyle = b.z_bottom > 0.05 ? '#8a6fa840' : '#7d7592b0'; ctx.fill(); ctx.strokeStyle = '#b6aecb'; ctx.stroke();
+    const overhead = b.z_bottom > 0.05;
+    ctx.fillStyle = overhead ? alpha(SERIES.overhead, 0.22) : alpha(SERIES.box, 0.35); ctx.fill(); ctx.strokeStyle = overhead ? SERIES.overheadEdge : SERIES.boxEdge; ctx.stroke();
   }
   for (const r of chosen) {
     const color = runColor(r);
-    if (r.goal_xy) { const [gx, gy] = px(r.goal_xy); ctx.strokeStyle = color + '99'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(gx, gy, 0.3 * scale, 0, 7); ctx.stroke(); }
+    if (r.goal_xy) { const [gx, gy] = px(r.goal_xy); ctx.strokeStyle = alpha(color, 0.6); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(gx, gy, 0.3 * scale, 0, 7); ctx.stroke(); }  // in its run's colour: runs may differ in goal
     ctx.strokeStyle = color; ctx.lineWidth = runs.hover === r.id ? 3.5 : 2; ctx.beginPath();
     r.trajectory.forEach((p, i) => { const [x, y] = px([p[1], p[2]]); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
     ctx.stroke();
     const end = r.trajectory.at(-1), [ex, ey] = px([end[1], end[2]]);
     ctx.fillStyle = color; ctx.beginPath(); ctx.arc(ex, ey, 4, 0, 7); ctx.fill();
-    if (r.start_xy) { const [sx, sy] = px(r.start_xy); ctx.fillStyle = '#75c9f1'; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, 7); ctx.fill(); }
+    if (r.start_xy) { const [sx, sy] = px(r.start_xy); ctx.fillStyle = SERIES.start; ctx.beginPath(); ctx.arc(sx, sy, 4, 0, 7); ctx.fill(); }
   }
-  ctx.fillStyle = '#c3cdd7'; ctx.font = '12px Inter, system-ui'; ctx.textAlign = 'left';
+  ctx.fillStyle = UI.ink; ctx.font = '12px Inter, system-ui'; ctx.textAlign = 'left';
   ctx.fillText(`${chosen.length} run${chosen.length === 1 ? '' : 's'} · ${map?.label ?? 'map unavailable'}${mapIds.length > 1 ? ' · WARNING: runs from different arenas; drawing the first arena only' : ''}`, 14, 22);
-  ctx.fillStyle = '#8e9aa9'; ctx.font = '11px Inter, system-ui';
+  ctx.fillStyle = UI.dim; ctx.font = '11px Inter, system-ui';
   ctx.fillText('Simulator-ground-truth root XY (decimated). Dot = final pose · ring = goal radius.', 14, 40);
   const meters = scale > 120 ? 0.5 : scale > 40 ? 1 : 2;
-  ctx.fillStyle = '#c3cdd7'; ctx.fillRect(14, H - 18, meters * scale, 3); ctx.fillText(`${meters} m`, 14, H - 24);
+  ctx.fillStyle = UI.dim; ctx.fillRect(14, H - 18, meters * scale, 3); ctx.fillText(`${meters} m`, 14, H - 24);
   emit('runs:compare', chosen);
 }
 

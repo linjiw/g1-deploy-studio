@@ -23,7 +23,7 @@ const check = (name, details = {}) => { checks.push({ name, ...details }); conso
 const shot = name => page.screenshot({ path: path.join(evidence, `${name}.png`) });
 
 await page.goto(base + '/');
-await page.waitForFunction(() => window.__studio?.state?.session && document.querySelector('#loading-overlay').hidden, null, { timeout: 90000 });
+await page.waitForFunction(() => window.__studio?.state?.ready && document.querySelector('#loading-overlay').hidden, null, { timeout: 90000 });
 
 // 1. Arena: doorway template, custom start / heading / goal.
 await page.click('#workspace-arena');

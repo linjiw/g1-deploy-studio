@@ -18,6 +18,7 @@ Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navi
 | Arena editor, seeded random goals, suites, Runs report with Wilson intervals | — | Verified | [WORKBENCH](WORKBENCH.md), REVALIDATION |
 | Sensors (causal), System map, source-verified Unitree contract | — | Verified | REVALIDATION |
 | Durable service, release guard, loopback + Host/Origin + CSRF, SSH tunnel | — | Verified | [SERVICE](SERVICE.md) |
+| Install on another machine: `tools/install.sh`, read-only `tools/doctor.py`, the pinned deploy state (`config/deploy.json`: private deploy repo at `deploy-2026-10-23` + its release bundle, 141 files SHA-256-checked) | — | Verified on a fresh HOME (2026-10-23): install → doctor *Simulation yes*; unit tests 408 OK with and without the deploy stack; from an empty data root Navigate 11/11, robot link 7/7 + 6/6, browser acceptance 10 + 3 skipped; CI on GitHub | [INSTALL](INSTALL.md) |
 | Real-time chain (simulator + C++ SONIC runner + node) in an isolated namespace | L3 | **Ready, not yet run** | [REALTIME_REHEARSAL](REALTIME_REHEARSAL.md) |
 | Read-only physical G1 | M5 | Not started (needs a safety review) | REALTIME_REHEARSAL § M5 |
 | **Navigate** with the simulated robot: node.py's state machine, goals clicked on the robot's own map with checks, Go / Stand / takeover, walks, recording | L1 / L2 | Verified (walking equals the source rehearsal frame for frame; browser 11/11) | [NAVIGATE](NAVIGATE.md) |

@@ -1,5 +1,8 @@
 // Read-only browser acceptance for the replay cockpit (no worker is launched).
 //   STUDIO_URL=http://127.0.0.1:8790 node tools/browser/ui_acceptance.mjs
+// The replay checks run on the SONIC lockstep recording when this machine has it, otherwise on the newest owned
+// rehearsal or Navigate recording (a new machine: run one first, docs/INSTALL.md step 7). Checks that need a
+// recording this machine does not have are listed as skipped, never as passed.
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -24,6 +27,8 @@ page.on('response', async r => {
   if (url.includes('/assets/mesh/') && !r.fromServiceWorker()) { bytes.meshRequests++; bytes.mesh += size; }
 });
 const check = (name, details = {}) => { checks.push({ name, ...details }); console.log('✓', name); };
+const skipped = [];
+const skip = (name, reason) => { skipped.push({ name, reason }); console.log('–', name, `(skipped: ${reason})`); };
 const shot = name => page.screenshot({ path: path.join(evidence, `${name}.png`) });
 
 async function ready(id) {
@@ -36,7 +41,9 @@ async function open(id) {
   await ready(id);
 }
 const seek = t => page.evaluate(t => window.__studio.seek(t), t);
-async function parity(id, time) {
+// Lockstep and rehearsal recordings store joints at full precision; Navigate recordings round joints to 1e-4 rad
+// and qpos to 1e-5, so their FK is compared within that stored precision.
+async function parity(id, time, tolerance = 1e-6) {
   await seek(time);
   const frame = await page.evaluate(() => window.__studio.state.frameIndex);
   const oracle = await (await page.request.get(`${base}/api/kinematics?id=${id}&frame=${frame}`)).json();
@@ -55,15 +62,25 @@ async function parity(id, time) {
     for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) rot = Math.max(rot, Math.abs(m[j * 4 + i] - r[i][j]));
   }
   assert.ok(bodies > 20, `bodies compared ${bodies}`);
-  assert.ok(pos < 1e-6 && rot < 1e-6, `FK error pos ${pos} rot ${rot}`);
-  check(`browser FK matches MuJoCo (${id})`, { frame, bodies, pos, rot });
+  assert.ok(pos < tolerance && rot < tolerance, `FK error pos ${pos} rot ${rot} (tolerance ${tolerance})`);
+  check(`browser FK matches MuJoCo (${id})`, { frame, bodies, pos, rot, tolerance });
 }
 
 try {
-  await page.goto(`${base}/?session=sonic-lockstep`);
-  await ready('sonic-lockstep');
-  assert.equal(await page.evaluate(() => window.__studio.model.nq), 36);
-  await parity('sonic-lockstep', 1.2);
+  const listing = (await (await context.request.get(`${base}/api/sessions`)).json()).sessions ?? [];
+  const has = id => listing.some(s => s.id === id && s.available);
+  const newest = group => listing.filter(s => s.group === group && s.available && s.status !== 'running' && (s.outcome || s.walks))
+    .sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0))[0]?.id;
+  const primary = has('sonic-lockstep') ? 'sonic-lockstep' : newest('CPU rehearsals') ?? newest('Navigation sessions');
+  if (!primary) throw new Error('No replayable recording on this gateway yet: run a Navigate session or a rehearsal first (docs/INSTALL.md, step 7)');
+  await page.goto(`${base}/?session=${primary}`);
+  await ready(primary);
+  const nq = await page.evaluate(() => window.__studio.model.nq);
+  if (primary === 'sonic-lockstep') assert.equal(nq, 36); else assert.ok([36, 50].includes(nq), `model nq ${nq}`);
+  const duration = await page.evaluate(() => window.__studio.state.session.metadata.duration_s);
+  assert.ok(duration >= 1.6, `${primary} lasts ${duration} s; the playback checks need 1.6 s`);
+  const navigation = await page.evaluate(() => window.__studio.state.session.metadata.kind === 'navigation');
+  await parity(primary, Math.min(1.2, duration / 2), navigation ? 1e-3 : 1e-6);
   // Transport visible without scrolling (review UX-1).
   const play = await page.locator('#play').boundingBox();
   assert.ok(play.y + play.height <= 1000, `play button at ${play.y}`);
@@ -102,37 +119,43 @@ try {
   check('named joint table matches the sampled source value');
   // Stale-state diagnostic never shows a healthy zero.
   await page.click('#tab-health'); await seek(0.3); await page.check('#freeze-state'); await seek(0.9);
-  assert.match(await page.locator('#health-content').textContent(), /STALE/);
-  assert.match(await page.locator('#source-badge').textContent(), /HELD/);
+  assert.match(await page.locator('#health-content').textContent(), /stale/i);
+  assert.match(await page.locator('#source-badge').textContent(), /held/i);
   await shot('lockstep-held-state'); await page.uncheck('#freeze-state');
-  check('held-state injection is labelled stale');
+  check('held-state injection is labelled stale', { session: primary });
 
-  await open('sonic-dds-tutorial');
-  assert.equal(await page.evaluate(() => window.__studio.model.nq), 50);
-  assert.equal(await page.locator('#layer-reference').isDisabled(), true);
-  await parity('sonic-dds-tutorial', 25);
-  await page.click('#tab-perception');
-  await page.click('#layers-button'); await page.check('#layer-perception'); await page.click('#layers-button');
-  assert.match(await page.locator('#reference-caption').textContent(), /final accumulated snapshot/i);
-  assert.match(await page.locator('#perception-content').textContent(), /without capture time/i);
-  await page.click('#tab-graph');
-  assert.match(await page.locator('#graph-content').textContent(), /configured/i);
-  await page.click('#tab-source'); assert.match(await page.locator('#source-content').textContent(), /SHA-256/);
-  await shot('dds-final-map');
-  check('C++/DDS recording: Dex3 mapping, unsynchronized final map, configured graph');
-
-  await open('wire-local');
-  assert.equal(await page.evaluate(() => window.__studio.robot), null);
-  assert.equal(await page.locator('#scene-unavailable').isVisible(), true);
-  await page.click('#tab-graph');
-  for (const status of ['fresh', 'stale', 'disconnected']) {
-    const t = await page.evaluate(s => window.__studio.state.session.frames.find(f => f.health.stream_status === s)?.time, status);
-    assert.equal(typeof t, 'number', `${status} sample exists`);
-    await seek(t + 0.001);
-    assert.match((await page.locator('#graph-content').textContent()).toLowerCase(), new RegExp(status));
+  if (!has('sonic-dds-tutorial')) skip('C++/DDS recording: Dex3 mapping, unsynchronized final map, configured graph', 'no sonic-dds-tutorial recording on this machine');
+  else {
+    await open('sonic-dds-tutorial');
+    assert.equal(await page.evaluate(() => window.__studio.model.nq), 50);
+    assert.equal(await page.locator('#layer-reference').isDisabled(), true);
+    await parity('sonic-dds-tutorial', 25);
+    await page.click('#tab-perception');
+    await page.click('#layers-button'); await page.check('#layer-perception'); await page.click('#layers-button');
+    assert.match(await page.locator('#reference-caption').textContent(), /final accumulated snapshot/i);
+    assert.match(await page.locator('#perception-content').textContent(), /without capture time/i);
+    await page.click('#tab-graph');
+    assert.match(await page.locator('#graph-content').textContent(), /configured/i);
+    await page.click('#tab-source'); assert.match(await page.locator('#source-content').textContent(), /SHA-256/);
+    await shot('dds-final-map');
+    check('C++/DDS recording: Dex3 mapping, unsynchronized final map, configured graph');
   }
-  await shot('wire-disconnect');
-  check('captured ZMQ edge replays fresh / stale / disconnected; pose stays unavailable');
+
+  if (!has('wire-local')) skip('captured ZMQ edge replays fresh / stale / disconnected; pose stays unavailable', 'no wire-local capture on this machine');
+  else {
+    await open('wire-local');
+    assert.equal(await page.evaluate(() => window.__studio.robot), null);
+    assert.equal(await page.locator('#scene-unavailable').isVisible(), true);
+    await page.click('#tab-graph');
+    for (const status of ['fresh', 'stale', 'disconnected']) {
+      const t = await page.evaluate(s => window.__studio.state.session.frames.find(f => f.health.stream_status === s)?.time, status);
+      assert.equal(typeof t, 'number', `${status} sample exists`);
+      await seek(t + 0.001);
+      assert.match((await page.locator('#graph-content').textContent()).toLowerCase(), new RegExp(status));
+    }
+    await shot('wire-disconnect');
+    check('captured ZMQ edge replays fresh / stale / disconnected; pose stays unavailable');
+  }
 
   // A fresh owned rehearsal recording, if present: outcome chip + lanes + system map.
   const job = await page.evaluate(() => window.__studio.state.sessions?.find(s => s.group === 'CPU rehearsals' && s.outcome)?.id);
@@ -151,7 +174,7 @@ try {
     assert.equal(await page.locator('#tab-health').getAttribute('aria-selected'), 'true');
     assert.equal(await page.evaluate(() => window.__studio.camera), 'follow');
     check('view link restores time, panel and camera', { link });
-  }
+  } else skip('owned rehearsal outcome, budgets and view link', 'no finished CPU rehearsal on this gateway');
   await page.click('#workspace-system'); await page.waitForSelector('.contract-table'); await page.waitForTimeout(500);
   assert.ok(await page.locator('.sys-node').count() >= 9);
   assert.ok(await page.locator('.discrepancy').count() > 0);
@@ -170,8 +193,8 @@ try {
   check('browser disconnect leaves the gateway serving; no hardware command path', { bytes });
   assert.deepEqual(failed, [], 'no failed HTTP resources');
   assert.deepEqual(errors, [], 'no browser exceptions');
-  await writeFile(path.join(evidence, 'ui-acceptance.json'), JSON.stringify({ base, checks, bytes, errors, failed }, null, 1));
-  console.log(JSON.stringify({ passed: checks.length, evidence, bytes }, null, 1));
+  await writeFile(path.join(evidence, 'ui-acceptance.json'), JSON.stringify({ base, primary, checks, skipped, bytes, errors, failed }, null, 1));
+  console.log(JSON.stringify({ passed: checks.length, skipped: skipped.length, primary, evidence, bytes }, null, 1));
 } catch (error) {
   await writeFile(path.join(evidence, 'ui-failure.json'), JSON.stringify({ message: error.message, checks, errors, failed }, null, 1));
   if (!page.isClosed()) await page.screenshot({ path: path.join(evidence, 'failure.png') });

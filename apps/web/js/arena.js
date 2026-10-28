@@ -2,6 +2,8 @@
 // Geometry is explicit simulation input; preflight here mirrors the server check
 // and never claims that a route is feasible.
 import { $, escape, num, finite, request, pointStatus, download, emit, outcomeColor } from './util.js';
+// `alpha` is taken by drawPreset's hex suffix; the palette helper is `tint` here.
+import { UI, SERIES, alpha as tint } from './palette.js';
 
 const WALL_T = 0.24, WALL_H = 1.2, BEAM = [1.05, 1.25], PILLAR = 0.3;
 const GOAL_R = 0.3, FOOT_R = 0.25;
@@ -135,10 +137,10 @@ export function draw() {
   if (c.width !== Math.round(W() * ratio) || c.height !== Math.round(H() * ratio)) { c.width = Math.round(W() * ratio); c.height = Math.round(H() * ratio); }
   const ctx = c.getContext('2d');
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  ctx.fillStyle = '#0d151d'; ctx.fillRect(0, 0, W(), H());
+  ctx.fillStyle = UI.panel; ctx.fillRect(0, 0, W(), H());
   // Grid: 0.1 m minor when zoomed in, 0.5 / 1 m majors.
   const [x0, y1] = toWorld(0, 0), [x1, y0] = toWorld(W(), H());
-  for (const [stepM, color] of [[0.1, '#141f29'], [0.5, '#1b2a36'], [1, '#26394a']]) {
+  for (const [stepM, color] of [[0.1, UI.grid], [0.5, UI.line], [1, UI.strong]]) {
     if (stepM * arena.view.scale < 7) continue;
     ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath();
     for (let x = Math.floor(x0 / stepM) * stepM; x <= x1; x += stepM) { const [px] = toPx([x, 0]); ctx.moveTo(px + 0.5, 0); ctx.lineTo(px + 0.5, H()); }
@@ -146,11 +148,11 @@ export function draw() {
     ctx.stroke();
   }
   const [ox, oy] = toPx([0, 0]);
-  ctx.lineWidth = 2; ctx.strokeStyle = '#c75a5a'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + 0.6 * arena.view.scale, oy); ctx.stroke();
-  ctx.strokeStyle = '#5aa86a'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox, oy - 0.6 * arena.view.scale); ctx.stroke();
+  ctx.lineWidth = 2; ctx.strokeStyle = SERIES.red; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + 0.6 * arena.view.scale, oy); ctx.stroke();
+  ctx.strokeStyle = SERIES.green; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox, oy - 0.6 * arena.view.scale); ctx.stroke();
   // Bounds.
   const b = arenaBounds(), [bx0, by0] = toPx(b.min), [bx1, by1] = toPx(b.max);
-  ctx.setLineDash([6, 5]); ctx.strokeStyle = '#4f7f8c'; ctx.lineWidth = 1; ctx.strokeRect(bx0, by1, bx1 - bx0, by0 - by1); ctx.setLineDash([]);
+  ctx.setLineDash([6, 5]); ctx.strokeStyle = UI.faint; ctx.lineWidth = 1; ctx.strokeRect(bx0, by1, bx1 - bx0, by0 - by1); ctx.setLineDash([]);
   // Previous runs on this saved arena.
   for (const run of arena.runs) {
     if (!run.trajectory?.length) continue;
@@ -162,21 +164,21 @@ export function draw() {
   arena.boxes.forEach((box, i) => {
     const pts = boxCorners(box).map(toPx), kind = kindOf(box), selected = arena.selection?.type === 'box' && arena.selection.index === i;
     ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
-    ctx.fillStyle = kind === 'beam' ? '#8a6fa83a' : '#7d7592b0'; ctx.fill();
-    if (kind === 'beam') { ctx.save(); ctx.clip(); ctx.strokeStyle = '#c9a8e660'; ctx.lineWidth = 1; for (let d = -2000; d < 2000; d += 9) { ctx.beginPath(); ctx.moveTo(d, 0); ctx.lineTo(d + H(), H()); ctx.stroke(); } ctx.restore(); }
-    ctx.strokeStyle = selected ? '#56d9d0' : kind === 'beam' ? '#c9a8e6' : '#b6aecb'; ctx.lineWidth = selected ? 2 : 1;
+    ctx.fillStyle = kind === 'beam' ? tint(SERIES.overhead, 0.22) : tint(SERIES.box, 0.35); ctx.fill();
+    if (kind === 'beam') { ctx.save(); ctx.clip(); ctx.strokeStyle = tint(SERIES.overheadEdge, 0.4); ctx.lineWidth = 1; for (let d = -2000; d < 2000; d += 9) { ctx.beginPath(); ctx.moveTo(d, 0); ctx.lineTo(d + H(), H()); ctx.stroke(); } ctx.restore(); }
+    ctx.strokeStyle = selected ? UI.accent : kind === 'beam' ? SERIES.overheadEdge : SERIES.boxEdge; ctx.lineWidth = selected ? 2 : 1;
     ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.stroke();
     if (arena.view.scale > 45) {
-      const [cx, cy] = toPx(box.center_xy); ctx.fillStyle = '#d7d1e6'; ctx.font = '10px Inter, system-ui'; ctx.textAlign = 'center';
+      const [cx, cy] = toPx(box.center_xy); ctx.fillStyle = UI.muted; ctx.font = '10px Inter, system-ui'; ctx.textAlign = 'center';
       ctx.fillText(kind === 'beam' ? `beam ${box.z_bottom.toFixed(2)}–${box.z_top.toFixed(2)} m` : `top ${box.z_top.toFixed(2)} m`, cx, cy + 3);
     }
-    if (selected) for (const h of handles(box)) { const [hx, hy] = toPx(h.pt); ctx.fillStyle = h.kind === 'rotate' ? '#efbb70' : '#56d9d0'; ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 7); ctx.fill(); }
+    if (selected) for (const h of handles(box)) { const [hx, hy] = toPx(h.pt); ctx.fillStyle = h.kind === 'rotate' ? UI.warn : UI.accent; ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 7); ctx.fill(); }
   });
   // Presets (inactive faint, active bold).
   arena.presets.forEach((q, i) => drawPreset(ctx, q, i === arena.active));
   // Scale bar.
   const meters = arena.view.scale > 120 ? 0.5 : arena.view.scale > 40 ? 1 : 2;
-  ctx.fillStyle = '#c3cdd7'; ctx.fillRect(16, H() - 22, meters * arena.view.scale, 3);
+  ctx.fillStyle = UI.dim; ctx.fillRect(16, H() - 22, meters * arena.view.scale, 3);
   ctx.font = '11px Inter, system-ui'; ctx.textAlign = 'left'; ctx.fillText(`${meters} m`, 16, H() - 28);
   if (arena.hover) ctx.fillText(`x ${arena.hover[0].toFixed(2)}  y ${arena.hover[1].toFixed(2)} m`, W() - 150, H() - 14);
   emit('arena:drawn');
@@ -186,20 +188,20 @@ function drawPreset(ctx, q, active) {
   const s = pointStatus(mapDoc(), q.start_xy), g = pointStatus(mapDoc(), q.goal_xy);
   const alpha = active ? 'ff' : '66';
   const [sx, sy] = toPx(q.start_xy), [gx, gy] = toPx(q.goal_xy), r = arena.view.scale;
-  ctx.setLineDash([4, 4]); ctx.strokeStyle = '#ffffff' + (active ? '40' : '20'); ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(gx, gy); ctx.stroke(); ctx.setLineDash([]);
+  ctx.setLineDash([4, 4]); ctx.strokeStyle = tint(UI.dim, active ? 0.6 : 0.3); ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(gx, gy); ctx.stroke(); ctx.setLineDash([]);
   // Standing footprint clearance (server preflight uses 0.25 m around each box).
-  ctx.strokeStyle = (s.status === 'configured_free' ? '#5fd39b' : '#f08c85') + alpha; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = (s.status === 'configured_free' ? UI.ok : UI.bad) + alpha; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(sx, sy, FOOT_R * r, 0, 7); ctx.stroke();
-  ctx.fillStyle = '#75c9f1' + alpha; ctx.beginPath(); ctx.arc(sx, sy, Math.max(4, 0.09 * r), 0, 7); ctx.fill();
+  ctx.fillStyle = SERIES.start + alpha; ctx.beginPath(); ctx.arc(sx, sy, Math.max(4, 0.09 * r), 0, 7); ctx.fill();
   const hx = sx + Math.cos(q.start_yaw_rad) * 0.55 * r, hy = sy - Math.sin(q.start_yaw_rad) * 0.55 * r;
-  ctx.strokeStyle = '#75c9f1' + alpha; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(hx, hy); ctx.stroke();
-  if (active) { ctx.fillStyle = '#75c9f1'; ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 7); ctx.fill(); }
-  ctx.strokeStyle = (g.status === 'configured_free' ? '#efbb70' : '#f08c85') + alpha; ctx.lineWidth = 2;
+  ctx.strokeStyle = SERIES.start + alpha; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(hx, hy); ctx.stroke();
+  if (active) { ctx.fillStyle = UI.accent; ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 7); ctx.fill(); }
+  ctx.strokeStyle = (g.status === 'configured_free' ? SERIES.goal : UI.bad) + alpha; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.arc(gx, gy, GOAL_R * r, 0, 7); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(gx - 6, gy); ctx.lineTo(gx + 6, gy); ctx.moveTo(gx, gy - 6); ctx.lineTo(gx, gy + 6); ctx.stroke();
   if (active || arena.view.scale > 60) {
-    ctx.font = active ? '600 11px Inter, system-ui' : '10px Inter, system-ui'; ctx.fillStyle = '#e4e9ee' + alpha; ctx.textAlign = 'left';
-    ctx.fillText('START', sx + 10, sy - 10); ctx.fillText(active ? `GOAL · ${q.label}` : q.label, gx + 10, gy - 10);
+    ctx.font = active ? '600 11px Inter, system-ui' : '10px Inter, system-ui'; ctx.fillStyle = active ? UI.ink : UI.dim; ctx.textAlign = 'left';
+    ctx.fillText('Start', sx + 10, sy - 10); ctx.fillText(active ? `Goal · ${q.label}` : q.label, gx + 10, gy - 10);
   }
 }
 
@@ -265,7 +267,7 @@ function onPointerMove(e) {
   else if (d.type === 'goal' && q) q.goal_xy = [snap(pt[0]), snap(pt[1])];
   else if (d.type === 'heading' && q) { const a = Math.atan2(pt[1] - q.start_xy[1], pt[0] - q.start_xy[0]); q.start_yaw_rad = wrap(arena.snap ? Math.round(a / rad(5)) * rad(5) : a); }
   else if (d.type === 'draw') d.end = [snap(pt[0]), snap(pt[1])];
-  if (d.type === 'draw' && d.end) { draw(); const ctx = arena.canvas.getContext('2d'); const [ax, ay] = toPx(d.start), [bx, by] = toPx(d.end); ctx.strokeStyle = '#56d9d0'; ctx.lineWidth = Math.max(2, WALL_T * arena.view.scale); ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.globalAlpha = 1; return; }
+  if (d.type === 'draw' && d.end) { draw(); const ctx = arena.canvas.getContext('2d'); const [ax, ay] = toPx(d.start), [bx, by] = toPx(d.end); ctx.strokeStyle = UI.accent; ctx.lineWidth = Math.max(2, WALL_T * arena.view.scale); ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); ctx.globalAlpha = 1; return; }
   if (d.type !== 'pan') changed(false);
   draw();
 }
@@ -411,7 +413,7 @@ function updateStatus() {
       : 'Printable build sheet for the active preset: floor measurements from the start mark, the console command and the rehearsal evidence (new tab)';
   }
   const issues = presetIssues();
-  node.innerHTML = `<div class="arena-counts"><span><strong>${arena.boxes.length}</strong> boxes</span><span><strong>${arena.presets.length}</strong> presets</span><span>${arena.savedId ? `<span class="chip chip-recorded">SAVED ${escape(arena.savedId.slice(-6))}</span>` : '<span class="chip chip-unavailable">UNSAVED DRAFT</span>'}</span></div>
+  node.innerHTML = `<div class="arena-counts"><span><strong>${arena.boxes.length}</strong> boxes</span><span><strong>${arena.presets.length}</strong> presets</span><span>${arena.savedId ? `<span class="chip chip-recorded">Saved ${escape(arena.savedId.slice(-6))}</span>` : '<span class="chip chip-unavailable">Unsaved draft</span>'}</span></div>
     ${issues.length ? `<ul class="issues">${issues.map(i => `<li>${escape(i)}</li>`).join('')}</ul>` : '<p class="tiny ok">Preflight: every start and goal clears the standing footprint. Route feasibility is not checked; only a rehearsal can tell.</p>'}`;
   document.querySelectorAll('[data-preset-index]').forEach(row => {
     const q = arena.presets[Number(row.dataset.presetIndex)]; if (!q) return;

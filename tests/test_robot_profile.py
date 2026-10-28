@@ -45,8 +45,16 @@ class ProfileLoadTests(unittest.TestCase):
         tree = ast.parse(Path(rp.__file__).read_text())
         roots = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         roots |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
-        allowed = {"__future__", "ast", "json", "math", "operator", "re", "struct", "xml", "functools", "pathlib"}
+        allowed = {"__future__", "ast", "json", "math", "operator", "re", "struct", "xml", "functools", "pathlib", "studio"}
         self.assertLessEqual(roots, allowed)
+        # The one Studio import is studio.paths (machine roots for the cited files), itself stdlib only.
+        studio_names = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "studio" for a in n.names}
+        self.assertLessEqual(studio_names, {"paths"})
+        from studio import paths
+        tree = ast.parse(Path(paths.__file__).read_text())
+        roots = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        roots |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+        self.assertLessEqual(roots, {"__future__", "functools", "json", "os", "pathlib", "sys"})
 
     def test_validation_rejects_corruption(self):
         def broken(mutate):
@@ -170,11 +178,24 @@ class RecordedFactsTests(unittest.TestCase):
         self.assertEqual([q["interface"] for q in conflict], ["rt/odostate orientation"])
 
 
+def deploy_root_off_pin():
+    """The profile cites line numbers of the pinned deploy stack (config/deploy.json); another checkout moves them."""
+    import subprocess
+    from studio import paths
+    pin = json.loads((Path(__file__).resolve().parents[1] / 'config/deploy.json').read_text())['deploy_stack']['commit']
+    head = subprocess.run(['git', '-C', str(paths.get('deploy_root')), 'rev-parse', 'HEAD'], capture_output=True,
+                          text=True).stdout.strip()
+    return head if head and head != pin else None
+
+
 class SourceVerificationTests(unittest.TestCase):
     def setUp(self):
         missing = missing_reference()
         if missing:
             self.skipTest(f"read-only reference source not present on this host: {missing}")
+        off = deploy_root_off_pin()
+        if off:
+            self.skipTest(f"deploy root at {off[:7]}, not the pinned commit: the profile cites the pinned sources")
 
     def test_profile_matches_reference_sources(self):
         self.assertEqual(rp.verify_against_sources(PROFILE), [])

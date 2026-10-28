@@ -8,10 +8,9 @@ copied into Git and no Flow file, environment or running job is modified.
 
     .venv/bin/python tools/build_policy_bundle.py              # WX-RF @ 23326aa, teacher sk1_s0
     .venv/bin/python tools/build_policy_bundle.py --verify-only
-    # WXD = WX + DP2 duck keys (Flow's adopted block since 2026-10-20), retrieval-free arm of the DP2 xdg config:
-    .venv/bin/python tools/build_policy_bundle.py --block WXD --commit 5658a6d \
-        --config configs/closed_loop_dp2_xdg.json --arm XGD-g-s0 --teacher sk1_s0 \
-        --variant 'WXD-RF (WX + DP2 duck keys, retrieval-free; XGD arm)' --adopted-commit 5658a6d
+    # Another retrieval-free block, read-only from Flow (placeholders):
+    .venv/bin/python tools/build_policy_bundle.py --block <NAME> --commit <sha> \
+        --config <configs/....json> --arm <arm> --teacher <run> --variant '<text>' --adopted-commit <sha>
 
 The bundle id is ``flow-<block>-rf-<commit7>-s<seed>`` (studio.policy_bundle.BUNDLE_ID).
 """
@@ -34,8 +33,10 @@ from studio.policy_bundle import ARTIFACT_LINKS, BUNDLE_ID, POLICY_ROOT, sha256,
 
 BLOCK = re.compile(r'[A-Za-z0-9]{1,16}')
 
-FLOW = Path('/home/linjiw/flow')
-DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
+from studio import paths  # noqa: E402
+
+FLOW = paths.get('flow_root')
+DEPLOY = paths.get('deploy_root')
 LFH = FLOW / '.bridge-deps/humanoid_lfh'
 
 # Flow BEST_MODEL.md: WX adopted 2026-10-16 (4ba73cb). That tree lacks
@@ -147,7 +148,7 @@ def main(argv=None):
     ap.add_argument('--config', default=DEFAULT['config'])
     ap.add_argument('--arm', default=DEFAULT['arm'])
     ap.add_argument('--teacher', default=DEFAULT['teacher'])
-    ap.add_argument('--block', default='WX', help="Flow research block name (BEST_MODEL.md), e.g. WX or WXD; sets the id prefix")
+    ap.add_argument('--block', default='WX', help="Flow research block name (BEST_MODEL.md), e.g. WX; sets the id prefix")
     ap.add_argument('--variant', default=None, help='variant text in the manifest (default: WX-RF text for WX)')
     ap.add_argument('--label', default=None, help="profile label (default 'Flow <block>-RF · adopted block · teacher <teacher>')")
     ap.add_argument('--adopted-commit', default=None, help='the adoption commit to record (default: 4ba73cb for WX, else --commit)')

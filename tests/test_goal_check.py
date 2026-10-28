@@ -15,10 +15,11 @@ import zipfile
 
 import numpy as np
 
+from studio import paths
 from studio import goal_check
 from studio.goal_check import CHECK_IDS, check_goal, grid_from_arrays, load_grid, plan_route, route_occupancy
 
-DEPLOY = Path('/home/linjiw/code/g1-student-deploy')
+DEPLOY = paths.get('deploy_root')
 RUNS = DEPLOY / 'runs'
 ROUTE_SOURCE = DEPLOY / 'bundle/flow/src/motion2scene_flow/closed_loop/route.py'
 DEPLOY_PYTHON = DEPLOY / '.venv/bin/python'
@@ -505,7 +506,8 @@ class FlowRouteParityTests(unittest.TestCase):
     @unittest.skipUnless(RUNS.is_dir(), 'recorded runs unavailable')
     def test_recorded_memories(self):
         dumps = sorted(RUNS.glob('*/*/node_memory.npz'))
-        self.assertTrue(dumps)
+        if not dumps:
+            self.skipTest(f'no recorded node memories under {RUNS}')
         rng = np.random.default_rng(7)
         for path in dumps:
             grid = load_grid(path)

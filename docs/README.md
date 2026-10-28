@@ -7,6 +7,7 @@ Start with **[STATUS.md](STATUS.md)**: one page with what works, the current res
 | Document | Read it for |
 |---|---|
 | [STATUS.md](STATUS.md) | Current state, results, open issues, decisions and their dates |
+| [INSTALL.md](INSTALL.md) | Installing Studio, the deploy stack and the pinned navigation policy on another machine; configuration; updating the pin |
 | [SERVICE.md](SERVICE.md) | Starting, releasing and reaching Studio (systemd unit, SSH tunnel) |
 | [WORKBENCH.md](WORKBENCH.md) | Arena editor, rehearsals, suites, the Runs report, data layout and API |
 | [POLICIES.md](POLICIES.md) | Policy profiles, how the Flow WX-RF block is pinned and run, latency anchoring, actuator profiles |
@@ -17,6 +18,7 @@ Start with **[STATUS.md](STATUS.md)**: one page with what works, the current res
 | [NAVIGATE.md](NAVIGATE.md) | **Navigate**: goals on the robot's own map with the simulated or the real robot; goal checks, scan to twin; the session contract |
 | [DEPLOY_FIDELITY.md](DEPLOY_FIDELITY.md) | How close the simulated robot is to node.py: stand modes and their measured contacts, node.py's latency rule, the deploy preset, the remaining gaps |
 | [REAL_WORLD_DEPLOYMENT.md](REAL_WORLD_DEPLOYMENT.md) | Design: seeing the robot's perception, building maps from it, putting goals on them and watching real runs |
+| [STAGE.md](STAGE.md) | Stage: one run full screen, its layers and provenance, what it took from SuperMimic and Codex, and its browser test |
 | [SITE.md](SITE.md) | The public site: recorded walks of the real stack, how they are made, hosted and kept light |
 | [CODE_REFERENCES.md](CODE_REFERENCES.md) | Verified file references in the reference repositories |
 | [../tools/video/README.md](../tools/video/README.md) | Rebuilding the introduction video |

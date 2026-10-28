@@ -112,7 +112,7 @@ class NavDeploySettingsTests(unittest.TestCase):
         profile = {'loader': 'deploy-bundle'}
         self.assertEqual(Workbench._nav_latency({'ms': 160, 'anchor': 'predict'}, profile), {'ms': 160, 'anchor': 'predict'})
         self.assertEqual(Workbench._nav_latency(None, profile), {'ms': 0, 'anchor': 'measured'})
-        self.assertEqual(Workbench._nav_latency({'mode': 'node', 'preset': 'flow-sk1'}, profile)['preset'], 'flow-sk1')
+        self.assertEqual(Workbench._nav_latency({'mode': 'node', 'distribution': {'kind': 'fixed', 's': 0.2}}, profile)['preset'], 'custom')
         with self.assertRaises(ValueError):
             Workbench._nav_latency({'mode': 'node', 'preset': 'nope'}, profile)
         self.assertEqual(nav_worker.validate_stand_mode('hold_upper'), 'hold_upper')

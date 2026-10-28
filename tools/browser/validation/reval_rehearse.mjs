@@ -82,12 +82,12 @@ await R.check('4.8', 'Run preset (bundle K2/ODE4, 2 s, lat 200 predict): live at
   timing.bundle2s_wall_s = (Date.now() - t0) / 1000;
   const done = await S();
   const shot2 = await R.shot('result-bundle');
-  assert(/LIVE CPU SIMULATION/.test(a.badge), `badge ${a.badge}`);
+  assert(/live CPU simulation/i.test(a.badge), `badge ${a.badge}`);
   assert(b.frames > a.frames || job.status !== 'running', `frames ${a.frames} → ${b.frames}`);
   assert(/Owned CPU worker/.test(health), 'Health worker card');
   assert(cam === 'follow', `camera ${cam}`);
   assert(job.status === 'completed' && done.chip.trim(), `job ${job.status} ${job.error ?? ''} chip ${done.chip}`);
-  assert(/REPLAY · CPU REHEARSAL/.test(done.badge), `result badge ${done.badge}`);
+  assert(/replay · CPU rehearsal/i.test(done.badge), `result badge ${done.badge}`);
   return { id, a, b, done, wall_s: timing.bundle2s_wall_s, shot, shot2 };
 });
 
@@ -169,7 +169,7 @@ await R.check('B.priv-chip', 'WX recording: PRIVILEGED MAP chip visible (and hid
   await page.selectOption('#session-picker', jobs.bundle); await replayOf(jobs.bundle);
   const bundleVis = await page.locator('#privileged-badge').isVisible();
   await page.selectOption('#session-picker', id); await replayOf(id);
-  assert(vis && /PRIVILEGED MAP/.test(text) && !bundleVis, `wx chip visible ${vis} "${text}", bundle chip visible ${bundleVis}`);
+  assert(vis && /privileged map/i.test(text) && !bundleVis, `wx chip visible ${vis} "${text}", bundle chip visible ${bundleVis}`);
   return { text, title, bundleVisible: bundleVis, shot };
 });
 
@@ -257,11 +257,11 @@ await R.check('4.9b', 'After Cancel: header/badge/chip/transport/Health leave LI
   const s = await S();
   const shot = await R.shot('after-cancel-header');
   assert(s.id === id, `viewport left the cancelled run: ${s.id}`);
-  assert(/RUN CANCELLED · PARTIAL LIVE SAMPLES/.test(s.badge) && !/LIVE CPU/.test(s.badge), `badge "${s.badge}"`);
+  assert(/run cancelled · partial live samples/i.test(s.badge) && !/live CPU/i.test(s.badge), `badge "${s.badge}"`);
   assert(!/running/i.test(s.chip) && /cancel/i.test(s.chip), `chip "${s.chip}"`);
-  assert(/RUN CANCELLED/.test(s.playback), `transport "${s.playback}"`);
-  assert(/PARTIAL LIVE SAMPLES/.test(s.health ?? '') && !/LIVE CPU WORKER/.test(s.health ?? ''), `Health "${s.health}"`);
-  assert(/RUN CANCELLED/.test(s.warning ?? ''), `warning ${s.warning}`);
+  assert(/run cancelled/i.test(s.playback), `transport "${s.playback}"`);
+  assert(/partial live samples/i.test(s.health ?? '') && !/live CPU worker/i.test(s.health ?? ''), `Health "${s.health}"`);
+  assert(/run cancelled/i.test(s.warning ?? ''), `warning ${s.warning}`);
   return { ...s, shot };
 });
 
@@ -374,7 +374,7 @@ await R.check('4.10c', 'Cancel suite mid-way (button): run 2 cancelled, run 3 sk
   assert(suite.status === 'cancelled' && suite.runs[0].outcome && suite.runs[0].status === 'completed' && suite.runs[1].status === 'cancelled' && !suite.runs[1].outcome && suite.runs[2].status === 'skipped', `suite ${suite.status} runs ${JSON.stringify(suite.runs.map(r => [r.status, r.outcome]))}`);
   assert(!u.cancel && !u.runDisabled && !u.suiteDisabled, `UI after cancel ${JSON.stringify(u)}`);
   assert(/Suite · cancelled/.test(table) && /1\/3 finished/.test(table), `table ${table}`);
-  assert(s.id === suiteObs.run2 && /RUN CANCELLED · PARTIAL LIVE SAMPLES/.test(s.badge) && !/running/i.test(s.chip) && /RUN CANCELLED/.test(s.playback) && /PARTIAL LIVE SAMPLES/.test(s.health ?? ''),
+  assert(s.id === suiteObs.run2 && /run cancelled · partial live samples/i.test(s.badge) && !/running/i.test(s.chip) && /run cancelled/i.test(s.playback) && /partial live samples/i.test(s.health ?? ''),
     `header after suite cancel: ${JSON.stringify({ id: s.id, badge: s.badge, chip: s.chip, playback: s.playback, health: s.health })}`);
   return { runs: suite.runs.map(r => [r.status, r.outcome, r.job_id, r.preset]), table, header: { badge: s.badge, chip: s.chip, playback: s.playback, health: s.health }, shot };
 });

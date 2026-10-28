@@ -50,7 +50,7 @@ await sleep(500);
 
 await R.check('4.1', 'Flow research sync text shows the adopted block', async () => {
   const t = await page.locator('#rehearse-panel .research-sync').textContent();
-  assert(/Adopted block WX/.test(t) && /2026-10-16 16:13/.test(t) && /4ba73cb/.test(t) && /CONFIGURED/.test(t), `sync text: ${t}`);
+  assert(/Adopted block WX/.test(t) && /2026-10-16 16:13/.test(t) && /4ba73cb/.test(t) && /configured/i.test(t), `sync text: ${t}`);
   return { text: t.trim() };
 });
 
@@ -58,7 +58,7 @@ await R.check('4.2', 'Policy cards: select changes profile/budget/wall limit; AD
   const cards = await page.locator('.policy-card').count();
   assert(cards === 2, `cards ${cards}`);
   const wxCard = page.locator('.policy-card', { has: page.locator(`input[value="${WX}"]`) });
-  assert(/ADOPTED BLOCK/.test(await wxCard.textContent()), 'WX adopted tag');
+  assert(/adopted block/i.test(await wxCard.textContent()), 'WX adopted tag');
   await policy(WX); let r = await rh();
   assert(r.policyId === WX && r.settings.candidates === 8 && r.settings.ode_steps === 6, `WX default ${JSON.stringify(r.settings)}`);
   assert(/Wall limit for this profile: 480 s/.test(await page.locator('#rehearse-panel').textContent()), 'WX wall limit 480');
@@ -160,12 +160,12 @@ await R.check('4.8', 'Run preset (bundle K2/ODE4, 2 s): live attach, frames grow
   const done = await S();
   const outcome = await page.locator('#run-outcome').textContent();
   const shot2 = await R.shot('result-bundle');
-  assert(/LIVE CPU SIMULATION/.test(a.badge), `badge ${a.badge}`);
+  assert(/live CPU simulation/i.test(a.badge), `badge ${a.badge}`);
   assert(b.frames > a.frames || job.status !== 'running', `frames ${a.frames} → ${b.frames}`);
   assert(tab === 'health' && live.worker, `health tab ${tab} worker card ${live.worker}`);
   assert(cam === 'follow', `camera ${cam}`);
   assert(job.status === 'completed' && done.outcome && outcome.trim(), `job ${job.status} outcome ${done.outcome} chip ${outcome}`);
-  assert(/REPLAY · CPU REHEARSAL · L1/.test(done.badge), `result badge ${done.badge}`);
+  assert(/replay · CPU rehearsal · L1/i.test(done.badge), `result badge ${done.badge}`);
   return { id, live, job: { status: job.status, outcome: job.summary?.report?.outcome ?? job.summary?.outcome }, done, shot, shot2 };
 });
 

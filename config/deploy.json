@@ -1,0 +1,54 @@
+{
+ "schema_version": 1,
+ "comment": "The pinned navigation deploy state another machine installs (docs/INSTALL.md). The deploy stack is a private repo; its frozen policy bundle is not in Git and travels as assets of the private release named here. tools/deploy_bundle.py fetch checks each asset's SHA-256 against this file, then every extracted file against bundle/MANIFEST.json from the deploy repo at this tag. No credentials: downloads use the operator's own gh login.",
+ "navigation_policy": {
+  "profile": "flow-bundle-20261008",
+  "planner": "student-s2-kcsc_s0",
+  "bundle_frozen": "2026-10-08"
+ },
+ "deploy_stack": {
+  "repo": "linjiw/g1-student-deploy",
+  "visibility": "private",
+  "tag": "deploy-2026-10-23",
+  "commit": "6a86c860d56d91cda4adff001c4b30dff24ef048",
+  "branch": "codex/near-goal-route"
+ },
+ "bundle": {
+  "release": "deploy-2026-10-23",
+  "manifest_sha256": "94df02f23f67aaae340654c464f1e3faf3e4af73d7d5ebb835259ebef9d363cf",
+  "files": 141,
+  "bytes": 877375068,
+  "assets": [
+   {
+    "name": "g1-deploy-bundle-core-20261008.tar.gz",
+    "kind": "tar.gz",
+    "sha256": "e131dcb76a8a61814364f2e4952f0eb9e40f249212f966b2d2a6d1b6061cfac9",
+    "bytes": 94670581,
+    "contains": "every bundle file except sonic/planner/V2/planner_sonic.onnx, plus MANIFEST.json, under bundle/"
+   },
+   {
+    "name": "planner_sonic.onnx",
+    "kind": "file",
+    "path": "sonic/planner/V2/planner_sonic.onnx",
+    "sha256": "39b553e197f62f077975ba38512bc04781a3fc37c2af7c6756e04629f760edea",
+    "bytes": 773952989,
+    "contains": "bundle/sonic/planner/V2/planner_sonic.onnx"
+   }
+  ],
+  "not_included": "TensorRT engines (*.trt): the SONIC runner builds them for the local GPU on its first start"
+ },
+ "sonic_runner": {
+  "repo": "linjiw/lucid-g1-deploy",
+  "visibility": "public",
+  "commit": "e994a9857add86dbba086aa90e41b7dee3bebb94",
+  "branch": "main",
+  "binary": "runner/target/release/g1_deploy_onnx_ref",
+  "build": "bash setup.sh && source env.sh && bash build.sh, in a real terminal (setup.sh asks for sudo for apt and CUDA)",
+  "needed_for": "the real robot and the real-time (L3) rehearsal only; Navigate and Rehearse simulate SONIC in Python"
+ },
+ "target": {
+  "os": "Ubuntu 22.04",
+  "arch": "x86_64",
+  "gpu": "NVIDIA (CUDA 12.8 torch wheels) for the robot planner; Studio simulations run on the CPU"
+ }
+}

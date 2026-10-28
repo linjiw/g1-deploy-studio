@@ -11,12 +11,13 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA="${STUDIO_DATA:-$HOME/research-data/g1-deploy-studio}"
+PYTHON="$REPO/.venv/bin/python"
+# The data root follows studio/paths.py: $STUDIO_DATA, config/local.json "paths", or ~/research-data/g1-deploy-studio.
+DATA="$( (cd "$REPO" && PYTHONPATH="$REPO" "$PYTHON" -m studio.paths data_root) 2>/dev/null || echo "${STUDIO_DATA:-$HOME/research-data/g1-deploy-studio}")"
 RELEASE="$DATA/release"
 UNIT="g1-deploy-studio"
 PORT="${STUDIO_PORT:-8790}"
 UNIT_FILE="$HOME/.config/systemd/user/$UNIT.service"
-PYTHON="$REPO/.venv/bin/python"
 
 write_unit() {
   mkdir -p "$(dirname "$UNIT_FILE")"
@@ -77,8 +78,11 @@ release() {
     mkdir -p "$DATA"
     git -C "$REPO" worktree add --quiet --detach "$RELEASE" "$commit"
   fi
-  # Untracked runtime dependencies come from the development checkout.
+  # Untracked runtime dependencies and this machine's ignored config come from the development checkout.
   ln -sfn "$REPO/node_modules" "$RELEASE/node_modules"
+  for cfg in local.json robot_link.json; do
+    if [[ -f "$REPO/config/$cfg" ]]; then ln -sfn "$REPO/config/$cfg" "$RELEASE/config/$cfg"; else rm -f "$RELEASE/config/$cfg"; fi
+  done
   printf '%s\n' "$commit" >"$DATA/release.commit"
   echo "Release worktree $RELEASE at $commit"
   if [[ -f "$UNIT_FILE" ]]; then systemctl --user daemon-reload; systemctl --user start "$UNIT"; fi

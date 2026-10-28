@@ -1,17 +1,18 @@
 // Multi-lane session timeline sharing one cursor (review §4.6).
 // Static lane content is drawn once per session/resize; the cursor is cheap.
 import { $, finite, escape, clock, hasPose } from './util.js';
+import { UI, SERIES, alpha } from './palette.js';
 
 const LANES = [
-  { id: 'events', label: 'Events', unit: '' },
-  { id: 'goal', label: 'Goal distance', unit: 'm', color: '#efbb70', value: (f, m) => goalDistance(f, m),
+  { id: 'events', label: 'Events', short: 'Events', unit: '' },
+  { id: 'goal', label: 'Goal distance', short: 'To goal', unit: 'm', color: UI.warn, value: (f, m) => goalDistance(f, m),
     threshold: m => m.navigation_criteria?.goal_radius_m ?? m.navigation?.goal_radius_m ?? m.node_rules?.goal_radius_m, thresholdLabel: 'goal radius' },
-  { id: 'planner', label: 'Planner compute', unit: 'ms', color: '#c4a0d9', value: f => f.health?.planner_latency_ms,
+  { id: 'planner', label: 'Planner compute', short: 'Planner', unit: 'ms', color: SERIES.planner, value: f => f.health?.planner_latency_ms,
     threshold: () => 160, thresholdLabel: 'deploy replan 160 ms', step: true },
-  { id: 'sonic', label: 'SONIC inference', unit: 'ms', color: '#56d9d0', value: f => f.health?.sonic_inference_ms,
+  { id: 'sonic', label: 'SONIC inference', short: 'SONIC', unit: 'ms', color: SERIES.sonic, value: f => f.health?.sonic_inference_ms,
     threshold: () => 20, thresholdLabel: '20 ms control tick' },
-  { id: 'tracking', label: 'Tracking RMSE', unit: 'rad', color: '#e6dfcf', value: f => f.health?.tracking_rmse_rad },
-  { id: 'contact', label: 'Obstacle contact', unit: 'N', color: '#f08c85', value: f => f.health?.contact_force_n,
+  { id: 'tracking', label: 'Tracking RMSE', short: 'Tracking', unit: 'rad', color: SERIES.tracking, value: f => f.health?.tracking_rmse_rad },
+  { id: 'contact', label: 'Obstacle contact', short: 'Contact', unit: 'N', color: SERIES.contact, value: f => f.health?.contact_force_n,
     threshold: m => m.navigation_criteria?.obstacle_contact_threshold_n, thresholdLabel: 'collision' },
 ];
 
@@ -34,11 +35,34 @@ export function initTimeline({ onSeek }) {
     const t = tl.t0 + x / Math.max(1, rect.width - labelWidth() - 8) * (tl.t1 - tl.t0);
     tl.onSeek?.(t);
   };
-  tl.canvas.addEventListener('pointerdown', e => { if (!e.isPrimary || e.button !== 0) return; tl.dragging = true; tl.canvas.setPointerCapture(e.pointerId); seekAt(e); });
-  tl.canvas.addEventListener('pointermove', e => { if (tl.dragging) seekAt(e); else hover(e); });
-  tl.canvas.addEventListener('pointerup', () => { tl.dragging = false; });
-  tl.canvas.addEventListener('pointercancel', () => { tl.dragging = false; $('lanes-tip').hidden = true; });
-  tl.canvas.addEventListener('lostpointercapture', () => { tl.dragging = false; });
+  // A mouse seeks at once. A finger seeks on a tap or a sideways drag; a vertical swipe scrolls the page
+  // (touch-action: pan-y), never the cursor.
+  let touch = null, pointerId = null;
+  tl.canvas.addEventListener('pointerdown', e => {
+    if (!e.isPrimary || e.button !== 0 || pointerId !== null) return;
+    pointerId = e.pointerId;
+    if (e.pointerType === 'touch') { touch = { x: e.clientX, y: e.clientY, id: e.pointerId, mode: null }; return; }
+    tl.dragging = true; tl.canvas.setPointerCapture(e.pointerId); seekAt(e);
+  });
+  tl.canvas.addEventListener('pointermove', e => {
+    if (!e.isPrimary || (pointerId !== null && pointerId !== e.pointerId)) return;
+    if (touch && e.pointerId === touch.id) {
+      const dx = Math.abs(e.clientX - touch.x), dy = Math.abs(e.clientY - touch.y);
+      if (!touch.mode && (dx > 8 || dy > 8)) touch.mode = dx > dy ? 'seek' : 'scroll';
+      if (touch.mode === 'seek') seekAt(e);
+      return;
+    }
+    if (tl.dragging) seekAt(e); else hover(e);
+  });
+  tl.canvas.addEventListener('pointerup', e => {
+    if (pointerId !== e.pointerId) return;
+    pointerId = null;
+    if (touch && e.pointerId === touch.id && !touch.mode) seekAt(e);
+    touch = null; tl.dragging = false;
+  });
+  const cancelDrag = e => { if (pointerId !== e.pointerId) return; pointerId = null; touch = null; tl.dragging = false; $('lanes-tip').hidden = true; };
+  tl.canvas.addEventListener('pointercancel', cancelDrag);
+  tl.canvas.addEventListener('lostpointercapture', cancelDrag);
   tl.canvas.addEventListener('pointerleave', () => { $('lanes-tip').hidden = true; });
   $('lanes-toggle')?.addEventListener('click', () => {
     const collapsed = document.body.classList.toggle('lanes-collapsed');
@@ -47,7 +71,8 @@ export function initTimeline({ onSeek }) {
   });
 }
 
-const labelWidth = () => (tl.canvas?.clientWidth ?? 800) < 520 ? 112 : 132;
+const narrow = () => (tl.canvas?.clientWidth ?? 800) < 520;
+const labelWidth = () => narrow() ? 76 : 132;
 
 export function setTimelineSession(session) {
   tl.session = session;
@@ -102,23 +127,23 @@ function drawBase() {
   ctx.font = '11px Inter, system-ui, sans-serif'; ctx.textBaseline = 'middle';
   tl.lanes.forEach((lane, i) => {
     const y0 = 2 + i * g.laneH, y1 = y0 + g.laneH - 3, mid = (y0 + y1) / 2;
-    ctx.fillStyle = i % 2 ? '#111a23' : '#0f1720'; ctx.fillRect(0, y0, g.width, g.laneH - 1);
-    ctx.fillStyle = lane.available ? '#aab6c3' : '#93a1b2';
-    ctx.fillText(lane.label, 8, mid);
+    ctx.fillStyle = i % 2 ? UI.panel2 : UI.panel; ctx.fillRect(0, y0, g.width, g.laneH - 1);
+    ctx.fillStyle = lane.available ? UI.muted : UI.dim;
+    ctx.fillText(narrow() ? lane.short : lane.label, 8, mid);
     if (lane.id === 'events') {
       for (const e of lane.events) {
         const x = xOf(e.time, g);
-        ctx.fillStyle = /error|fail|collision|estop/i.test(`${e.type} ${e.message}`) ? '#f08c85' : /result|goal/i.test(e.type ?? '') ? '#5fd39b' : '#efbb70';
+        ctx.fillStyle = /error|fail|collision|estop/i.test(`${e.type} ${e.message}`) ? UI.bad : /result|goal/i.test(e.type ?? '') ? UI.ok : UI.warn;
         ctx.fillRect(x - 1, y0 + 3, 2, g.laneH - 8);
       }
-      if (!lane.available) { ctx.fillStyle = '#93a1b2'; ctx.fillText('No events recorded', g.left + 6, mid); }
+      if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText('No events recorded', g.left + 6, mid); }
       return;
     }
-    if (!lane.available) { ctx.fillStyle = '#93a1b2'; ctx.fillText(g.width - g.left < 220 ? 'Unavailable' : 'Unavailable in this recording', g.left + 6, mid); return; }
+    if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText(['simulation', 'live'].includes(tl.session?.metadata?.mode) ? 'No samples yet' : narrow() ? 'Unavailable' : 'Unavailable in this recording', g.left + 6, mid); return; }
     const yOf = v => y1 - Math.min(1, v / lane.max) * (y1 - y0 - 3);
     if (lane.threshold !== null && lane.threshold <= lane.max * 1.001) {
       const ty = yOf(lane.threshold);
-      ctx.strokeStyle = '#ffffff30'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(g.left, ty); ctx.lineTo(g.width - g.right, ty); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = UI.faint; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(g.left, ty); ctx.lineTo(g.width - g.right, ty); ctx.stroke(); ctx.setLineDash([]);
     }
     ctx.strokeStyle = lane.color; ctx.lineWidth = 1.3; ctx.beginPath();
     lane.points.forEach(([t, v], k) => {
@@ -131,8 +156,8 @@ function drawBase() {
     const peak = `peak ${lane.peak.toFixed(lane.unit === 'rad' ? 3 : lane.unit === 'm' ? 2 : 1)} ${lane.unit}`;
     ctx.font = '10.5px Inter, system-ui, sans-serif'; ctx.textAlign = 'right';
     const w = ctx.measureText(peak).width + 8;
-    ctx.fillStyle = '#0b0f15c0'; ctx.fillRect(g.width - g.right - w, y0 + 1, w, 13);
-    ctx.fillStyle = '#93a0ae'; ctx.fillText(peak, g.width - g.right - 4, y0 + 8);
+    ctx.fillStyle = alpha(UI.panel, 0.85); ctx.fillRect(g.width - g.right - w, y0 + 1, w, 13);
+    ctx.fillStyle = UI.dim; ctx.fillText(peak, g.width - g.right - 4, y0 + 8);
     ctx.textAlign = 'left'; ctx.font = '11px Inter, system-ui, sans-serif';
   });
 }
@@ -152,8 +177,8 @@ function drawCursor() {
   ctx.drawImage(tl.base, 0, 0);
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   const g = laneGeometry(), x = xOf(tl.cursor, g);
-  ctx.fillStyle = '#efbb7022'; ctx.fillRect(g.left, 0, Math.max(0, x - g.left), g.height);
-  ctx.strokeStyle = '#efbb70'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, g.height); ctx.stroke();
+  ctx.fillStyle = alpha(UI.ink, 0.04); ctx.fillRect(g.left, 0, Math.max(0, x - g.left), g.height);
+  ctx.strokeStyle = UI.ink; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, g.height); ctx.stroke();
 }
 
 function hover(event) {

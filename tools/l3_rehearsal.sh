@@ -12,13 +12,14 @@
 set -euo pipefail
 TASK=$(readlink -f "${1:?task.json}"); RUN_ID=${2:?run-id}
 DRY_RUN=${DRY_RUN:-0}
-DEPLOY=/home/linjiw/code/g1-student-deploy
-LUCID=/home/linjiw/lucid-sonic/lucid-g1-deploy
-STUDIO=/home/linjiw/code/g1-deploy-studio
-BASE=${L3_BASE:-$HOME/research-data/g1-deploy-studio/l3}
+STUDIO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# Roots follow studio/paths.py ($G1_STUDENT_DEPLOY / $LUCID_DEPLOY_ROOT / $STUDIO_DATA, config/local.json, defaults).
+root() { (cd "$STUDIO" && PYTHONPATH="$STUDIO" python3 -B -m studio.paths "$1"); }
+DEPLOY=$(root deploy_root); LUCID=$(root lucid_root)
+BASE=${L3_BASE:-$(root data_root)/l3}
 RUN=$BASE/$RUN_ID
 BOOT=${BOOT_TIMEOUT:-180}
-GPU_LOG=/home/linjiw/IsaacLab/teachgym/runs/_v1_archive/e1b/gpu_util_log.csv  # pre-upgrade nvidia-smi logger (not ours; may stop)
+GPU_LOG=${GPU_LOG:-$HOME/IsaacLab/teachgym/runs/_v1_archive/e1b/gpu_util_log.csv}  # another experiment's nvidia-smi logger (not ours; may be absent: "unknown")
 GIT=(git --no-optional-locks)  # status must never refresh .git/index in the reference repositories
 
 # ---- refuse before anything is created
@@ -124,7 +125,7 @@ exit $rc
 set +e
 timeout -s TERM -k 30 "$WALL" \
   unshare --user --map-root-user --net --pid --fork --kill-child --mount-proc \
-  env --default-signal=INT,TERM,QUIT,PIPE -u CYCLONEDDS_URI PYTHONDONTWRITEBYTECODE=1 TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_linjiw \
+  env --default-signal=INT,TERM,QUIT,PIPE -u CYCLONEDDS_URI PYTHONDONTWRITEBYTECODE=1 TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_$(id -un) \
       RUN="$RUN" DEPLOY="$DEPLOY" STUDIO="$STUDIO" BOOT="$BOOT" REC_S="$REC_S" INNER_WALL="$INNER_WALL" DRY_RUN="$DRY_RUN" \
   bash -c "$INNER" > "$RUN/launcher.log" 2>&1
 RC=$?

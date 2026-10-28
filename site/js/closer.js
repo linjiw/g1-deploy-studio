@@ -72,7 +72,7 @@ class Closer {
     await this.viewer.loadRobot(DATA, f => this.progress(0.3 + 0.55 * f, 'Loading the robot'));
     if (this.destroyed) return;
     this.viewer.ghost('plan', { color: COLORS.ghost, opacity: 1 });
-    this.viewer.ghost('est', { color: 0x8fb8ff, opacity: 1 });
+    this.viewer.ghost('est', { color: 0x6c9ee6, opacity: 1 });
     this.progress(0.9, 'Loading the walk');
     await this.load(this.scenarios[0]);
     if (this.destroyed) return;
@@ -112,7 +112,8 @@ class Closer {
     this.root.dataset.mode = sc.mode;
     // Truth and estimate are centimetres apart: overlaid they compare; side by side the gap would be lost.
     // Side by side needs room for the plan body too: narrow stages start overlaid.
-    S.overlay = (sc.view ?? '').startsWith('overlay') || sc.mode === 'estimate' || this.root.clientWidth < 560;
+    // A view the visitor chose stays chosen across scenarios, unless the scenario needs both bodies in one view.
+    S.overlay = (sc.view ?? '').startsWith('overlay') || sc.mode === 'estimate' || (this.userOverlay ?? this.root.clientWidth < 560);
     const [l, r] = SIDES[sc.mode];
     this.el.left.innerHTML = `<b>${escape(l[0])}</b> <small>${escape(l[1])}</small>`;
     this.el.right.innerHTML = `<b>${escape(r[0])}</b> <small>${escape(r[1])}</small>`;
@@ -139,6 +140,7 @@ class Closer {
     else v.look([p[0], p[1], 0.55], { yaw: heading + 0.95, pitch: 0.26, distance: S.overlay ? 3.6 : 4.4 });
   }
   setOverlay(on, { quiet = false } = {}) {
+    if (!quiet) this.userOverlay = on;
     const S = this.S, v = this.viewer;
     S.overlay = on;
     for (const b of this.root.querySelectorAll('[data-view]')) b.setAttribute('aria-pressed', String((b.dataset.view === 'overlay') === on));

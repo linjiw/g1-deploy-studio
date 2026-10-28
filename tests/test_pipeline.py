@@ -7,6 +7,7 @@ import unittest
 
 import numpy as np
 
+from studio import paths
 from studio.pipeline import PipelineRecorder, tensor, MAX_CONTROL_STEPS
 
 
@@ -88,13 +89,13 @@ class PipelineTest(unittest.TestCase):
     def test_actual_source_observation_blocks_and_target_transform(self):
         # Import only NumPy source contract/observation builders; no runtime or
         # physics initialization, model inference, research outcome reads or DDS.
-        root = Path('/home/linjiw/code/g1-student-deploy')
+        root = paths.get('deploy_root')
         if not (root/'g1deploy/sonic.py').is_file():
             self.skipTest('Reference source unavailable')
         script = r'''
 import sys
 sys.dont_write_bytecode = True
-sys.path.insert(0, '/home/linjiw/code/g1-student-deploy')
+sys.path.insert(0, __DEPLOY__)
 from collections import deque
 import numpy as np
 from g1deploy import contract as C
@@ -129,6 +130,7 @@ assert len(calls)==1
 assert not {'onnxruntime','mujoco','unitree_sdk2py'} & set(sys.modules)
 print('Actual source 1570 block/order and 29 action-to-target parity verified without inference')
 '''
+        script = script.replace('__DEPLOY__', repr(str(root)))
         result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 

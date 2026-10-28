@@ -1,11 +1,11 @@
 // Navigate: put goals on the robot's own map and watch it walk there (docs/NAVIGATE.md).
 // The simulated robot is an owned CPU process that behaves like g1deploy/node.py; the real robot is
 // reached only through the robot link (goal and stand to node.py; Go stays with the operator).
-import { $, escape, num, request, emit, on, finite } from './util.js';
+import { $, escape, num, request, emit, on, finite, distinctLabels } from './util.js';
 
 export const nav = {
   catalog: null, robot: 'simulated', mapId: null, map: null, presetIndex: 0,
-  settings: { planner: 'quick', latency: 'none', actuators: 'g1-current', odometry: 'truth', map_mode: 'keep', seed: 0 },
+  settings: { planner: 'quick', latency: 'none', actuators: 'g1-current', odometry: 'truth', map_mode: 'keep', seed: 0, guards: 'off', lookahead: '' },
   job: null, timer: null, pick: null, busy: false, lastPerception: -Infinity, pendingSeq: null, notice: null,
   showTruth: false, robotLink: null, finished: null, mapBounds: null, endRequestedAt: null,
 };
@@ -19,11 +19,13 @@ const LATENCY = {
   robot: { label: '160 ms · deploy PC budget, predictive', value: { ms: 160, anchor: 'predict' } },
   slow: { label: '200 ms · past the budget, predictive', value: { ms: 200, anchor: 'predict' } },
   node: { label: "node.py rule · bundle planner timing (0.12 s p50, 0.17 s p95)", value: { mode: 'node', preset: 'bundle-fused' } },
-  'node-sk1': { label: "node.py rule · Flow student-sk1 timing (0.19 s, 1.1 s fallback)", value: { mode: 'node', preset: 'flow-sk1' } },
 };
 // The robot's deploy configuration (docs/DEPLOY_FIDELITY.md): deployed budget, node.py's latency rule with the bundle
 // planner's measured timing, LIO-level odometry, one map for the session, the current G1.
 const DEPLOY_SETTINGS = { planner: 'deployed', latency: 'node', actuators: 'g1-current', odometry: 'lio', map_mode: 'keep' };
+// What the robot ran on H5-H6 (docs/ROBUSTNESS.md of g1-student-deploy): --guards walls --goal-lookahead 1.0.
+const DEPLOY_GUARDS = { guards: 'walls', lookahead: '1.0' };
+const LOOKAHEAD = { '': 'Evaluated · goal lookahead 1.5 m', '1.0': 'Slow · 1.0 m (first hardware walks)' };
 const ODOMETRY = { truth: 'Simulator truth', lio: 'LIO-level drift', drift: 'Poor odometry (drift)' };
 const ACTUATORS = { 'g1-current': 'Current G1 (139/139/88 N·m hips)', 'g1-rev1': 'G1 rev 1 (88/139/88)', source: 'Training model (88/88/88)' };
 const PHASE = {
@@ -34,6 +36,7 @@ const PHASE = {
 const CHECK_ICON = { pass: '✓', warn: '!', block: '✕' };
 
 const isActive = followed;
+const tapWord = () => (matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click');
 const isReal = job => job?.kind === 'robot' || job?.latest?.robot === 'real';
 function phaseLabel(n, real) {
   if (!n?.phase) return [real ? "Waiting for the node's status" : 'Starting the simulated robot', 'outcome-live'];
@@ -66,11 +69,20 @@ async function selectWorld(id, rerender = true) {
 
 function starts() {
   const m = nav.map; if (!m) return [];
-  const list = (m.presets ?? []).map(p => ({ label: p.label, start_xy: p.start_xy, start_yaw_rad: p.start_yaw_rad ?? 0, goal_xy: p.goal_xy }));
-  if (m.suggested_scenario) list.push({ label: 'Source start', ...m.suggested_scenario });
+  const list = [], seen = new Set();
+  const add = (label, q) => {
+    const key = `${num(q.start_xy[0], 2)},${num(q.start_xy[1], 2)},${num(q.start_yaw_rad ?? 0, 2)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push({ label, start_xy: q.start_xy, start_yaw_rad: q.start_yaw_rad ?? 0 });
+  };
+  // A preset is "start → goal"; Navigate uses its start only (you pick the goals).
+  for (const p of m.presets ?? []) add(String(p.label ?? 'Start').split('→')[0].trim() || 'Start', p);
+  if (m.suggested_scenario) add('Source start', m.suggested_scenario);
   if (!list.length) list.push({ label: 'World origin', start_xy: [0, 0], start_yaw_rad: 0 });
   return list;
 }
+const startText = q => `${q.label} · (${num(q.start_xy[0], 1)}, ${num(q.start_xy[1], 1)}) facing ${num((q.start_yaw_rad ?? 0) * 180 / Math.PI, 0)}°`;
 
 export async function refreshActive() {
   try {
@@ -91,10 +103,16 @@ async function poll(first = false) {
     if (nav.job?.id !== id) return;
     if (job.latest?.perception?.time > nav.lastPerception) nav.lastPerception = job.latest.perception.time;
     const wasActive = isActive(nav.job) || first;
-    const before = nav.job?.latest?.navigation?.phase;
+    const before = nav.job?.latest?.navigation?.phase, couldGoal = !!nav.job?.latest?.navigation?.can?.goal;
     nav.job = job;
-    // A notice belongs to the moment it was given: a phase change retires "Walking." and friends.
-    if (before && navState()?.phase !== before && nav.notice?.kind === 'ok') nav.notice = null;
+    // A notice and a goal pick belong to the moment they were made: a phase change retires both (a pick
+    // checked from the old position must not be sent from the new one, and "stand first" ends on arrival).
+    // PRESCAN → RUN is one walk: its notice stays. Goals opening (a settled stand) also retires "cannot take a goal".
+    const now = navState()?.phase, walking = p => p === 'PRESCAN' || p === 'RUN';
+    if (before && now !== before && !(walking(before) && walking(now))) {
+      nav.notice = null;
+      if (nav.pick) { nav.pick = null; nav.pickToken = (nav.pickToken ?? 0) + 1; emit('navigate:overlay'); }
+    } else if (!couldGoal && navState()?.can?.goal && nav.notice?.kind === 'warning') nav.notice = null;
     resolvePending();
     emit('navigate:job', job);
     renderLive();
@@ -111,7 +129,9 @@ function resolvePending() {
   const seq = nav.pendingSeq; if (!seq) return;
   const reply = navState()?.commands?.find(c => c.seq === seq);
   if (!reply) return;
-  nav.pendingSeq = null;
+  nav.pendingSeq = null; nav.pendingCmd = null;
+  // A goal that reached the node (applied, or sent but not read back) replaces the pick: the node holds it now.
+  if (reply.cmd === 'goal' && (reply.status !== 'rejected' || reply.sent)) { nav.pick = null; nav.pickToken = (nav.pickToken ?? 0) + 1; }
   if (reply.status === 'rejected') nav.notice = { kind: 'warning', text: `${label(reply.cmd)} refused: ${reply.reason}` };
   else if (reply.cmd === 'stand' && navState()?.pending_stand) {
     nav.notice = { kind: 'warning', text: 'Stand requested; the node defers it here (see above).' };
@@ -128,7 +148,7 @@ async function command(cmd, extra = {}) {
   nav.busy = true; nav.notice = null; renderLive();
   try {
     const result = await request('/api/nav/command', { id: nav.job.id, cmd, ...extra });
-    nav.pendingSeq = result.seq;
+    nav.pendingSeq = result.seq; nav.pendingCmd = cmd;
     if (cmd === 'end') nav.endRequestedAt = Date.now();
     schedule(100);
   } catch (error) { nav.notice = { kind: 'warning', text: error.message }; }
@@ -137,12 +157,13 @@ async function command(cmd, extra = {}) {
 
 async function startSession() {
   const q = starts()[nav.presetIndex];
-  if (!q) return;
-  nav.busy = true; nav.notice = null; nav.finished = null; render();
+  if (!q || nav.busy) return;
+  nav.busy = true; nav.notice = null; nav.finished = null; nav.hint = null; render();
   try {
     const body = { map_id: nav.mapId, start_xy: q.start_xy, start_yaw_rad: q.start_yaw_rad ?? 0, planner: nav.settings.planner,
       latency: LATENCY[nav.settings.latency].value, actuators: nav.settings.actuators, odometry: nav.settings.odometry,
-      map_mode: nav.settings.map_mode, seed: nav.settings.seed };
+      map_mode: nav.settings.map_mode, seed: nav.settings.seed, guards: nav.settings.guards,
+      goal_lookahead_m: nav.settings.lookahead ? Number(nav.settings.lookahead) : null };
     nav.job = await request('/api/nav/start', body);
     nav.lastPerception = -Infinity; nav.pick = null;
     emit('navigate:started', nav.job);
@@ -154,10 +175,15 @@ async function startSession() {
 // ----- picking a goal on the map ------------------------------------------------
 export async function pickGoal(xy) {
   const n = navState();
-  if (!isActive(nav.job) || !n) return;
+  if (!isActive(nav.job)) {
+    if (!nav.finished) { nav.hint = nav.robot === 'real' ? 'Connect to the robot first: goals go on its own map.' : 'Start a session first: goals go on the map the robot builds once it stands.'; renderStageBar(); }
+    return;
+  }
+  if (!n || document.body.classList.contains('flow-focus')) return;  // Stage presents; goals are placed in Navigate
+  if (nav.pendingSeq || nav.busy) { nav.notice = { kind: 'warning', text: 'Waiting for the robot to answer the last command.' }; renderLive(); return; }
   if (nav.job.status === 'detached') { nav.notice = { kind: 'warning', text: 'This session was started by a previous gateway: End it, then start a new one.' }; renderLive(); return; }
   if (!n.can?.goal) {
-    nav.notice = { kind: 'warning', text: n.can_reasons?.goal ?? (n.phase === 'RUN' || n.phase === 'PRESCAN' ? 'Goals are placed while the robot stands, as on the robot. Press Stand first or wait for it to arrive.' : 'The robot cannot take a goal right now.') };
+    nav.notice = { kind: 'warning', text: waitReason(n) };
     renderLive(); return;
   }
   const token = nav.pickToken = (nav.pickToken ?? 0) + 1;
@@ -166,10 +192,10 @@ export async function pickGoal(xy) {
   emit('navigate:overlay'); renderLive();
   try {
     const check = await request(`/api/nav/check?id=${encodeURIComponent(nav.job.id)}&x=${nav.pick.xy[0]}&y=${nav.pick.xy[1]}`);
-    if (token !== nav.pickToken) return;
+    if (token !== nav.pickToken || !nav.pick) return;
     nav.pick.check = check;
   } catch (error) {
-    if (token !== nav.pickToken) return;
+    if (token !== nav.pickToken || !nav.pick) return;
     nav.pick.check = { ok: false, checks: [{ id: 'error', status: 'block', label: 'Check unavailable', detail: error.message }] };
   }
   emit('navigate:overlay'); renderLive();
@@ -186,7 +212,7 @@ export function overlay() {
   return { pick: live ? nav.pick?.xy : null, pickStatus: status, path: live ? nav.pick?.check?.path_xy : null,
     goal: goal?.xy ?? null, staged: !!goal && n?.phase !== 'RUN' && n?.phase !== 'PRESCAN' && n?.can?.go, walks: live ? walks : [],
     goalUnverified: !!(goal && goal.verification && goal.verification !== 'verified'),
-    goalLabel: goal?.verification === 'external' ? 'NODE GOAL · NOT FROM STUDIO' : goal?.verification === 'unverified' ? 'NODE GOAL · UNVERIFIED' : null,
+    goalLabel: goal?.verification === 'external' ? 'Node goal · not from Studio' : goal?.verification === 'unverified' ? 'Node goal · unverified' : null,
     bounds: live ? bounds : null, boundsLabel: m?.origin_xy ? 'planner memory · assumed' : 'planner memory', radius: 0.4 };
 }
 
@@ -202,8 +228,29 @@ export function render() {
       </div>
     </section>
     ${live || nav.finished ? '<div id="nav-live"></div>' : nav.robot === 'simulated' ? setupForm() : realRobotCard()}`;
-  root.querySelectorAll('[data-robot]').forEach(b => b.addEventListener('click', () => { nav.robot = b.dataset.robot; nav.finished = null; render(); if (nav.robot === 'real') loadRobotLink(); }));
+  root.querySelectorAll('[data-robot]').forEach(b => b.addEventListener('click', () => { nav.robot = b.dataset.robot; nav.finished = null; nav.hint = null; render(); if (nav.robot === 'real') loadRobotLink(); }));
   if (live || nav.finished) renderLive(); else bindSetup(root);
+  preview();
+  renderStageBar();
+}
+
+// Before a session the stage shows the chosen world and start, as Rehearse previews a preset.
+function preview() {
+  const q = starts()[nav.presetIndex];
+  // A session that is still booting keeps the preview until its first frame replaces it.
+  const starting = isActive(nav.job) && !isReal(nav.job) && !nav.job?.latest?.frame;
+  const show = (starting || (!isActive(nav.job) && !nav.finished && nav.robot === 'simulated')) && nav.map && q;
+  const key = show ? `${nav.mapId}:${nav.presetIndex}:${starting}` : null;
+  if (key === nav.previewKey) return;
+  nav.previewKey = key;
+  emit('navigate:preview', show ? { map: nav.map, start: q.start_xy, yaw: q.start_yaw_rad ?? 0, label: `${nav.map.label ?? nav.mapId} · ${starting ? 'starting' : 'not started'}` } : null);
+}
+export function resetPreview() { nav.previewKey = undefined; }
+
+function guardPresets() {
+  const presets = nav.catalog?.guards?.presets ?? { off: 'Off · the frozen planner alone' };
+  if (!(nav.settings.guards in presets)) nav.settings.guards = 'off';
+  return presets;
 }
 
 function setupForm() {
@@ -213,14 +260,17 @@ function setupForm() {
     <section class="panel-section">
       <h4>World</h4>
       <p class="tiny">The robot stands in this world and knows it only through its own LiDAR, as on a real site.</p>
-      <label class="field"><span>World</span><select id="nav-world">${worlds.map(m => option(m.id, m.label, m.id === nav.mapId)).join('')}</select></label>
-      <label class="field"><span>Start</span><select id="nav-start">${list.map((q, i) => option(i, `${q.label} · (${num(q.start_xy[0], 1)}, ${num(q.start_xy[1], 1)})`, i === nav.presetIndex)).join('')}</select></label>
+      <label class="field"><span>World</span><select id="nav-world">${(labels => worlds.map(m => option(m.id, labels.get(m.id), m.id === nav.mapId)).join(''))(distinctLabels(worlds))}</select></label>
+      <label class="field"><span>Start</span><select id="nav-start">${list.map((q, i) => option(i, startText(q), i === nav.presetIndex)).join('')}</select></label>
       <button id="nav-deploy-preset" class="link-button" ${nav.busy ? 'disabled' : ''}>Use deploy settings</button>
       <details class="nav-advanced" ${nav.advancedOpen ? 'open' : ''}><summary>Advanced</summary>
         <label class="field"><span>Planner budget</span><select id="nav-planner">${Object.entries(nav.catalog.nav_options?.planner ?? { quick: 'Quick · K 2, ODE 4 (CPU)', balanced: 'Balanced · K 8, ODE 6', deployed: 'Deployed budget · K 16, ODE 10 (slow on CPU)' }).map(([k, v]) => option(k, v, k === nav.settings.planner)).join('')}</select></label>
         <label class="field"><span>Planner latency</span><select id="nav-latency">${Object.entries(LATENCY).map(([k, v]) => option(k, v.label, k === nav.settings.latency)).join('')}</select></label>
         <label class="field"><span>Hardware limits</span><select id="nav-actuators">${Object.entries(ACTUATORS).map(([k, v]) => option(k, v, k === nav.settings.actuators)).join('')}</select></label>
         <label class="field"><span>Odometry</span><select id="nav-odometry">${Object.entries(ODOMETRY).map(([k, v]) => option(k, v, k === nav.settings.odometry)).join('')}</select></label>
+        <label class="field" title="${escape(guardPresets()[nav.settings.guards] ?? '')}"><span>Guards</span><select id="nav-guards">${Object.entries(guardPresets()).map(([k, v]) => option(k, v, k === nav.settings.guards)).join('')}</select></label>
+        <label class="field"><span>Walking speed</span><select id="nav-lookahead">${Object.entries(LOOKAHEAD).map(([k, v]) => option(k, v, k === nav.settings.lookahead)).join('')}</select></label>
+        ${nav.catalog.guards?.available ? '' : `<p class="tiny">${escape(nav.catalog.guards?.note ?? 'Guards need g1deploy/guards.py in the deploy stack.')}</p>`}
         <label class="field"><span>Map memory</span><select id="nav-map-mode">${Object.entries(MAP_MODES).map(([k, v]) => option(k, v, k === nav.settings.map_mode)).join('')}</select></label>
         <p class="tiny">The node keeps one memory, and returns from the robot's own arms can pile up in it as phantom low ceilings over long sessions (docs/NAVIGATE.md §5). Fresh clears it before each walk.</p>
         <label class="field narrow"><span>Seed</span><input id="nav-seed" type="number" min="0" step="1" value="${nav.settings.seed}"></label>
@@ -238,7 +288,7 @@ function recentSessions() {
     .sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0)).slice(0, 5);
   if (!list.length) return '';
   return `<section class="panel-section"><h4>Recent sessions</h4><ul class="nav-recent">${list.map(s => `<li>
-    <button class="link-button" data-open-session="${escape(s.id)}">${escape((s.scenario_label ?? s.label ?? s.id).replace(/^Navigate · /, ''))}</button>
+    <button class="link-button nav-recent-link" data-open-session="${escape(s.id)}">${escape((s.scenario_label ?? s.label ?? s.id).replace(/^Navigate · /, ''))}</button>
     <small>${s.robot === 'real' ? 'real robot · ' : ''}${Number.isFinite(s.walks) ? `${s.arrived ?? 0}/${s.walks} walks arrived` : escape(s.status ?? '')} · #${escape(s.id.slice(-6))}</small></li>`).join('')}</ul></section>`;
 }
 
@@ -252,18 +302,19 @@ function sessionHelp() {
     <li>Click the map to place a goal. Studio checks it on the robot's map.</li>
     <li>Send the goal, then Go. Watch the plan, path and health live.</li>
     <li>It arrives and stands. Place the next goal; the map keeps growing.</li>
-    <li>End the session: the recording opens in Replay, and the map can become an arena twin.</li></ol></section>`;
+    <li>End the session: its recording opens here to scrub through (or in Replay), and the map can become an arena twin.</li></ol></section>`;
 }
 
 function bindSetup(root) {
   root.querySelector('#nav-world')?.addEventListener('change', e => selectWorld(e.target.value).catch(err => { nav.notice = { kind: 'warning', text: err.message }; render(); }));
-  root.querySelector('#nav-start')?.addEventListener('change', e => { nav.presetIndex = Number(e.target.value); });
-  for (const [id, key] of [['nav-planner', 'planner'], ['nav-latency', 'latency'], ['nav-actuators', 'actuators'], ['nav-odometry', 'odometry'], ['nav-map-mode', 'map_mode']])
+  root.querySelector('#nav-start')?.addEventListener('change', e => { nav.presetIndex = Number(e.target.value); preview(); renderStageBar(); });
+  for (const [id, key] of [['nav-planner', 'planner'], ['nav-latency', 'latency'], ['nav-actuators', 'actuators'], ['nav-odometry', 'odometry'], ['nav-map-mode', 'map_mode'], ['nav-guards', 'guards'], ['nav-lookahead', 'lookahead']])
     root.querySelector(`#${id}`)?.addEventListener('change', e => { nav.settings[key] = e.target.value; });
   root.querySelector('#nav-seed')?.addEventListener('change', e => { nav.settings.seed = Math.max(0, Math.floor(Number(e.target.value) || 0)); });
   root.querySelector('#nav-deploy-preset')?.addEventListener('click', () => {
-    Object.assign(nav.settings, DEPLOY_SETTINGS); nav.advancedOpen = true;
-    nav.notice = { kind: 'ok', text: "Deploy settings: K 16 / ODE 10, node.py's latency rule with the bundle planner's timing, LIO-level odometry, one map. About 0.15x real time on this CPU." };
+    Object.assign(nav.settings, DEPLOY_SETTINGS, nav.catalog.guards?.available ? DEPLOY_GUARDS : {}); nav.advancedOpen = true;
+    nav.notice = { kind: 'ok', text: "Deploy settings: K 16 / ODE 10, node.py's latency rule with the bundle planner's timing, LIO-level odometry, one map"
+      + (nav.catalog.guards?.available ? ', guards walls and lookahead 1.0 m (the robot\'s H5–H6 flags; pick deploy for overheads)' : '') + '. About 0.15x real time on this CPU.' };
     render();
   });
   root.querySelector('#nav-start-session')?.addEventListener('click', startSession);
@@ -282,7 +333,7 @@ function realRobotCard() {
          <p class="tiny">Goals up to ${num(link.max_goal_distance_m ?? 3, 1)} m from the robot (<code>limits.max_goal_distance_m</code>).</p>
          <button id="nav-connect" class="primary-action wide-button" ${nav.busy ? 'disabled' : ''}>Connect to the robot</button>`
       : `<div class="callout">${escape(link?.reason ?? 'The robot link is not configured.')}</div>
-         <p class="tiny">Copy <code>config/robot_link.example.json</code> to <code>config/robot_link.json</code> on the deploy PC (loopback endpoints; see docs/NAVIGATE.md). Until then, rehearse the same workflow with the simulated robot.</p>`}
+         <p class="tiny">The endpoints are loopback only (see docs/NAVIGATE.md). Until then, rehearse the same workflow with the simulated robot.</p>`}
   </section>
   <section class="panel-section nav-steps"><h4>On the robot day</h4><ol class="tiny">
     <li>Calibrate the LiDAR mount and run <code>./g1 check</code>.</li>
@@ -307,6 +358,14 @@ async function connectRobot() {
     emit('navigate:started', nav.job); schedule(300);
   } catch (error) { nav.notice = { kind: 'warning', text: error.message }; }
   finally { nav.busy = false; render(); }
+}
+
+// Why a goal cannot be placed now, in words: a robot that just arrived is still settling.
+function waitReason(n) {
+  if (n?.can_reasons?.goal) return n.can_reasons.goal;
+  if (['ARRIVED', 'STOPPED'].includes(n?.phase)) return 'Settling to a stand; goals open in a moment.';
+  if (['RUN', 'PRESCAN'].includes(n?.phase)) return 'Goals are placed while the robot stands, as on the robot. Press Stand, or wait for it to arrive.';
+  return 'Goals are placed while the robot stands.';
 }
 
 function checkList(check) {
@@ -353,12 +412,13 @@ function readyList(n) {
 function nodeGoal(n) {
   const g = n?.goal;
   if (!g) return '<p class="tiny">The node reports no goal yet.</p>';
-  const chip = { verified: ['VERIFIED BY STUDIO', 'chip-measured'], unverified: ['UNVERIFIED', 'chip-unavailable'], external: ['NOT FROM STUDIO', 'chip-unavailable'] }[g.verification] ?? ['UNKNOWN', 'chip-unavailable'];
+  const chip = { verified: ['Verified by Studio', 'chip-measured'], unverified: ['Unverified', 'chip-unavailable'], external: ['Not from Studio', 'chip-unavailable'] }[g.verification] ?? ['Unknown', 'chip-unavailable'];
   return `<div class="nav-node-goal"><span>Node goal <strong>(${num(g.xy[0], 2)}, ${num(g.xy[1], 2)})</strong></span><span class="chip ${chip[1]}">${chip[0]}</span></div>
     ${g.detail ? `<p class="tiny">${escape(g.detail)}</p>` : ''}`;
 }
 
-export function renderLive() {
+export function renderLive() { renderPanelLive(); renderStageBar(); }
+function renderPanelLive() {
   const root = $('nav-live'); if (!root) return;
   const job = nav.job, n = navState(), live = isActive(job);
   if (!live) { root.innerHTML = finishedCard(job); root.dataset.key = ''; bindFinished(root); return; }
@@ -396,13 +456,13 @@ export function renderLive() {
       ${real ? nodeGoal(n) : ''}
       ${real && n?.goal_warning ? `<div class="callout danger">${escape(n.goal_warning)}</div>` : ''}
       ${pick ? `<div class="nav-pick"><strong>(${num(pick.xy[0], 2)}, ${num(pick.xy[1], 2)})</strong><button id="nav-clear-pick" class="link-button">Clear</button></div>${checkList(pick.check)}`
-        : !real && goal && can.go ? `<p class="tiny">Goal staged at (${num(goal.xy[0], 2)}, ${num(goal.xy[1], 2)}). Press Go, or click elsewhere to change it.</p>`
-        : can.goal ? '<p class="tiny nav-hint">Click the map to place a goal.</p>'
-        : `<p class="tiny">${escape(n?.can_reasons?.goal ?? 'Goals are placed while the robot stands.')}</p>`}
+        : !real && goal && can.go ? `<p class="tiny">Goal staged at (${num(goal.xy[0], 2)}, ${num(goal.xy[1], 2)}). Press Go, or ${tapWord().toLowerCase()} elsewhere to change it.</p>`
+        : can.goal ? `<p class="tiny nav-hint">${tapWord()} the map to place a goal.</p>`
+        : `<p class="tiny">${escape(waitReason(n))}</p>`}
       <div class="tool-row">
         <button id="nav-send" class="primary-action" ${pick?.check?.ok && can.goal && !nav.busy ? '' : 'disabled'}>Send goal</button>
-        ${real ? '' : `<button id="nav-go" class="primary-action" ${can.go && !nav.busy ? '' : 'disabled'}>▶ Go</button>`}
-        <button id="nav-stand" ${can.stand && !nav.busy ? '' : 'disabled'} title="Settle to a stand (not an emergency stop)">■ Stand</button>
+        ${real ? '' : `<button id="nav-go" class="go-action" ${can.go && !nav.busy && !pick ? '' : 'disabled'} ${pick && can.go ? 'title="Send the new goal first, or Clear it to go to the staged one"' : ''}>Go</button>`}
+        <button id="nav-stand" ${can.stand && !nav.busy ? '' : 'disabled'} title="Settle to a stand (not an emergency stop)">Stand</button>
       </div>
       ${real ? `<div class="callout">${escape(n?.go_note ?? 'Start the walk with g on the node console. Studio never sends Go to the robot.')}</div>` : ''}
       ${nav.notice ? `<div class="callout ${nav.notice.kind === 'ok' ? 'ok' : 'warning'}">${escape(nav.notice.text)}</div>` : ''}
@@ -416,7 +476,7 @@ export function renderLive() {
       ${real ? '' : `<label class="check"><input id="nav-truth" type="checkbox" ${nav.showTruth ? 'checked' : ''}> Show the true world (simulation only; the robot does not see it)</label>`}
       <div class="tool-row nav-session-actions"><button id="nav-end" class="danger" ${(can.end || job.status === 'detached') && !nav.busy ? '' : 'disabled'}>End session</button>
         ${endOverdue() ? '<button id="nav-force" class="danger" title="Stop the session process now (its recording may be incomplete)">Force stop</button>' : ''}</div>
-      <p class="tiny">${real ? 'Ending stops Studio\'s link only; nothing is sent to the robot.' : 'Ending stands the robot, saves the recording and the map, and opens it in Replay.'}</p>
+      <p class="tiny">${real ? 'Ending stops Studio\'s link only; nothing is sent to the robot.' : 'Ending stands the robot, saves the recording and the map, and opens the recording here.'}</p>
     </section>`;
   bindLive(root);
 }
@@ -468,12 +528,14 @@ function finishedCard(job) {
 
 function bindFinished(root) {
   root.querySelector('#nav-open-replay')?.addEventListener('click', () => emit('open-session', nav.job.result_session_id));
-  root.querySelector('#nav-new')?.addEventListener('click', async () => {
-    nav.job = null; nav.finished = null; nav.notice = null; nav.pick = null; nav.endRequestedAt = null; emit('navigate:overlay');
-    await refreshSessions(); render();
-  });
+  root.querySelector('#nav-new')?.addEventListener('click', newSession);
   root.querySelector('#nav-twin')?.addEventListener('click', makeTwin);
   root.querySelector('[data-open-arena]')?.addEventListener('click', e => emit('rehearse:edit-arena', e.target.dataset.openArena));
+}
+
+async function newSession() {
+  nav.job = null; nav.finished = null; nav.notice = null; nav.pick = null; nav.endRequestedAt = null; nav.hint = null; emit('navigate:overlay');
+  await refreshSessions(); render();
 }
 
 async function makeTwin() {
@@ -486,6 +548,110 @@ async function makeTwin() {
     emit('arena:saved');
   } catch (error) { nav.notice = { kind: 'warning', text: error.message }; }
   finally { nav.busy = false; renderLive(); }
+}
+
+
+// ----- the stage bar: the next step, the goal being checked and its actions, on the 3D view itself ---------------
+// The same commands as the panel, so a phone or a small window can pick, send and go without scrolling.
+const xyText = xy => `(${num(xy[0], 2)}, ${num(xy[1], 2)})`;
+function steps(real, current) {
+  const list = real ? [['start', 'Connect'], ['pick', 'Pick a goal'], ['send', 'Send it'], ['go', 'Operator presses g']]
+    : [['start', 'Start'], ['pick', 'Pick a goal'], ['send', 'Send it'], ['go', 'Go']];
+  const at = list.findIndex(([id]) => id === current);
+  return `<div class="nsb-steps glass" role="list" aria-label="Steps">${list.map(([, text], i) =>
+    `<span role="listitem" class="${i < at ? 'done' : i === at ? 'now' : ''}"${i === at ? ' aria-current="step"' : ''}><b>${i < at ? '✓' : i + 1}</b><em>${text}</em></span>`).join('')}</div>`;
+}
+const button = (id, text, cls = '', on = true, title = '') => `<button id="${id}" class="${cls}" ${on && !nav.busy ? '' : 'disabled'}${title ? ` title="${escape(title)}"` : ''}>${escape(text)}</button>`;
+
+function stageModel() {
+  const job = nav.job, n = navState(), live = isActive(job);
+  const real = live ? isReal(job) : nav.robot === 'real';
+  if (!live && nav.finished) {
+    const report = job?.summary?.report ?? {}, legs = report.legs ?? job?.latest?.navigation?.legs ?? [], ok = job?.status === 'completed';
+    return { real, step: null, tone: ok ? 'ready' : 'block', icon: ok ? 'pass' : 'block', title: ok ? 'Session saved' : `Session ${job?.status ?? 'ended'}`,
+      detail: ok ? `${report.arrived ?? 0} of ${report.walks ?? legs.length} walks arrived. Its recording is open: play it here, or in Replay.` : (job?.error ?? 'No recording was saved.'),
+      actions: (job?.result_session_id ? button('nsb-open', 'Open in Replay') : '') + button('nsb-new', 'New session', 'primary-action') };
+  }
+  if (!live) {
+    if (real) {
+      const configured = nav.robotLink?.configured;
+      return { real, step: 'start', title: 'Real robot', detail: nav.hint ?? (configured ? 'Connect Studio to the deploy PC. It stages goals and asks for stands; the operator starts every walk.' : 'The robot link is not configured on this PC. Rehearse with the simulated robot meanwhile.'),
+        tone: nav.hint ? 'warn' : '', actions: configured ? button('nsb-connect', 'Connect to the robot', 'primary-action') : '' };
+    }
+    const q = starts()[nav.presetIndex];
+    return { real, step: 'start', title: nav.map ? `${nav.map.label ?? nav.mapId}` : 'Choose a world',
+      detail: nav.hint ?? (q ? `${startText(q)}: the robot stands here and scans what it can see.` : 'Pick a world in the panel.'), tone: nav.hint ? 'warn' : '',
+      icon: nav.busy ? 'spin' : '', actions: button('nsb-start', nav.busy ? 'Starting…' : 'Start session', 'primary-action', !!q && !!nav.mapId) };
+  }
+  if (nav.endRequestedAt || n?.phase === 'ENDED') return { real, step: null, icon: 'spin', title: 'Ending the session…',
+    detail: real ? "Closing Studio's link; nothing is sent to the robot." : 'The robot stands; Studio saves the recording and the map.', actions: '' };
+  if (job.status === 'detached') return { real, step: null, icon: 'warn', tone: 'warn', title: 'Started by a previous gateway',
+    detail: 'It is still running. End it to keep its recording, then start a new one.', actions: button('nsb-end', 'End session', 'danger') };
+  if (!n || !n.phase || n.phase === 'BOOT') return { real, step: 'start', icon: 'spin', title: real ? 'Connecting to the deploy PC…' : 'Starting the simulated robot…',
+    detail: real ? 'Waiting for the node status and the LIO pose.' : 'Loading the planner and SONIC on the CPU, about 10–30 s.', actions: '' };
+  const can = n.can ?? {}, goal = n.goal, pick = nav.pick;
+  const notice = nav.notice?.kind === 'warning' ? nav.notice.text : null;
+  if (nav.pendingSeq && nav.pendingCmd === 'goal') return { real, step: 'send', icon: 'spin', title: real ? 'Sending the goal to the node…' : 'Staging the goal…',
+    detail: real ? 'Studio reads it back from the node status before it counts as staged.' : '', actions: '' };
+  if (n.fallen) return { real, step: null, icon: 'block', tone: 'block', title: 'E-stop: the robot tilted past the limit', detail: 'End the session to keep the recording.', actions: button('nsb-end', 'End session', 'danger', can.end) };
+  if (['RUN', 'PRESCAN'].includes(n.phase)) return { real, step: 'go', icon: 'live', title: n.phase === 'PRESCAN' ? 'Pre-scanning' : 'Walking',
+    detail: notice ?? (goal ? `To ${xyText(goal.xy)}` : ''), live: true, tone: notice ? 'warn' : '',
+    actions: button('nsb-stand', 'Stand', '', can.stand, 'Settle to a stand (not an emergency stop)') };
+  if (n.pending_stand && !real) return { real, step: 'pick', icon: 'warn', tone: 'warn', title: 'Stand deferred', detail: 'The map shows something overhead near the robot, so node.py lets the plan play out first.',
+    actions: button('nsb-takeover', 'Take over', '', true, 'Stand it now, as the remote D-up does') };
+  if (pick) {
+    if (!pick.check) return { real, step: 'send', icon: 'spin', title: `Checking ${xyText(pick.xy)}…`, detail: "On the robot's own map.", actions: button('nsb-clear', 'Clear', 'ghost') };
+    const checks = pick.check.checks ?? [], block = checks.find(c => c.status === 'block'), warn = checks.find(c => c.status === 'warn');
+    const status = pick.check.ok ? (warn ? 'warn' : 'pass') : 'block';
+    const path = finite(pick.check.path_m) ? ` · path ${num(pick.check.path_m, 1)} m` : '';
+    const first = block ?? warn;
+    return { real, step: 'send', icon: status, tone: status === 'block' ? 'block' : status === 'warn' ? 'warn' : 'ready',
+      title: status === 'block' ? `Can't send ${xyText(pick.xy)}` : status === 'warn' ? `${xyText(pick.xy)} · passes with a warning` : `${xyText(pick.xy)} · all checks pass`,
+      detail: notice ?? (first ? `${first.label}${first.detail ? `: ${first.detail}` : ''}` : `Straight ${num(pick.check.straight_m, 1)} m${path}.`) + (status === 'block' ? ` ${tapWord()} somewhere else.` : ''),
+      actions: button('nsb-clear', 'Clear', 'ghost') + button('nsb-send', 'Send goal', 'primary-action', pick.check.ok && can.goal) };
+  }
+  if (!real && goal && can.go) return { real, step: 'go', icon: 'pass', tone: 'ready', title: `Goal staged at ${xyText(goal.xy)}`,
+    detail: notice ?? `Press Go to walk there, or ${tapWord().toLowerCase()} elsewhere to change it.`, actions: button('nsb-go', 'Go', 'go-action armed', true) };
+  if (real && goal) {
+    const verified = goal.verification === 'verified';
+    // An unverified goal sends the operator back to picking: Studio must stage one it can read back.
+    return { real, step: verified ? 'go' : 'pick', icon: verified && n.ready_ok ? 'pass' : 'block', tone: verified && n.ready_ok ? 'ready' : 'block',
+      title: verified ? `Goal staged at ${xyText(goal.xy)}` : 'The node goal is not verified',
+      detail: !verified ? `The node holds a goal Studio could not read back: do not press g. ${tapWord()} the map to stage a new one.`
+        : n.ready_ok ? 'Ready: the operator may press g on the node console once the area is clear.' : 'Not ready, do not press g. The panel lists what blocks.', actions: '' };
+  }
+  const last = (n.legs ?? []).filter(l => l.outcome).at(-1);
+  const LAST = { arrived: 'arrived', stopped: 'was stopped', timeout: 'timed out', estop: 'ended in an E-stop', fell: 'fell' };
+  if (can.goal) return { real, step: 'pick', title: `${tapWord()} the floor to place a goal`, tone: notice ? 'warn' : '',
+    detail: notice ?? (last ? `The last walk ${LAST[last.outcome] ?? last.outcome}. The map keeps growing; pick the next goal.` : "Studio checks it on the robot's own map before you send it."),
+    actions: can.end ? button('nsb-end', 'End session', 'ghost') : '' };
+  const settling = ['ARRIVED', 'STOPPED'].includes(n.phase);
+  return { real, step: 'pick', icon: 'spin', title: settling ? 'Settling to a stand…' : phaseLabel(n, real)[0], detail: notice ?? waitReason(n),
+    actions: can.stand ? button('nsb-stand', 'Stand', '', true) : '' };
+}
+
+export function renderStageBar() {
+  const host = $('nav-stagebar'); if (!host) return;
+  const m = stageModel();
+  host.hidden = !nav.catalog;
+  const icon = m.icon ? `<span class="nsb-icon ${m.icon}" aria-hidden="true">${CHECK_ICON[m.icon] ?? (m.icon === 'live' ? '●' : '')}</span>` : '';
+  const distance = navState()?.goal_dist_m;
+  const html = `${m.step ? steps(m.real, m.step) : ''}<div class="nsb-card glass" data-tone="${m.tone ?? ''}" role="status" aria-live="polite">
+    <div class="nsb-text"><strong>${icon}${escape(m.title)}${m.live ? ' <span class="nsb-live"></span>' : ''}</strong>${m.detail ? `<small>${escape(m.detail)}</small>` : ''}</div>
+    ${m.actions ? `<div class="nsb-actions">${m.actions}</div>` : ''}</div>`;
+  // Rebuilt only when it changes, so a click on Stand while walking is never swallowed; the distance updates in place.
+  if (host.dataset.html !== html) {
+    host.dataset.html = html; host.innerHTML = html;
+    const act = (id, fn) => host.querySelector(`#${id}`)?.addEventListener('click', fn);
+    act('nsb-start', startSession); act('nsb-connect', connectRobot); act('nsb-new', newSession);
+    act('nsb-open', () => emit('open-session', nav.job.result_session_id));
+    act('nsb-clear', () => { nav.pick = null; emit('navigate:overlay'); renderLive(); });
+    act('nsb-send', () => nav.pick && command('goal', { xy: nav.pick.xy }));
+    act('nsb-go', () => command('go')); act('nsb-stand', () => command('stand')); act('nsb-takeover', () => command('takeover'));
+    act('nsb-end', () => command('end'));
+  }
+  const liveText = host.querySelector('.nsb-live');
+  if (liveText) liveText.textContent = finite(distance) ? `· ${num(distance, 2)} m to go` : '';
 }
 
 on('navigate:refresh', () => render());
