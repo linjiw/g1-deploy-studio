@@ -490,4 +490,18 @@ body.ws-deploy #viewport canvas { cursor: grab; }
   .dpe-stop { height: 44px; padding: 0 22px; }
   .dpe-fallback { display: none; }
   .deploy-context { display: none; }
+  /* The map stays visible: the HUD keeps what drives the robot, its phase, the distance and the odometry. */
+  .dp-hud-item[data-k="speed"], .dp-hud-item[data-k="tilt"], .dp-hud-item[data-k="plan-latency"], .dp-hud-item[data-k="motors"], .dp-hud-item[data-k="lidar"], .dp-hud-item[data-k="remote"] { display: none; }
+  .dp-hud-item { padding: 3px 8px; } .dp-hud-item strong { font-size: 13px; } .dp-hud-item.big { min-width: 0; } .dp-hud-item.big strong { font-size: 14px; }
 }
+.dp-run .dp-case { display: block; margin-top: 4px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.dp-run .dp-case b { font-weight: 650; color: var(--text); }
+.dp-run .dp-case b.ok { color: var(--c-green); } .dp-run .dp-case b.bad { color: var(--c-red); } .dp-run .dp-case b.live { color: var(--accent-ink); font-weight: 550; }
+.dp-run .dp-case .dp-dot { font-style: normal; margin: 0 5px; color: var(--faint); }
+.dp-run .dp-case em { display: block; font-style: normal; font-size: 11.5px; color: var(--dim); }
+.dp-run.pass span.dp-case, .dp-run.block span.dp-case { font-weight: 400; color: var(--muted); }
+.dp-cases-head { margin: 12px 0 0 !important; }
+.dp-cases-head .tiny { display: block; font-weight: 500; margin-top: 1px; }
+.dp-incomplete { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: #7a4c05; line-height: 1.45; }
+.dp-block-line.info { font-weight: 500; }
+.dpi-src.sum { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -4,13 +4,24 @@
 // The gateway's config/local.json deploy_service.url must point at that service. Nothing here touches a robot: Practice
 // never starts `g1 robot`. Hold the machine's simulation lock around it (real-time simulations need a quiet machine).
 //
-// Connect, practice scan, goal, rehearsal set (three runs), practice session (checklist), Arm, Start SONIC, Clear map,
-// Send goal (start check), GO, the walk, arrival, tag, E-STOP (standing), End session, Review.
+// Connect, practice scan, goal, rehearsal set (three cases), practice session (checklist), Arm, Start SONIC, Clear map,
+// Send goal (start check), GO, the walk, arrival, tag, E-STOP (standing), End session, Review, and Review reopened from
+// its link in a fresh browser context.
+//
+// Strict: any page error, console error or unexpected HTTP error fails the run; the walk must arrive and the E-STOP be
+// CONFIRMED. The report (report.json) says full_run: true only when every step ran in this one invocation, and holds the
+// source hashes of the Studio files under test, Studio's and the kit's versions and the session's receipt.
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const SOURCES = ['apps/web/js/deploy.js', 'apps/web/js/deploy3d.js', 'apps/web/deploy.css', 'apps/web/app.js', 'studio/deploy_link.py', 'studio/server.py', 'tools/browser/deploy_practice_real.mjs'];
+const sourceHashes = Object.fromEntries(await Promise.all(SOURCES.map(async f => [f, createHash('sha256').update(await readFile(path.join(root, f))).digest('hex')])));
 
 const base = process.env.STUDIO_URL || 'http://127.0.0.1:8795';
 const room = process.env.ROOM || 'course:gap-069';
@@ -19,21 +30,33 @@ const profile = process.env.PROFILE || null;
 const shots = process.env.DEPLOY_SHOTS || path.join(os.homedir(), 'research-data/g1-deploy-studio/evidence/deploy-practice-real');
 await mkdir(shots, { recursive: true });
 
-const report = { base, room, goal, profile, started: new Date().toISOString(), steps: [], errors: [], http: [] };
+const report = { base, room, goal, profile, started: new Date().toISOString(), full_run: false, source_hashes: sourceHashes, steps: [], errors: [], http: [] };
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/opt/google/chrome/chrome', headless: true,
   args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+let where = 'boot';
+// Expected HTTP refusals: a live view or panel 404 between a session's end and the next state poll; a lease 409 when an
+// earlier tab's lease is still running out. Everything else at 400 or above is an error.
+const EXPECTED = [{ status: 404, re: /^\/api\/deploy\/(live|panel)$/ }, { status: 409, re: /^\/api\/deploy\/lease$/ }];
+function watch(p, label) {
+  p.on('pageerror', e => report.errors.push({ page: label, step: where, kind: 'pageerror', message: e.message }));
+  p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) report.errors.push({ page: label, step: where, kind: 'console', message: m.text() }); });
+  p.on('response', r => {
+    if (r.status() < 400) return;
+    const row = { page: label, step: where, status: r.status(), path: new URL(r.url()).pathname };
+    report.http.push(row);
+    if (!EXPECTED.some(e => e.status === row.status && e.re.test(row.path))) report.errors.push({ ...row, kind: 'http', message: `${row.status} ${row.path}` });
+  });
+}
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 page.setDefaultTimeout(30000);
-let where = 'boot';
-page.on('pageerror', e => report.errors.push({ step: where, kind: 'pageerror', message: e.message }));
-page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) report.errors.push({ step: where, kind: 'console', message: m.text() }); });
-page.on('response', r => { if (r.status() >= 400) report.http.push({ step: where, status: r.status(), path: new URL(r.url()).pathname }); });
+watch(page, 'main');
 
 const S = () => page.evaluate(() => {
   const d = window.__deploy.S;
   return { step: d.step, scan: d.scanName, goalOk: d.goal?.check?.ok ?? null, session: Object.values(d.state?.live ?? {}).find(v => v?.running)?.name ?? null,
     phase: d.panel?.phase ?? null, runner: d.panel?.runner ?? null, ladder: Object.fromEntries((d.panel?.ladder ?? []).map(l => [l.key, l.state])),
-    locks: d.panel?.go_locks ?? [], attempts: d.panel?.attempts ?? [], rehearsal: (d.state?.rehearsals ?? []).find(r => r.name === d.rehearsalName) ?? (d.state?.rehearsals ?? []).at(0) ?? null,
+    locks: d.panel?.go_locks ?? [], attempts: d.panel?.attempts ?? [],
+    rehearsal: d.match?.data?.complete ?? d.match?.data?.running ?? (d.state?.rehearsals ?? []).find(r => r.name === d.rehearsalName) ?? null,
     tracks: d.tracks ? Object.keys(d.tracks) : null, estop: d.estop.state, lease: !!d.lease.id, scanJob: d.state?.scan_job?.running ?? null };
 });
 const until = async (what, fn, timeout = 30000, every = 500) => {
@@ -91,7 +114,7 @@ try {
   await primary().click();
   await page.waitForTimeout(20000);
   await shot('05-rehearse-running');
-  const r = await until('the rehearsal verdict', s => s.rehearsal?.verdict && !s.rehearsal.running && s.tracks?.length === 3, 900000, 3000);
+  const r = await until('the rehearsal verdict', s => s.rehearsal?.verdict && s.rehearsal.state === 'complete' && s.tracks?.length === 3, 900000, 3000);
   report.rehearsal = r.rehearsal;
   const dur = Number(await page.locator('#dp-tl').getAttribute('max'));
   await page.locator('#dp-tl').evaluate((el, v) => { el.value = String(v); el.dispatchEvent(new Event('input', { bubbles: true })); }, dur * 0.6);
@@ -108,6 +131,9 @@ try {
   await page.click('#dp-sheet-ok');
   await until('the practice session', s => !!s.session, 60000);
   await page.waitForSelector('#deploy-estop:not([hidden])');
+  report.session = (await S()).session;
+  report.receipt = await page.evaluate(() => window.__deploy.fn.ident()?.receipt ?? null);
+  assert.ok(await page.evaluate(() => window.__deploy.fn.attached()), 'the tab that started the session is attached to it');
 
   step('arm');
   await until('Arm', async () => ready(/Arm/), 60000);
@@ -145,6 +171,7 @@ try {
   await shot('12-walking');
   const end = await until('the walk to end', s => ['ARRIVED', 'STOPPED'].includes(s.phase) || s.attempts.at(-1)?.result, 90000, 500);
   report.attempt = end.attempts.at(-1) ?? null;
+  assert.equal(report.attempt?.result ?? report.attempt?.outcome, 'arrived', `the walk arrived: ${JSON.stringify(report.attempt)}`);
   await page.waitForTimeout(1500);
   await shot('13-arrived');
 
@@ -161,6 +188,7 @@ try {
   await page.click('#dp-estop');
   const es = await until('E-STOP confirmed', s => ['confirmed', 'failed'].includes(s.estop), 15000, 100);
   report.estop = es.estop;
+  assert.equal(es.estop, 'confirmed', 'the E-STOP was CONFIRMED by the runner');
   await shot('14-estop');
 
   step('end');
@@ -170,14 +198,33 @@ try {
   await until('Review', s => s.step === 'review' && !s.session, 60000, 1000);
   await page.waitForTimeout(4000);
   await shot('15-review');
+
+  // Review reopened from its link in a fresh browser context: the attempt, its outcome and tag survive.
+  step('review-fresh');
+  const ctx2 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const fresh = await ctx2.newPage(); fresh.setDefaultTimeout(30000); watch(fresh, 'fresh');
+  await fresh.goto(`${base}/?workspace=deploy&session=${encodeURIComponent(report.session)}&attempt=1`, { waitUntil: 'domcontentloaded' });
+  await fresh.waitForFunction(() => !!document.querySelector('.dp-rev-attempt.sel'), null, { timeout: 60000 });
+  const rev = await fresh.evaluate(() => document.querySelector('.dp-panel-content').innerText);
+  assert.match(rev, /arrived/, 'the reopened Review shows the outcome');
+  assert.match(rev, /clean/, 'the reopened Review shows the tag');
+  assert.doesNotMatch(rev, /Evidence\s*0 of 0/, 'never an empty evidence list');
+  report.review_fresh = rev.slice(0, 1200);
+  await fresh.screenshot({ path: path.join(shots, '16-review-fresh-browser.png') });
+  await ctx2.close();
+  report.full_run = true;
 } catch (e) {
   failure = e;
   await page.screenshot({ path: path.join(shots, 'zz-failure.png') }).catch(() => {});
 } finally {
   report.finished = new Date().toISOString();
   report.failure = failure ? String(failure.stack || failure) : null;
+  if (report.errors.length) report.full_run = false;
+  try { report.studio_version = await (await fetch(`${base}/api/version`)).json(); } catch { report.studio_version = null; }
+  try { const st = await (await fetch(`${base}/api/deploy/state`)).json(); report.kit_version = st.version ?? null; } catch { report.kit_version = null; }
+  report.environment = { node: process.version, host: os.hostname(), platform: process.platform };
   await writeFile(path.join(shots, 'report.json'), JSON.stringify(report, null, 2));
   await browser.close();
 }
 console.log(JSON.stringify({ failure: report.failure, errors: report.errors, http: report.http.slice(0, 20), rehearsal: report.rehearsal && { verdict: report.rehearsal.verdict, results: report.rehearsal.results }, attempt: report.attempt, estop: report.estop, goal_sent: report.goal_sent }, null, 1));
-process.exit(failure ? 1 : 0);
+process.exit(failure || report.errors.length ? 1 : 0);

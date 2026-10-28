@@ -665,7 +665,8 @@ export function setGoal(goal) {
     }
     const bar = polyline(gc, 1, 2); setPolyline(bar, [[pa[0], pa[1], 1.2], [pb[0], pb[1], 1.2]]); gate.add(bar);
     const sill = polyline(gc, 1, 2); setPolyline(sill, [[pa[0], pa[1], 0.035], [pb[0], pb[1], 0.035]]); gate.add(sill);
-    tag(`Must pass · ${Number(goal.passage.width_m ?? Math.hypot(pb[0] - pa[0], pb[1] - pa[1])).toFixed(2)} m`, gc, [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, 1.28], gate);
+    // Over one post (the goal's own label floats at the middle of the route).
+    tag(`Must pass · ${Number(goal.passage.width_m ?? Math.hypot(pb[0] - pa[0], pb[1] - pa[1])).toFixed(2)} m`, gc, [pa[0], pa[1], 1.34], gate);
     gate.name = 'passage-gate'; D.goalGroup.add(gate);
   }
   const blocks = goal.blocking ?? [];

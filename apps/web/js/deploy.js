@@ -674,6 +674,7 @@ async function ladderAct(key) {
   const res = await act(name, { expect: expectNow(fields) });
   S.ladderNote[key] = res.ok ? { kind: 'ok', text: `${{ arm: 'Armed: the planner node is starting.', sonic: 'SONIC is in CONTROL.', map: 'Map cleared: the robot rescans for 10 s.' }[key]}${res.ack}` }
     : res.unknown ? { kind: 'pending', act: res.id } : { kind: 'warning', text: `Refused by the console: ${res.reason}` };
+  if (res.unknown) S.notice = { kind: 'warning', act: res.id };  // shown even on a rung already done (Clear map again)
   if (key === 'map' && res.ok) { S.clearedAt = performance.now(); S.autoCheckKey = null; S.cursors.mem = -1; }
   closeSheet(); pollPanel(); renderAll();
 }
@@ -692,8 +693,8 @@ async function go() {
   // What was in force at GO goes with it: the matched rehearsal set (or none) and the operator's override tick.
   const rec = rehearsalFor(), cautions = goCautions();
   const res = await act('g', { expect: expectNow(['session', 'runner', 'attempts', 'goal_seq']),
-    rehearsal_set: rec ? { name: rec.name, state: setState(rec), verdict: rec.verdict ?? null } : null,
-    ...(S.sheet?.ack && cautions.length ? { override: { cautions, operator: S.operator.trim() } } : {}) });
+    ...(rec ? { rehearsal: { name: rec.name, verdict: rec.verdict ?? null, state: setState(rec) } } : {}),
+    ...(S.sheet?.ack && cautions.length ? { rehearsal_override: { operator: S.operator.trim() || null, reason: cautions.join('; ') } } : {}) });
   S.goResult = { ok: res.ok, unknown: !!res.unknown, act: res.id, text: res.ok ? null : res.reason, ack: res.ack ?? '', at: Date.now() };
   if (res.ok || res.unknown) closeSheet(); else S.sheetError = `Refused by the console: ${res.reason}`;
   pollPanel(); renderAll();
@@ -971,12 +972,18 @@ function verdictText(rec) {
   }
   const offset = rec.offset_ok === true ? 'A start 20° right / 0.2 m off still arrives.' : rec.offset_ok === false ? 'A start 20° right / 0.2 m off does not arrive: line the robot up with its scan pose.' : '';
   const timing = CASES.some(([w]) => caseInfo(rec, w).timing === false) ? ' One case ran with invalid timing (the machine was loaded): its result is not evidence.' : '';
-  return { tone: timing && tone === 'pass' ? 'warn' : tone, title, text: `${fn(rec)} ${offset}${timing}`.trim() };
+  const through = rec.passage && CASES.every(([w]) => caseInfo(rec, w).passage === 'crossed') ? ' Every case passed through the required gap.' : '';
+  return { tone: timing && tone === 'pass' ? 'warn' : tone, title, text: `${fn(rec)}${through} ${offset}${timing}`.trim() };
 }
 const setTime = r => { const t = r?.finished ?? r?.started; if (!finite(t)) return ''; const d = new Date(t * 1000); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const setWords = r => `${r.name}${setTime(r) ? ` · ${setTime(r)}` : ''} · ${setState(r)}`;
 // Why the other sets do not match, in words.
-const mismatchWords = o => (o.mismatch ?? []).map(f => MISMATCH[f] ?? f).join(', ') || 'no reason given';
+const mismatchWords = o => {
+  const missing = new Set(o.missing ?? []);
+  const words = [...new Set((o.mismatch ?? []).map(f => (missing.has(f) ? `no ${f.replaceAll('_', ' ')} in its identity (an older set)` : MISMATCH[f] ?? f)))];
+  if (words.length) return words.join(', ');
+  return o.state && o.state !== 'complete' ? `${o.state === 'running' ? 'still running' : `not complete (${o.state})`}` : 'superseded by a newer matching set';
+};
 
 function renderAll() {
   renderBar(); renderContext();
@@ -1083,29 +1090,49 @@ function recordingHealth() {
   if (S.liveDetail?.name === sess.name && S.liveDetail.unsupported) return { unsupported: true };
   return null;
 }
+// Recording health (kit evidence.recording_health): top-level ok/state/problems, per-stream state (active, waiting,
+// stalled, stopped, off, absent, n/a), last write/sample ages, drops, disk, the recorder's own heartbeat.
+const STREAM_BAD = new Set(['stalled', 'stopped', 'absent']);
 function recordingWords(rec) {
   if (!rec) return { tone: 'unknown', text: 'Recording: waiting for its health' };
   if (rec.unsupported) return { tone: 'unknown', text: 'Recording health: unsupported by this deploy service' };
-  const streams = Array.isArray(rec.streams) ? rec.streams : [], req = streams.filter(s => s.required), active = req.filter(s => s.active);
-  const missing = req.filter(s => !s.active).map(s => s.id), drops = streams.reduce((n, s) => n + (s.dropped ?? 0), 0);
+  const streams = Array.isArray(rec.streams) ? rec.streams : [], req = streams.filter(s => s.required);
+  const stOf = s => s.state ?? (s.active ? 'active' : 'stopped');
+  const state = rec.state ?? (rec.finalized === true && rec.recorder_alive === false ? 'ended' : null);  // recording | ended | lost (console died)
+  // An ended recording's streams are stopped by design: only a live one is judged on them.
+  const over = state === 'ended';
+  const active = req.filter(s => stOf(s) === 'active'), bad = over ? req.filter(s => stOf(s) === 'absent') : req.filter(s => STREAM_BAD.has(stOf(s))), waiting = over ? [] : req.filter(s => stOf(s) === 'waiting');
+  const drops = streams.reduce((n, s) => n + (s.dropped ?? 0), 0);
   const last = streams.map(s => s.last_write_age_s).filter(finite), lastW = last.length ? Math.min(...last) : null;
-  const errors = rec.errors?.length ? rec.errors.length : 0;
-  const tone = rec.recorder_alive === false || missing.length || errors ? 'block' : drops || (finite(rec.disk_free_gb) && rec.disk_free_gb < 20) ? 'warn' : 'pass';
-  const parts = [`${active.length} of ${req.length} required streams`];
-  if (missing.length) parts.push(`missing ${missing.join(', ')}`);
-  if (lastW !== null) parts.push(`last write ${ageText(lastW)}`);
+  const problems = Array.isArray(rec.problems) ? rec.problems : Array.isArray(rec.errors) ? rec.errors : [];
+  const recorderDead = !over && (rec.recorder_alive === false || (finite(rec.recorder?.heartbeat_age_s) && rec.recorder.heartbeat_age_s > 5));
+  const tone = state === 'lost' || recorderDead || bad.length || rec.ok === false && problems.length ? 'block'
+    : drops || waiting.length || (finite(rec.disk_free_gb) && rec.disk_free_gb < 20) || rec.ok === false ? 'warn' : 'pass';
+  const parts = [over ? `${req.length - bad.length} of ${req.length} required streams written${rec.finalized ? ' · finalized' : ' · NOT finalized'}` : `${active.length} of ${req.length} required streams active`];
+  if (bad.length) parts.push(`${bad.map(s => `${s.id} ${stOf(s)}`).join(', ')}`);
+  if (waiting.length) parts.push(`${waiting.length} waiting`);
+  if (lastW !== null && !over) parts.push(`last write ${ageText(lastW)}`);
   if (drops) parts.push(`${drops} dropped`);
-  if (finite(rec.disk_free_gb)) parts.push(`${Math.round(rec.disk_free_gb)} GB free`);
-  if (errors) parts.push(`${errors} error${errors === 1 ? '' : 's'}`);
-  return { tone, text: `${rec.recorder_alive === false ? 'Recorder NOT RUNNING · ' : 'Recording · '}${parts.join(' · ')}` };
+  if (finite(rec.disk_free_gb)) parts.push(`${rec.disk_free_gb < 10 ? rec.disk_free_gb.toFixed(1) : Math.round(rec.disk_free_gb)} GB free`);
+  if (problems.length) parts.push(problems.slice(0, 2).join('; '));
+  const lead = state === 'lost' ? 'Recording LOST (the console died)' : recorderDead ? 'Recorder NOT RUNNING' : state === 'ended' ? 'Recording ended' : 'Recording';
+  return { tone, text: `${lead} · ${parts.join(' · ')}` };
 }
+// One line: every source that is not fresh gets its own chip (stale amber, lost red, unknown hollow) with its age; the
+// fresh ones are summed up, their ages in the tooltip. A problem is never hidden in a row of green.
 function sourceDots() {
   const sess = session(), walking_ = walking();
-  return Object.entries(SOURCES).filter(([name]) => sess || !SESSION_SOURCES.includes(name)).filter(([name]) => name !== 'plan' || walking_).map(([name, def]) => {
-    const s = srcState(name), a = srcAge(name);
-    const tip = s === 'unknown' ? (srcReason(name) ?? `${def.label}: no data yet`) : `${def.label}: ${ageText(a)} old (${s}; stale above ${def.stale} s)`;
-    return `<span class="dpi-src ${s}" title="${escape(tip)}" data-src="${name}"><i aria-hidden="true"></i>${escape(def.short)}<em>${s === 'unknown' ? '—' : escape(ageText(a))}</em></span>`;
-  }).join('');
+  // The node's own sources (view, lidar, map) exist from Arm on: before that they are not "no data", they are not running.
+  const nodeUp = !!S.view || !!S.src.view || (S.panel?.phase && S.panel.phase !== 'BOOT');
+  const rows = Object.entries(SOURCES).filter(([name]) => sess || !SESSION_SOURCES.includes(name)).filter(([name]) => name !== 'plan' || walking_)
+    .filter(([name]) => nodeUp || !['view', 'lidar', 'map'].includes(name))
+    .map(([name, def]) => ({ name, def, s: srcState(name), a: srcAge(name) }));
+  const fresh = rows.filter(r => r.s === 'fresh'), other = rows.filter(r => r.s !== 'fresh');
+  const chip = r => `<span class="dpi-src ${r.s}" title="${escape(r.s === 'unknown' ? (srcReason(r.name) ?? `${r.def.label}: no data yet`) : `${r.def.label}: ${ageText(r.a)} old (${r.s}; stale above ${r.def.stale} s)`)}" data-src="${r.name}"><i aria-hidden="true"></i>${escape(r.def.short)}<em>${r.s === 'unknown' ? 'no data' : escape(ageText(r.a))}</em></span>`;
+  const oldest = fresh.reduce((m, r) => (!m || r.a > m.a ? r : m), null);
+  const names = fresh.map(r => r.def.short).join(', ');
+  const summary = fresh.length ? `<span class="dpi-src fresh sum" title="${escape(fresh.map(r => `${r.def.label} ${ageText(r.a)}`).join(' · '))}"><i aria-hidden="true"></i>${other.length ? `Fresh: ${escape(names)}` : `All fresh: ${escape(names)}`}${oldest ? `<em>≤ ${escape(ageText(oldest.a))}</em>` : ''}</span>` : '';
+  return other.map(chip).join('') + summary;
 }
 function renderIdentity() {
   const el = $('dp-identity'); if (!el || !S.visible) return;
@@ -1205,7 +1232,7 @@ function noticeHtml(n) {
   if (!n) return '';
   if (n.act) {
     const a = S.acts[n.act]; if (!a) return '';
-    if (a.state === 'unknown') return `<div class="callout warning" role="status" data-live-act="${escape(n.act)}">${escape(unknownWords(a, { stable: true }))}</div>`;
+    if (a.state === 'unknown') return '';  // said once, in the line under the step header
     return `<div class="callout ${a.state === 'done' ? 'ok' : 'warning'}" role="status">${escape(`${ACT_WORDS[a.act] ?? a.act}: the console's record says it was ${a.state === 'done' ? 'received' : `refused: ${a.reason}`}.`)}</div>`;
   }
   return `<div class="callout ${n.kind === 'ok' ? 'ok' : 'warning'}" role="status">${escape(n.text)}</div>`;
@@ -1394,21 +1421,22 @@ function goalFreshText(check = S.goal?.check) {
 function caseRow(rec, [which, label, sub]) {
   const c = caseInfo(rec, which), err = S.trackErr[which];
   const tone = c.state === 'running' ? 'live' : c.state === 'error' ? 'block' : c.arrival === true && c.passage !== 'missed' ? 'pass' : c.arrival === false || c.passage === 'missed' ? 'block' : c.state === 'done' ? 'unknown' : 'later';
-  const facts = [];
-  if (c.state === 'running') facts.push('Running in the simulator…');
-  else if (c.state === 'pending') facts.push(setState(rec) === 'running' ? 'Waiting' : 'Not run');
-  else if (c.state === 'error') facts.push('The run failed: no result');
+  // The outcome first (arrival by the simulator's truth, passage when required), then the evidence quality, quieter.
+  const head = [], rest = [];
+  if (c.state === 'running') head.push(['live', 'Running in the simulator…']);
+  else if (c.state === 'pending') head.push(['', setState(rec) === 'running' ? 'Waiting' : 'Not run']);
+  else if (c.state === 'error') head.push(['bad', 'The run failed: no result']);
   else {
-    facts.push(c.arrival === true ? `Arrived (sim truth)${finite(c.final) ? ` · ${num(c.final, 2)} m from the goal` : ''}` : c.arrival === false ? `Did not arrive${finite(c.final) ? ` · ${num(c.final, 2)} m short` : ''}` : 'Arrival unknown');
-    if (c.passage === 'crossed') facts.push('Passed through the gap');
-    else if (c.passage === 'missed') facts.push('Went AROUND the required gap');
-    facts.push(finite(c.contact) && c.contact > 0 ? `Contact ${Math.round(c.contact)} N max${c.contacts ? ` (${c.contacts})` : ''}` : finite(c.contact) ? 'No contact' : c.v3 ? 'Contact not measured' : '');
-    if (c.timing === false) facts.push(`Timing INVALID${c.timingNote ? `: ${c.timingNote}` : ''}`);
-    else if (c.timing === true) facts.push('Timing valid');
-    if (finite(c.duration)) facts.push(`${num(c.duration, 1)} s`);
+    head.push(c.arrival === true ? ['ok', `Arrived${finite(c.final) ? ` · ${num(c.final, 2)} m` : ''}`] : c.arrival === false ? ['bad', `Did not arrive${finite(c.final) ? ` · ${num(c.final, 2)} m short` : ''}`] : ['', 'Arrival unknown']);
+    if (c.passage === 'crossed') head.push(['ok', 'through the gap']);
+    else if (c.passage === 'missed') head.push(['bad', 'went AROUND the required gap']);
+    rest.push(finite(c.contact) && c.contact > 0 ? `contact ${Math.round(c.contact)} N max${c.contacts ? ` (${c.contacts})` : ''}` : finite(c.contact) ? 'no contact' : c.v3 ? 'contact not measured' : '');
+    if (c.timing === false) rest.push(`timing INVALID${c.timingNote ? `: ${c.timingNote}` : ''}`);
+    else if (c.timing === true) rest.push('timing valid');
+    if (finite(c.duration)) rest.push(`${num(c.duration, 1)} s`);
   }
   return `<li class="dp-run ${tone}"><i class="dp-run-sw" style="--c:${CASE_COLOR[which]}"></i><div><strong>${escape(label)}</strong><small>${escape(sub)}</small>
-    <span>${c.state === 'running' ? '<i class="dp-spin" aria-hidden="true"></i>' : ''}${escape(facts.filter(Boolean).join(' · '))}</span>
+    <span class="dp-case">${c.state === 'running' ? '<i class="dp-spin" aria-hidden="true"></i>' : ''}${head.map(([t, x]) => `<b class="${t}">${escape(x)}</b>`).join('<i class="dp-dot">·</i>')}${rest.filter(Boolean).length ? `<em>${escape(rest.filter(Boolean).join(' · '))}</em>` : ''}</span>
     ${err ? `<em class="dp-track-err">Track ${err.giveUp ? 'unavailable' : `retrying (${err.tries}/5)`}: ${escape(err.reason)}${err.giveUp ? ' <button class="link-button" data-action="retry-tracks">Retry</button>' : ''}</em>` : ''}</div></li>`;
 }
 function rehearseBody() {
@@ -1430,7 +1458,7 @@ function rehearseBody() {
     : !m ? '<p class="tiny">Asking the deploy service for this goal\'s rehearsal set…</p>'
     : m.error && !m.data ? `<div class="callout warning">The deploy service did not say which set matches: ${escape(m.error)}</div>`
     : `${pend ? `<p class="dp-setline live"><strong>Running set:</strong> ${escape(setWords(pend))}</p>` : ''}
-       ${rec ? `<p class="dp-setline"><strong>${pend ? 'Last complete set' : 'Selected set'}:</strong> ${escape(setWords(rec))}<span class="tiny"> · the deploy service's pick: the newest complete set for this scan, goal, profile (and its contents) and odometry</span></p>`
+       ${rec ? `<p class="dp-setline" title="The deploy service's pick: the newest complete set for this scan (and its memory), goal, profile (and its contents), bundle, rules and odometry"><strong>${pend ? 'Last complete set' : 'Selected set'}:</strong> ${escape(setWords(rec))}</p>`
          : !pend ? `<div class="dp-nomatch"><strong>No matching completed rehearsal</strong>${(m.data?.others ?? []).length ? `<ul>${m.data.others.slice(0, 5).map(o => `<li><code>${escape(o.name)}</code>: ${escape(mismatchWords(o))}</li>`).join('')}</ul>` : '<p class="tiny">No set has been rehearsed for this goal yet.</p>'}</div>` : ''}`;
   const partial = shown && setState(shown) === 'partial' ? '<div class="callout warning">This set is PARTIAL: not every case finished, so it has no verdict.</div>' : shown && setState(shown) === 'failed' ? '<div class="callout warning">This set FAILED to run: no verdict.</div>' : '';
   return {
@@ -1438,9 +1466,10 @@ function rehearseBody() {
     html: `
       ${S.goal ? `<p class="tiny">Goal (${num(S.goal.xy[0], 2)}, ${num(S.goal.xy[1], 2)}) · ${escape(odomLabel(odomName()))} · scan ${escape(S.scanName ?? '')}${needPassage ? ` · must pass the ${num(S.goal.passage.width_m, 2)} m gap` : ''}</p>` : ''}
       ${setLine}
-      <ul class="dp-runs">${CASES.map(c => caseRow(shown, c)).join('')}</ul>
+      ${v ? `<div class="dp-verdict ${v.tone}">${statusIcon(v.tone)}<div><strong>${escape(v.title)}</strong><span>${escape(pend ? `The last complete set (${rec.name}): ${v.text} A rerun is running: its own verdict comes when it completes.` : v.text)}</span></div></div>` : ''}
       ${partial}
-      ${v && !pend ? `<div class="dp-verdict ${v.tone}">${statusIcon(v.tone)}<div><strong>${escape(v.title)}</strong><span>${escape(v.text)}</span></div></div>` : ''}
+      <h4 class="dp-cases-head">3 rehearsal cases <span class="tiny">${shown ? `${escape(shown.name)} (${escape(setState(shown))}) · ` : ''}arrival by the simulator's truth</span></h4>
+      <ul class="dp-runs">${CASES.map(c => caseRow(shown, c)).join('')}</ul>
       ${recNoPassage ? '<div class="callout warning">This set was rehearsed without the gap requirement: its arrivals say nothing about passing the gap. Rehearse again to score passage.</div>' : ''}
       <p class="tiny">${escape(ODOMETRY[odomName()]?.validation ?? '')}.</p>
       ${tracks ? '<p class="tiny">Scrub the timeline under the 3D view: the three robots walk together. Red spheres are contacts, drawn at the robot.</p>' : ''}
@@ -1582,16 +1611,16 @@ function deployBody() {
   const cards = untagged.slice().reverse().map(a => tagCard(a, sess.name, afterAttempt && a === lastA)).join('');
   const attention = estopped ? `estop:${sess.name}` : afterAttempt && !lastA.tag ? `tag:${lastKey}` : lostNow ? `lost:${sess.name}` : null;
   const viewer = sess && !attached();
-  const noteHtml = n => (n.kind === 'pending' && n.act ? (S.acts[n.act]?.state === 'unknown' ? `<em class="pending" data-live-act="${escape(n.act)}">${escape(unknownWords(S.acts[n.act], { stable: true }))}</em>` : '') : `<em class="${n.kind}">${escape(n.text)}</em>`);
+  const noteHtml = n => (n.kind === 'pending' ? '' : `<em class="${n.kind}">${escape(n.text)}</em>`);  // an unknown press is said under the step header
   const sendHtml = () => {
     const r = S.sendResult; if (!r || afterAttempt) return '';
-    if (r.unknown && S.acts[r.act]?.state === 'unknown') return `<div class="callout warning" role="status" data-live-act="${escape(r.act)}">${escape(unknownWords(S.acts[r.act], { stable: true }))}</div>`;
+    if (r.unknown && S.acts[r.act]?.state === 'unknown') return '';  // said under the step header
     if (r.learned) return `<div class="callout ${r.ok ? 'ok' : 'warning'}" role="status">${escape(r.learned)}</div>`;
     return `<div class="callout ${r.ok ? 'ok' : 'warning'}" role="status">${r.ok ? `Goal confirmed by the node${escape(r.ack ?? '')}${r.check ? `. Start: ${escape(startWords(r.check, { short: true }))}` : ''}.` : `Send goal refused: ${escape(r.text)}`}</div>`;
   };
   const goHtml = () => {
     const r = S.goResult; if (!r) return '';
-    if (r.unknown && S.acts[r.act]?.state === 'unknown') return `<div class="callout warning" role="status"><strong>GO: watch the robot.</strong> <span data-live-act="${escape(r.act)}">${escape(unknownWords(S.acts[r.act], { stable: true }))}</span></div>`;
+    if (r.unknown && S.acts[r.act]?.state === 'unknown') return '<div class="callout warning" role="status"><strong>Watch the robot:</strong> it may be walking. E-STOP, Stand and Take over work while the page checks whether GO arrived.</div>';
     if (r.learned) return `<div class="callout ${r.ok ? 'ok' : 'warning'}" role="status">${escape(r.learned)}</div>`;
     return r.ok ? '' : `<div class="callout warning" role="status">GO refused by the console: ${escape(r.text)}</div>`;
   };
@@ -1602,7 +1631,7 @@ function deployBody() {
     html: `
       ${estopped ? '<div class="callout danger" role="alert"><strong>E-STOP is active.</strong> The runner holds the robot in its safe mode and the console refuses every other press. End the session; start a new one to try again.</div>' : ''}
       ${viewer ? '' : cards}
-      <ol class="dp-ladder${estopped ? ' stopped' : ''}${afterAttempt ? ' resting' : ''}${viewer ? ' viewing' : ''}">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}" ${r.detail ? `title="${escape(`The console: ${r.detail}`)}"` : ''}>${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.sub)}</small>${r.note ? `<em>${escape(r.note)}</em>` : ''}${r === nowRow && r.lock && !estopped && !viewer ? `<em ${liveAttr(r.lock)}>${escape(liveText(r.lock))}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' && !estopped && r.state !== 'done' ? noteHtml(S.ladderNote[r.key]) : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() && !estopped && !viewer ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}</li>`).join('')}</ol>
+      <ol class="dp-ladder${estopped ? ' stopped' : ''}${afterAttempt ? ' resting' : ''}${viewer ? ' viewing' : ''}">${rows.map(r => `<li class="${r.state}${r === nowRow ? ' current' : ''}" ${r.detail ? `title="${escape(`The console: ${r.detail}`)}"` : ''}>${statusIcon(r.state === 'done' ? 'done' : r === nowRow ? 'now' : 'todo')}<div><strong>${escape(r.label)}</strong><small>${escape(r.sub)}</small>${r.note ? `<em>${escape(r.note)}</em>` : ''}${r === nowRow && r.lock && !estopped && !viewer && !r.lock?.act ? `<em ${liveAttr(r.lock)}>${escape(liveText(r.lock))}</em>` : ''}${S.ladderNote[r.key] && r.key !== 'goal' && !estopped && r.state !== 'done' ? noteHtml(S.ladderNote[r.key]) : ''}</div>${r.state === 'done' && r.key === 'map' && !walking() && !estopped && !viewer ? '<button class="link-button" data-action="ladder:map">Again</button>' : ''}</li>`).join('')}</ol>
       ${sendHtml()}
       ${goHtml()}
       ${sc ? `<p class="tiny">Start check: ${escape(startWords(sc, { short: true }))} (the grey ghost in 3D is the scan pose).</p>` : ''}
@@ -1668,12 +1697,14 @@ function manifestHtml(m, { stale = null } = {}) {
   const v2 = m.version === 2 || items.some(i => 'required' in i);
   const reqPresent = req.filter(i => i.status === 'present' && !empty(i)).length;
   const bad = items.filter(i => i.status === 'missing' || i.status === 'partial' || empty(i));
-  const complete = m.complete === true;  // only the service says complete
-  const head = v2 ? `${reqPresent} of ${req.length} required present${m.finalized === false ? ' · not finalized' : ''}${complete ? ' · complete' : ' · NOT complete'}`
+  const complete = m.complete === true;  // only the service says complete (required present + finalized + console closed)
+  const stateWord = m.state === 'lost' ? ' · LOST: the console died before it closed the recording' : m.state === 'recording' ? ' · still recording' : '';
+  const head = v2 ? `${reqPresent} of ${req.length} required present${m.finalized === false ? ' · not finalized' : ''}${complete ? ' · complete' : ' · NOT complete'}${stateWord}`
     : `${items.filter(i => i.status === 'present' && !empty(i)).length} of ${items.length} present${complete ? ' · complete' : ''}`;
-  const row = i => `<tr class="${empty(i) ? 'missing' : escape(String(i.status).replace('/', ''))}${i.required ? ' req' : ''}"><td>${statusIcon(empty(i) ? 'warn' : i.status === 'present' ? 'pass' : i.status === 'partial' ? 'warn' : i.status === 'missing' ? (i.required ? 'block' : 'warn') : 'later')}</td><td>${escape(i.id.replaceAll('_', ' '))}</td><td>${empty(i) ? 'empty' : i.status === 'present' ? escape(sizeText(i.bytes ?? 0)) : escape(i.status)}${i.gaps ? ` · ${i.gaps} gap${i.gaps === 1 ? '' : 's'}` : ''}</td><td>${escape(i.reason ?? '')}</td></tr>`;
+  const row = i => `<tr class="${empty(i) ? 'missing' : escape(String(i.status).replace('/', ''))}${i.required ? ' req' : ''}"><td>${statusIcon(empty(i) ? 'warn' : i.status === 'present' ? 'pass' : i.status === 'partial' ? 'warn' : i.status === 'missing' ? (i.required ? 'block' : 'warn') : 'later')}</td><td>${escape(i.id.replaceAll('_', ' '))}</td><td>${empty(i) ? 'empty' : i.status === 'present' ? escape(sizeText(i.bytes ?? 0)) : escape(i.status)}${i.gaps ? ` · ${i.gaps} gap${i.gaps === 1 ? '' : 's'}` : ''}${i.dropped ? ` · ${i.dropped} dropped` : ''}</td><td>${escape(i.reason ?? '')}</td></tr>`;
   return `<h4>Evidence <span class="tiny ${complete ? '' : 'warn'}">${escape(head)}</span></h4>
     ${stale ? `<p class="tiny warn">${escape(stale)}</p>` : ''}
+    ${Array.isArray(m.incomplete_reasons) && m.incomplete_reasons.length && !complete ? `<ul class="dp-incomplete">${m.incomplete_reasons.slice(0, 6).map(r => `<li>${escape(r)}</li>`).join('')}</ul>` : ''}
     ${v2 ? `<table class="dp-manifest"><tbody><tr class="grp"><td colspan="4">Required for this session</td></tr>${req.map(row).join('')}<tr class="grp"><td colspan="4">Optional</td></tr>${opt.map(row).join('')}</tbody></table>`
       : `<table class="dp-manifest"><tbody>${items.map(row).join('')}</tbody></table>`}
     ${bad.length ? `<p class="tiny">${bad.length} missing, partial or empty: ${escape(bad.map(i => i.id.replaceAll('_', ' ')).join(', '))}.</p>` : ''}`;
@@ -1726,7 +1757,7 @@ function reviewBody() {
   return {
     title: 'Review', lead: 'What the session did and recorded, from the deploy service. This view survives a reload: its link opens it in any browser.',
     html: `
-      <label class="field"><span>Session</span><select id="dp-review">${!listed && name ? `<option value="${escape(name)}" selected>${escape(name)}</option>` : ''}${list.map(s => `<option value="${escape(s.name)}" ${s.name === name ? 'selected' : ''}>${escape(s.name)}${s.practice ? ' (practice)' : ''}${s.started ? ` · ${new Date(s.started * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</option>`).join('') || (name ? '' : '<option>No sessions today</option>')}</select></label>
+      <label class="field"><span>Session</span><select id="dp-review">${!listed && name ? `<option value="${escape(name)}" selected>${escape(name)}</option>` : ''}${[['Robot sessions', st().sessions?.robot ?? []], ['Practice and rehearsal runs', st().sessions?.other ?? []]].filter(([, l]) => l.length).map(([g, l]) => `<optgroup label="${g}">${l.map(s => `<option value="${escape(s.name)}" ${s.name === name ? 'selected' : ''}>${escape(s.name)}${s.practice ? ' (practice)' : ''}${s.started ? ` · ${new Date(s.started * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</option>`).join('')}</optgroup>`).join('') || (name ? '' : '<option>No sessions today</option>')}</select></label>
       ${errBox}
       ${d?.missing ? `<div class="callout warning">The deploy service has no session named ${escape(name)}.</div>` : ''}
       ${d?.unsupported ? `<div class="callout warning">Session detail is unsupported by this deploy service (${escape(d.unsupported)}): ${live ? 'attempts are shown from the live console' : 'an ended session\'s attempts cannot be shown here'}; tags cannot be edited.</div>` : ''}
@@ -1738,7 +1769,7 @@ function reviewBody() {
           <div><span>Operator</span><strong>${escape(id.operator ?? '—')}</strong></div>
           <div><span>Scan</span><strong>${escape(id.scan ?? '—')}</strong></div>
         </div>` : ''}
-      ${rec ? `<div class="dpi-rec ${rec.tone}">${statusIcon(rec.tone)}<span>${escape(shown.ended ? rec.text.replace('Recording · ', 'Recording (final) · ') : rec.text)}${shown.recording?.finalized ? ' · finalized' : ''}</span></div>` : ''}
+      ${rec ? `<div class="dpi-rec ${rec.tone}">${statusIcon(rec.tone)}<span>${escape(shown.ended ? rec.text.replace('Recording · ', 'Recording (final) · ') : rec.text)}</span></div>` : ''}
       ${name && attempts ? `<h4>Attempts</h4>${attempts.length ? `<ol class="dp-rev-attempts">${attempts.map(a => attemptHtml(name, a, a.n === sel, live)).join('')}</ol>` : '<p class="tiny">No attempts in this session.</p>'}` : ''}
       ${mHtml}`,
     primary: { label: selA ? `Open in Replay at attempt ${selA.n}` : 'Open in Replay', action: 'replay', locked: !name ? 'No session yet' : rp.id ? null : rp.why ?? 'Loading the session…' },
@@ -2007,7 +2038,7 @@ function renderLost(ls) {
   if (lost && !S.lostFramed) { S.lostFramed = true; d3.ensureInView(d3.liveScenePose()); }
   if (!lost && !stale) S.lostFramed = false;
 }
-function hudItem(label, value, tone = '', big = false, tip = '') { return `<div class="dp-hud-item ${tone}${big ? ' big' : ''}" ${tip ? `title="${escape(tip)}"` : ''}><span>${escape(label)}</span><strong>${value}</strong></div>`; }
+function hudItem(label, value, tone = '', big = false, tip = '') { return `<div class="dp-hud-item ${tone}${big ? ' big' : ''}" data-k="${escape(label.toLowerCase().replace(/\s+/g, '-'))}" ${tip ? `title="${escape(tip)}"` : ''}><span>${escape(label)}</span><strong>${value}</strong></div>`; }
 // What drives the robot, in the operator's words (the console's own text is the tooltip). A remote D-pad set other than
 // standing is called out: on 10-27 the boxing set was read as a planner pose.
 function drivingWords(p) {
@@ -2087,7 +2118,7 @@ function renderTimeline() {
   el.innerHTML = `<button id="dp-tl-play" aria-label="${t.playing ? 'Pause' : 'Play'}">${t.playing ? '❚❚' : '▶'}</button>
     <input id="dp-tl" type="range" min="${t.t0 ?? 0}" max="${t.duration}" step="0.02" value="${t.t}" aria-label="Rehearsal time (from the first move)">
     <span>${(t.t - (t.t0 ?? 0)).toFixed(1)} / ${(t.duration - (t.t0 ?? 0)).toFixed(1)} s</span>
-    <span class="dp-tl-key"><i style="--c:#3d6fb5"></i>exact<i style="--c:#c2408f"></i>leg drift<i style="--c:#7d8794"></i>offset</span>`;
+    <span class="dp-tl-key"><i style="--c:#3d6fb5"></i>exact<i style="--c:#c2408f"></i>injected drift<i style="--c:#7d8794"></i>offset</span>`;
   $('dp-tl-play').addEventListener('click', () => playTimeline(!S.timeline.playing));
   $('dp-tl').addEventListener('input', e => { playTimeline(false); S.timeline.t = Number(e.target.value); d3.setRehearsalTime(S.timeline.t); el.querySelector('span').textContent = `${(S.timeline.t - (t.t0 ?? 0)).toFixed(1)} / ${(t.duration - (t.t0 ?? 0)).toFixed(1)} s`; });
 }
