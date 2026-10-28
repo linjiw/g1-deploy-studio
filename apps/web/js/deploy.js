@@ -717,12 +717,12 @@ async function saveTag(key) {
 // Review: a tag or note on any attempt, live or ended, through the deploy service (contract v3 E; append-only history).
 async function saveReviewTag(name, n) {
   const key = `review:${name}:${n}`, draft = S.tagDraft[key] ?? {};
-  if (!draft.tag) return;
+  if (!draft.tag || !reviewOperator()) return;
   draft.saving = true; renderPanel(true);
-  const r = await api('/api/deploy/tag', { method: 'POST', csrf: true, timeout: 5000, body: { name, session: name, n, tag: draft.tag, note: draft.note ?? '', operator: S.operator.trim() || undefined, ...(S.lease.id ? { lease_id: S.lease.id } : {}) } });
+  const r = await api('/api/deploy/tag', { method: 'POST', csrf: true, timeout: 5000, body: { name, session: name, n, tag: draft.tag, note: draft.note ?? '', operator: reviewOperator(), ...(S.lease.id ? { lease_id: S.lease.id } : {}) } });
   draft.saving = false;
   draft.result = r.status === 202 ? 'acknowledgement unavailable — reload the session to see whether it was saved (not resent)' : r.ok && r.data.ok !== false && r.data.supported !== false ? 'saved' : unsupportedReply(r) ? `not saved: tagging is unsupported here (${unsupportedWhy(r)})` : `not saved: ${reason(r)}`;
-  if (r.ok) { delete S.detail[name]; loadDetail(name); }
+  if (r.ok) loadDetail(name, { manual: true });
   renderPanel(true);
 }
 async function runDoctor() { const res = await act('doctor', {}, { slot: null, timeout: 4000 }); S.notice = res.ok ? { kind: 'ok', text: 'Doctor started: its result appears on the Doctor tile.' } : { kind: 'warning', text: `Doctor: ${res.reason}` }; renderAll(); }
@@ -861,7 +861,7 @@ function drawGoal() {
   if (!g) { d3.setGoal(null); return; }
   const dist = Math.hypot(g.xy[0], g.xy[1]);
   d3.setGoal({ xy: g.xy, status: goalStatus(), path: check?.path_xy ?? null, gap: check?.gap ?? null, blocking: check?.blocking_xy ?? [],
-    passage: g.passage?.required ? g.passage : null,
+    passage: g.passage?.required ? g.passage : null, margin: routeMargin(check ?? g.previous),
     label: goalStatus() === 'block' ? 'Not here' : `Goal · ${dist.toFixed(1)} m` });
 }
 function clearGoal() { S.pickToken++; S.goal = null; store.set('goal', null); d3.setGoal(null); renderAll(); }
@@ -1090,33 +1090,64 @@ function recordingHealth() {
   if (S.liveDetail?.name === sess.name && S.liveDetail.unsupported) return { unsupported: true };
   return null;
 }
-// Recording health (kit evidence.recording_health): top-level ok/state/problems, per-stream state (active, waiting,
-// stalled, stopped, off, absent, n/a), last write/sample ages, drops, disk, the recorder's own heartbeat.
-const STREAM_BAD = new Set(['stalled', 'stopped', 'absent']);
+// Recording health (kit evidence.recording_health). The recorder's state: recording | stalled (its process runs, its
+// heartbeat stopped) | finalized | not finalized (gone without finalizing) | absent; older services and the manifest
+// also say ended | lost. A stream's state: active | waiting | stalled | stopped | off | absent | n/a.
+// A finalized recording is a good, closed one: its streams are stopped by design and judged on what they recorded.
+const STREAM_LIVE_BAD = new Set(['stalled', 'off', 'absent']);
+function recState(rec) {
+  if (rec.state) return rec.state;
+  if (rec.finalized === true) return 'finalized';
+  if (rec.recorder_alive === true) return 'recording';
+  return rec.recorder_alive === false ? 'not finalized' : null;
+}
 function recordingWords(rec) {
   if (!rec) return { tone: 'unknown', text: 'Recording: waiting for its health' };
   if (rec.unsupported) return { tone: 'unknown', text: 'Recording health: unsupported by this deploy service' };
   const streams = Array.isArray(rec.streams) ? rec.streams : [], req = streams.filter(s => s.required);
   const stOf = s => s.state ?? (s.active ? 'active' : 'stopped');
-  const state = rec.state ?? (rec.finalized === true && rec.recorder_alive === false ? 'ended' : null);  // recording | ended | lost (console died)
-  // An ended recording's streams are stopped by design: only a live one is judged on them.
-  const over = state === 'ended';
-  const active = req.filter(s => stOf(s) === 'active'), bad = over ? req.filter(s => stOf(s) === 'absent') : req.filter(s => STREAM_BAD.has(stOf(s))), waiting = over ? [] : req.filter(s => stOf(s) === 'waiting');
-  const drops = streams.reduce((n, s) => n + (s.dropped ?? 0), 0);
-  const last = streams.map(s => s.last_write_age_s).filter(finite), lastW = last.length ? Math.min(...last) : null;
+  const state = recState(rec);
+  const closed = ['finalized', 'ended'].includes(state);
   const problems = Array.isArray(rec.problems) ? rec.problems : Array.isArray(rec.errors) ? rec.errors : [];
-  const recorderDead = !over && (rec.recorder_alive === false || (finite(rec.recorder?.heartbeat_age_s) && rec.recorder.heartbeat_age_s > 5));
-  const tone = state === 'lost' || recorderDead || bad.length || rec.ok === false && problems.length ? 'block'
-    : drops || waiting.length || (finite(rec.disk_free_gb) && rec.disk_free_gb < 20) || rec.ok === false ? 'warn' : 'pass';
-  const parts = [over ? `${req.length - bad.length} of ${req.length} required streams written${rec.finalized ? ' · finalized' : ' · NOT finalized'}` : `${active.length} of ${req.length} required streams active`];
-  if (bad.length) parts.push(`${bad.map(s => `${s.id} ${stOf(s)}`).join(', ')}`);
-  if (waiting.length) parts.push(`${waiting.length} waiting`);
-  if (lastW !== null && !over) parts.push(`last write ${ageText(lastW)}`);
+  const drops = streams.reduce((n, s) => n + (s.dropped ?? 0), 0);
+  const disk = finite(rec.disk_free_gb) ? `${rec.disk_free_gb < 10 ? rec.disk_free_gb.toFixed(1) : Math.round(rec.disk_free_gb)} GB free` : null;
+  const parts = [];
+  let lead, tone;
+  if (closed) {
+    // Recorded = the required streams that wrote something (stopped with samples, or still marked active).
+    const recorded = req.filter(s => !['absent', 'waiting', 'off'].includes(stOf(s)) && (s.samples ?? s.bytes ?? 1) > 0);
+    const missing = req.filter(s => !recorded.includes(s));
+    lead = state === 'finalized' ? 'Recording finalized' : 'Recording ended';
+    parts.push(`${recorded.length} of ${req.length} required streams recorded`);
+    if (missing.length) parts.push(`missing ${missing.map(s => s.id).join(', ')}`);
+    if (state === 'ended' && rec.finalized === false) parts.push('NOT finalized');
+    tone = missing.length || problems.length || rec.ok === false ? 'warn' : 'pass';
+  } else if (state === 'stalled') {
+    lead = 'Recorder stalled';
+    parts.push(`its process runs but its heartbeat stopped${finite(rec.recorder?.heartbeat_age_s) ? ` ${ageText(rec.recorder.heartbeat_age_s)} ago` : ''} (a stuck disk?)`);
+    tone = 'block';
+  } else if (state === 'not finalized' || state === 'lost') {
+    lead = state === 'lost' ? 'Recording LOST' : 'Recording NOT finalized';
+    parts.push(state === 'lost' ? 'the console died before it closed the recording' : 'the recorder stopped without finalizing (killed, crashed or power loss)');
+    tone = 'block';
+  } else if (state === 'absent') {
+    lead = 'No recording'; parts.push('the recorder never started for this session'); tone = 'block';
+  } else {
+    // Recording (or a state this page does not know): judged on its streams now.
+    const active = req.filter(s => stOf(s) === 'active'), bad = req.filter(s => STREAM_LIVE_BAD.has(stOf(s))), waiting = req.filter(s => stOf(s) === 'waiting');
+    lead = state && state !== 'recording' ? `Recording (${state})` : 'Recording';
+    parts.push(`${active.length} of ${req.length} required streams active`);
+    if (bad.length) parts.push(bad.map(s => `${s.id} ${stOf(s)}`).join(', '));
+    if (waiting.length) parts.push(`${waiting.length} waiting for a first sample`);
+    const last = streams.map(s => s.last_write_age_s).filter(finite);
+    if (last.length) parts.push(`last write ${ageText(Math.min(...last))}`);
+    tone = bad.length || (rec.ok === false && problems.length) ? 'block' : drops || waiting.length || rec.ok === false ? 'warn' : 'pass';
+  }
   if (drops) parts.push(`${drops} dropped`);
-  if (finite(rec.disk_free_gb)) parts.push(`${rec.disk_free_gb < 10 ? rec.disk_free_gb.toFixed(1) : Math.round(rec.disk_free_gb)} GB free`);
+  if (disk && !closed) parts.push(disk);
+  if (finite(rec.disk_free_gb) && rec.disk_free_gb < 20 && tone === 'pass') tone = 'warn';
   if (problems.length) parts.push(problems.slice(0, 2).join('; '));
-  const lead = state === 'lost' ? 'Recording LOST (the console died)' : recorderDead ? 'Recorder NOT RUNNING' : state === 'ended' ? 'Recording ended' : 'Recording';
-  return { tone, text: `${lead} · ${parts.join(' · ')}` };
+  return { tone, text: `${lead} · ${parts.join(' · ')}`, state };
 }
 // One line: every source that is not fresh gets its own chip (stale amber, lost red, unknown hollow) with its age; the
 // fresh ones are summed up, their ages in the tooltip. A problem is never hidden in a row of green.
@@ -1204,8 +1235,11 @@ function renderPanel(force = false) {
     : blocker ? `<div class="dp-block-line ${blocker.tone}" role="status" title="${escape(blocker.detail ?? '')}">${statusIcon(blocker.tone)}<span ${liveAttr(blocker)}>${escape(liveText(blocker))}</span>${blocker.action ? `<button class="link-button" data-action="${escape(blocker.action)}">${escape(blocker.actionLabel)}</button>` : ''}</div>` : '';
   const attention = body.attention ?? (S.stateOk === false ? 'service' : null);
   const label = body.primary ? (S.busy && body.primary.busyText ? body.primary.busyText : body.primary.label) : '';
+  // Review speaks of the reviewed session (its receipt), not of the next session or the running one.
+  const rk = S.step === 'review' ? reviewKind() : null;
+  const modeWord = S.step === 'review' ? (rk === 'robot' ? ' · real robot session' : rk === 'practice' ? ' · practice session' : rk === 'rehearsal' ? ' · rehearsal run' : '') : isRobot() ? ' · real robot' : ' · practice';
   root.innerHTML = `
-    <header class="dp-head"><span class="eyebrow">Step ${idx} of ${STEPS.length}${isRobot() ? ' · real robot' : ' · practice'}${session() && !attached() ? ' · viewing' : ''}</span><button class="link-button dp-map-toggle" id="dp-map-toggle" aria-pressed="${S.mapCollapsed}">${S.mapCollapsed ? 'Show map' : 'Hide map'}</button><h2>${escape(body.title)}</h2>${body.lead ? `<p>${escape(body.lead)}</p>` : ''}</header>
+    <header class="dp-head"><span class="eyebrow">Step ${idx} of ${STEPS.length}${modeWord}${session() && !attached() && S.step !== 'review' ? ' · viewing' : ''}</span><button class="link-button dp-map-toggle" id="dp-map-toggle" aria-pressed="${S.mapCollapsed}">${S.mapCollapsed ? 'Show map' : 'Hide map'}</button><h2>${escape(body.title)}</h2>${body.lead ? `<p>${escape(body.lead)}</p>` : ''}</header>
     ${top}
     <div class="dp-body">${body.html}${noticeHtml(S.notice)}</div>
     <footer class="dp-foot"><span class="dp-foot-now" aria-hidden="true">Step ${idx} · ${escape(body.title)}</span>${body.primary ? primaryButton(body.primary) : ''}${body.secondary ?? ''}</footer>`;
@@ -1244,9 +1278,11 @@ function primaryButton(p) {
 // The next thing in the way, under the step header, with how to resolve it: who controls, an unknown press, a stale
 // source the next press needs, then the readiness blocks.
 function nextBlocker() {
-  const sess = session();
-  if (sess && !attached()) return { tone: 'info', key: 'view', text: `Viewing only: ${sess.name} (${ident().kind === 'robot' ? 'the real robot' : 'practice'}) was not started in this tab. Attach to control it; E-STOP, Stand and Take over work either way.`, action: 'step:connect', actionLabel: 'Attach…' };
+  const sess = session(), review = S.step === 'review';
+  // An unknown press matters on every step; the rest is about controlling the next or the running session, not Review.
   const u = unknownAct(); if (u) return { tone: 'warn', key: `act:${u.id}`, text: unknownWords(u), act: u.id };
+  if (review) return null;
+  if (sess && !attached()) return { tone: 'info', key: 'view', text: `Viewing only: ${sess.name} (${ident().kind === 'robot' ? 'the real robot' : 'practice'}) was not started in this tab. Attach to control it; E-STOP, Stand and Take over work either way.`, action: 'step:connect', actionLabel: 'Attach…' };
   if (sess) {
     const row = ladderRows().find(r => r.state !== 'done');
     const f = row && freshLock(row.key); if (f) return { tone: 'block', key: f.key, text: f.text, source: f.source, detail: 'Presses that move the robot wait for fresh data. E-STOP, Stand and Take over stay live.' };
@@ -1399,7 +1435,7 @@ function goalBody() {
         <p class="tiny">Straight ${num(check.straight_m, 2)} m · route ${num(check.path_m, 2)} m${finite(check.unknown_fraction) ? ` · ${Math.round(check.unknown_fraction * 100)} % of it unseen` : ''}${check.gap ? ` · narrowest gap on the route ${num(check.gap.width_m, 2)} m` : ''}${check.direct_gap ? ` · on the straight line ${num(check.direct_gap.width_m, 2)} m` : ''}</p>` : ''}
       ${g?.passage ? `<label class="dp-confirm-one dp-passage"><input type="checkbox" data-passage ${g.passage.required ? 'checked' : ''}><span><strong>Must pass through this gap</strong> (${num(g.passage.width_m, 2)} m, on the ${escape(g.passage.where)}). The rehearsal cases and the real attempts are then scored on passing it as well as on arriving: a detour is not a task pass.</span></label>` : ''}
       ${check?.unavailable ? `<div class="callout warning">${escape(check.reason)}. The quick look says: ${escape(S.goal.quick?.text ?? 'unknown')}.</div>` : ''}
-      <div class="dp-legend-inline"><span><i class="sw-route"></i>Route check + 0.35 m margin (Studio, on the scan)</span><span><i class="sw-gap"></i>Gap</span><span><i class="sw-block"></i>Blocking cells</span><span><i class="sw-unseen"></i>Unseen route</span>${session() ? '<span><i class="sw-plan"></i>Planner\'s live route</span>' : ''}</div>`,
+      <div class="dp-legend-inline"><span><i class="sw-route"></i>Route check + ${num(routeMargin(shown), 2)} m margin (Studio, on the scan${shown?.config && /profile/i.test(shown.config.basis ?? '') ? `, ${escape(profileLabel(shown.config.profile))}` : ''})</span><span><i class="sw-gap"></i>Gap</span><span><i class="sw-block"></i>Blocking cells</span><span><i class="sw-unseen"></i>Unseen route</span>${session() ? '<span><i class="sw-plan"></i>Planner\'s live route</span>' : ''}</div>`,
     primary: session() ? { label: `Back to the session: send this goal${rehearsalFor()?.verdict ? '' : ' (not rehearsed)'}`, action: 'step:deploy', locked }
       : { label: 'Next: rehearse this goal', action: 'step:rehearse', locked },
   };
@@ -1415,6 +1451,8 @@ function goalBasisHtml(check) {
   const params = [['robot radius', p.robot_radius_m], ['route margin', p.route_margin_m], ['step-over', p.step_over_m], ['ceiling below', p.ceiling_below_m]].filter(([, v]) => finite(v)).map(([k, v]) => `${k} ${num(v, 2)} m`).join(' · ');
   return `<p class="tiny dp-basis ${profileBased ? '' : 'generic'}"><strong>${escape(basis)}</strong>${params ? `<br>${escape(params)}` : ''}<br><span data-live-goal>${escape(goalFreshText(check))}</span></p>`;
 }
+// The margin the check kept around the route: the profile's route settings, else Studio's generic 0.35 m.
+const routeMargin = check => (finite(check?.config?.params?.route_margin_m) ? check.config.params.route_margin_m : 0.35);
 function goalFreshText(check = S.goal?.check) {
   if (!check?.receivedAt) return S.goal?.rechecking ? 'Checking again…' : '';
   const age = (performance.now() - check.receivedAt) / 1000, left = goalCheckLeft(check);
@@ -1444,6 +1482,12 @@ function caseRow(rec, [which, label, sub]) {
     <span class="dp-case">${c.state === 'running' ? '<i class="dp-spin" aria-hidden="true"></i>' : ''}${head.map(([t, x]) => `<b class="${t}">${escape(x)}</b>`).join('<i class="dp-dot">·</i>')}${rest.filter(Boolean).length ? `<em>${escape(rest.filter(Boolean).join(' · '))}</em>` : ''}</span>
     ${err ? `<em class="dp-track-err">Track ${err.giveUp ? 'unavailable' : `retrying (${err.tries}/5)`}: ${escape(err.reason)}${err.giveUp ? ' <button class="link-button" data-action="retry-tracks">Retry</button>' : ''}</em>` : ''}</div></li>`;
 }
+// Why no set counts: the sets for THIS goal first (each with its reasons), then a count of the scan's sets for other goals.
+function nomatchHtml(others) {
+  const here = others.filter(o => !(o.mismatch ?? []).includes('goal_scene') && !(o.mismatch ?? []).includes('goal'));
+  const elsewhere = others.length - here.length;
+  return `<div class="dp-nomatch"><strong>No matching completed rehearsal</strong>${here.length ? `<ul>${here.slice(0, 8).map(o => `<li><code>${escape(o.name)}</code>: ${escape(mismatchWords(o))}</li>`).join('')}${here.length > 8 ? `<li>${here.length - 8} more for this goal</li>` : ''}</ul>` : '<p class="tiny">No set has been rehearsed for this goal yet.</p>'}${elsewhere ? `<p class="tiny">${elsewhere} set${elsewhere === 1 ? '' : 's'} on this scan ${elsewhere === 1 ? 'is' : 'are'} for other goals.</p>` : ''}</div>`;
+}
 function rehearseBody() {
   const m = matchNow(), rec = rehearsalFor(), pend = rehearsalPending(), running = rehearsalRunning(), gpu = st().gpu ?? {}, sess = session(), robotWalking = liveSlot('robot')?.panel && ['PRESCAN', 'RUN'].includes(liveSlot('robot').panel.phase);
   let locked = null;
@@ -1464,7 +1508,7 @@ function rehearseBody() {
     : m.error && !m.data ? `<div class="callout warning">The deploy service did not say which set matches: ${escape(m.error)}</div>`
     : `${pend ? `<p class="dp-setline live"><strong>Running set:</strong> ${escape(setWords(pend))}</p>` : ''}
        ${rec ? `<p class="dp-setline" title="The deploy service's pick: the newest complete set for this scan (and its memory), goal, profile (and its contents), bundle, rules and odometry"><strong>${pend ? 'Last complete set' : 'Selected set'}:</strong> ${escape(setWords(rec))}</p>`
-         : !pend ? `<div class="dp-nomatch"><strong>No matching completed rehearsal</strong>${(m.data?.others ?? []).length ? `<ul>${m.data.others.slice(0, 5).map(o => `<li><code>${escape(o.name)}</code>: ${escape(mismatchWords(o))}</li>`).join('')}</ul>` : '<p class="tiny">No set has been rehearsed for this goal yet.</p>'}</div>` : ''}`;
+         : !pend ? nomatchHtml(m.data?.others ?? []) : ''}`;
   const partial = shown && setState(shown) === 'partial' ? '<div class="callout warning">This set is PARTIAL: not every case finished, so it has no verdict.</div>' : shown && setState(shown) === 'failed' ? '<div class="callout warning">This set FAILED to run: no verdict.</div>' : '';
   return {
     title: 'Rehearse in 3D', lead: `The deployed policy (${profileLabel(profileName())}) in the scan's twin, through the kit's real-time chain: 3 rehearsal cases.`,
@@ -1501,7 +1545,9 @@ function startWords(sc, { short = false } = {}) {
   if (!sc) return 'not run';
   const moved = `${num(sc.moved_m, 2)} m, ${num(sc.turned_deg, 0)}°`;
   if (sc.within_offset_envelope === null && sc.closed_attempts > 0) return `starts from where attempt ${sc.closed_attempts} ended (${moved} from the scan pose)`;
-  if (sc.within_offset_envelope === true) return `${moved} from the scan pose · inside the rehearsed start offset`;
+  // The kit takes the envelope from a set on this scan whose offset case passed: when this goal's own offset case
+  // failed, say so beside it instead of a bare "inside".
+  if (sc.within_offset_envelope === true) return `${moved} from the scan pose · inside the rehearsed start offset${rehearsalFor()?.offset_ok === false ? ' (of another rehearsal on this scan; this goal\'s offset case did not arrive)' : ''}`;
   if (sc.within_offset_envelope === false) return `${moved} from the scan pose · outside the rehearsed start offset${short ? '' : ' (20° / 0.2 m)'}`;
   return `${moved} from the scan pose`;
 }
@@ -1513,9 +1559,16 @@ function goCautions() {
   const rec = rehearsalFor(), v = verdictText(rec), sc = S.startCheck ?? S.sendResult?.check, out = [];
   if (matchNow()?.unsupported) out.push('Rehearsal matching is unsupported by this deploy service: no rehearsal can be shown for this goal');
   else if (!rec?.verdict) out.push('No matching completed rehearsal for this goal, profile and odometry');
-  else if (v?.tone === 'block') out.push(`The rehearsal says: ${v.title.toLowerCase()}`);
+  else if (rec.verdict !== 'robust' || v?.tone !== 'pass') {
+    // Any matching set that is not robust asks for the override, whatever the odometry: the FAST-LIO context is in
+    // the words, never in a missing tick.
+    const fused = ['fused', 'zmq'].includes(odomName()) && ['fails with drift', 'other way'].includes(rec.verdict);
+    out.push(`The rehearsal says: ${v?.title.toLowerCase() ?? rec.verdict}${fused ? ` (the injected drift models leg odometry; this walk uses ${odomLabel(odomName())}, not yet validated walking on the robot)` : ''}`);
+  }
   if (rec && S.goal?.passage?.required && !rec.passage) out.push('The rehearsal did not score the required gap');
   if (sc?.within_offset_envelope === false) out.push('The robot stands outside the start offset the rehearsal covered');
+  // A failing start-offset case is its own caution unless the start check places the robot inside a passing envelope.
+  else if (rec?.offset_ok === false && sc?.within_offset_envelope !== true) out.push(`This goal's start-offset case did not arrive, and the start is ${sc ? 'not known to be inside a rehearsed offset' : 'not checked yet'}: line the robot up with its scan pose`);
   return out;
 }
 function firstBlock(groups = null) {
@@ -1657,24 +1710,36 @@ function tagCard(a, sessionName, viaPrimary = false) {
 // tags, checks, rehearsal and alignment, the manifest v2, recording health and the exact Replay id. Durable: the URL
 // holds the session and the attempt, so a reload or another browser opens the same view. A failed load keeps the last
 // good snapshot on screen with its age and a Retry; it retries by itself with backoff (1, 2, 4, 8, 16 s).
-async function loadDetail(name, { force = false } = {}) {
+// One request in flight per session. A render only ASKS for the detail (ensureDetail): it starts a load when there is
+// none yet, or every 4 s for a live session; never for a session the service does not have (404, terminal), never past
+// the retry budget (5 retries at 1, 2, 4, 8, 16 s: then a Retry button only), never for an unsupported service.
+const DETAIL_RETRIES = 5;
+function ensureDetail(name) {
+  if (!name) return;
+  const d = S.detail[name];
+  if (!d) return loadDetail(name);
+  if (d.loading || d.retryTimer || d.missing || d.unsupported || d.gaveUp) return;
+  if (d.data && session()?.name === name && performance.now() - (d.at ?? 0) > 4000) loadDetail(name);
+}
+async function loadDetail(name, { manual = false } = {}) {
   if (!name) return;
   const cur = S.detail[name];
-  if (cur?.loading || (!force && cur && (cur.data || cur.unsupported || cur.retryTimer) && performance.now() - (cur.at ?? 0) < (session()?.name === name ? 4000 : 60000))) return;
-  S.detail[name] = { ...(cur ?? {}), loading: true };
+  if (cur?.loading) return;
+  if (manual && cur) { clearTimeout(cur.retryTimer); Object.assign(cur, { retryTimer: 0, retries: 0, gaveUp: false, missing: false }); }
+  S.detail[name] = { ...(cur ?? {}), loading: true, requests: (cur?.requests ?? 0) + 1 };
   const r = await api(`/api/deploy/session?name=${encodeURIComponent(name)}`, { timeout: 6000 });
   const d = S.detail[name] = { ...(S.detail[name] ?? {}), loading: false, at: performance.now() };
-  clearTimeout(d.retryTimer); d.retryTimer = 0;
   if (r.ok && r.data && typeof r.data === 'object' && !r.data.error && r.data.supported !== false) {
-    Object.assign(d, { data: r.data, good: r.data, goodAt: Date.now(), error: null, unsupported: false, retries: 0, missing: false });
-  } else if (r.status === 404 && /no such session|unknown session|not found:/i.test(r.data?.error ?? '')) {
-    Object.assign(d, { data: null, error: null, missing: true });
+    Object.assign(d, { data: r.data, good: r.data, goodAt: Date.now(), error: null, unsupported: false, retries: 0, missing: false, gaveUp: false });
+  } else if (r.status === 404 && /no such session|unknown session|not found/i.test(r.data?.error ?? '')) {
+    Object.assign(d, { data: null, error: null, missing: true });  // terminal: Retry or another session only
   } else if (unsupportedReply(r)) {
     Object.assign(d, { data: null, unsupported: unsupportedWhy(r), unsupportedReplay: r.data?.replay ?? null, error: null });
     if (S.manifestFor !== name) loadManifest(name);
   } else {
     d.error = reason(r); d.data = null; d.retries = (d.retries ?? 0) + 1;
-    if (d.retries <= 5) d.retryTimer = setTimeout(() => { d.retryTimer = 0; d.at = 0; loadDetail(name, { force: true }); }, 1000 * 2 ** (d.retries - 1));
+    if (d.retries <= DETAIL_RETRIES) d.retryTimer = setTimeout(() => { const x = S.detail[name]; if (x) x.retryTimer = 0; loadDetail(name); }, 1000 * 2 ** (d.retries - 1));
+    else d.gaveUp = true;  // terminal: Retry only
   }
   if (S.visible && S.step === 'review' && S.reviewName === name) renderPanel(true);
 }
@@ -1732,25 +1797,36 @@ function attemptHtml(name, a, sel, live) {
     ${sel ? `<div class="dp-rev-body"><dl class="dp-rev-facts">${facts.map(([k, v]) => `<dt>${escape(k)}</dt><dd>${escape(v)}</dd>`).join('')}</dl>
       ${out ? `<div class="dp-tags">${(S.panel?.tags ?? TAGS).map(t => `<button data-rtag="${escape(t)}" data-key="${escape(key)}" aria-pressed="${draft.tag === t}">${escape(t)}</button>`).join('')}</div>
       <input type="text" id="dp-rnote-${a.n}" data-rnote="${escape(key)}" placeholder="Note (optional)" value="${escape(draft.note ?? '')}">
-      <button class="dp-secondary" data-action="rtag:${escape(name)}:${a.n}" ${draft.tag && !draft.saving ? '' : 'disabled'}>${draft.saving ? 'Saving…' : a.tag ? 'Change tag' : 'Save tag'}</button>${draft.result ? `<small class="dp-rev-result">${escape(draft.result)}</small>` : ''}
+      <button class="dp-secondary" data-action="rtag:${escape(name)}:${a.n}" ${draft.tag && !draft.saving && reviewOperator() ? '' : 'disabled'}>${draft.saving ? 'Saving…' : a.tag ? 'Change tag' : 'Save tag'}</button>${reviewOperator() ? '' : lockLine('Type your name above: it is recorded with the tag')}${draft.result ? `<small class="dp-rev-result">${escape(draft.result)}</small>` : ''}
       ${a.tag_history?.length ? `<details class="dp-rev-hist"><summary>Tag history (${a.tag_history.length})</summary><ul>${a.tag_history.map(h => `<li>${escape(h.tag ?? '')}${h.note ? ` · ${escape(h.note)}` : ''} · ${escape(h.operator ?? '')} ${escape(clockText(h.t ?? h.at))}</li>`).join('')}</ul></details>` : ''}` : '<p class="tiny">Still walking: tag it when it ends.</p>'}
       </div>` : ''}</li>`;
+}
+// The reviewed session's kind (Review's eyebrow and tone): its receipt, else the service's list; never the next-session mode.
+function reviewKind(name = S.reviewName) {
+  const d = S.detail[name], r = (d?.data ?? d?.good)?.receipt;
+  if (r?.kind) return r.kind;
+  if ((st().sessions?.robot ?? []).some(s => s.name === name)) return 'robot';
+  const row = (st().sessions?.other ?? []).find(s => s.name === name);
+  return row ? (row.practice ? 'practice' : /^rehearse-/.test(name) ? 'rehearsal' : null) : null;
 }
 function reviewBody() {
   const list = [...(st().sessions?.robot ?? []), ...(st().sessions?.other ?? [])];
   const name = S.reviewName ?? list[0]?.name ?? null;
   if (name && name !== S.reviewName) S.reviewName = name;
-  if (name) loadDetail(name);
+  if (name) ensureDetail(name);
   const d = name ? S.detail[name] : null, data = d?.data ?? null, shown = data ?? (d?.error ? d.good : null);
   const live = session()?.name === name;
   // Older services: the manifest alone, and the attempts only while the session is live.
   if (d?.unsupported && name && S.manifestFor !== name) loadManifest(name);
-  const attempts = (shown?.attempts ?? (d?.unsupported ? (S.attempts[name] ?? (live ? panelAttempts() : null)) : null))?.map(attemptRow) ?? null;
+  const attempts = (shown?.attempts ?? (d?.unsupported && live ? panelAttempts() : null))?.map(attemptRow) ?? null;
   const sel = S.reviewAttempt ?? attempts?.at(-1)?.n ?? null;
   const rp = replayInfo(shown ?? (d?.unsupportedReplay ? { replay: d.unsupportedReplay } : null)), selA = attempts?.find(a => a.n === sel);
   const receipt = shown?.receipt ?? null, id = receipt ? { kind: receipt.kind, robot: receipt.robot, profile: receipt.profile?.name, sha: receipt.profile?.sha, odom: receipt.odom, operator: receipt.operator, scan: receipt.scan?.name } : null;
   const listed = list.some(s => s.name === name);
-  const errBox = d?.error ? `<div class="callout warning dp-retry" role="status"><strong>The session could not be loaded:</strong> ${escape(d.error)}${d.retryTimer ? ' · retrying' : ''}. ${d.good ? `Showing the last good snapshot from ${escape(ago((Date.now() - d.goodAt) / 1000))}.` : ''} <button class="link-button" data-action="detail-retry">Retry</button></div>` : '';
+  const tries = (d?.retries ?? 0) + 1;
+  const errBox = d?.error ? `<div class="callout warning dp-retry" role="status"><strong>The session could not be loaded:</strong> ${escape(d.error)}${d.retryTimer ? ` · trying again (${tries} of ${DETAIL_RETRIES + 1})` : d.gaveUp ? ` · gave up after ${DETAIL_RETRIES + 1} tries` : ''}. ${d.good ? `Showing the last good snapshot from ${escape(ago((Date.now() - d.goodAt) / 1000))}.` : ''} <button class="link-button" data-action="detail-retry">Retry</button></div>` : '';
+  const others = list.filter(s => s.name !== name).slice(0, 4);
+  const missingBox = d?.missing ? `<div class="callout warning dp-missing" role="status"><strong>The deploy service has no session named ${escape(name)}.</strong> A Review link opens a session the service still lists (the kit looks names up in the current lab day). ${others.length ? 'Today\'s sessions:' : 'It lists no session today.'} ${others.map(s => `<button class="link-button" data-review-session="${escape(s.name)}">${escape(s.name)}</button>`).join(' · ')} <button class="link-button" data-action="detail-retry">Retry</button></div>` : '';
   let mHtml = '';
   if (shown?.manifest) mHtml = manifestHtml(shown.manifest, { stale: d?.error ? 'From the last good snapshot.' : null });
   else if (d?.unsupported) {
@@ -1759,14 +1835,17 @@ function reviewBody() {
     else mHtml = m ? manifestHtml(m) : '<p class="tiny">Loading the manifest…</p>';
   }
   const rec = shown?.recording ? recordingWords(shown.recording) : null;
+  // One message for an older service: what it can and cannot show, nothing that contradicts it below.
+  const unsupportedBox = d?.unsupported ? `<div class="callout warning">Session detail is unsupported by this deploy service (${escape(d.unsupported)}). ${live ? 'The attempts below come from the live console; tags are edited there (Deploy).' : 'Its attempts and tags cannot be shown here; the evidence below comes from its manifest.'}</div>` : '';
+  const replayLock = !name ? 'No session yet' : rp.id ? null : d?.missing ? 'No such session in the deploy service' : d?.unsupported && !rp.why ? 'Replay registration is not reported by this deploy service'
+    : !shown && d?.error ? 'The session could not be loaded: Retry above' : rp.why ?? 'Loading the session…';
+  const canTag = !!shown && !d?.unsupported;
   return {
     title: 'Review', lead: 'What the session did and recorded, from the deploy service. This view survives a reload: its link opens it in any browser.',
     html: `
       <label class="field"><span>Session</span><select id="dp-review">${!listed && name ? `<option value="${escape(name)}" selected>${escape(name)}</option>` : ''}${[['Robot sessions', st().sessions?.robot ?? []], ['Practice and rehearsal runs', st().sessions?.other ?? []]].filter(([, l]) => l.length).map(([g, l]) => `<optgroup label="${g}">${l.map(s => `<option value="${escape(s.name)}" ${s.name === name ? 'selected' : ''}>${escape(s.name)}${s.practice ? ' (practice)' : ''}${s.started ? ` · ${new Date(s.started * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</option>`).join('')}</optgroup>`).join('') || (name ? '' : '<option>No sessions today</option>')}</select></label>
-      ${errBox}
-      ${d?.missing ? `<div class="callout warning">The deploy service has no session named ${escape(name)}.</div>` : ''}
-      ${d?.unsupported ? `<div class="callout warning">Session detail is unsupported by this deploy service (${escape(d.unsupported)}): ${live ? 'attempts are shown from the live console' : 'an ended session\'s attempts cannot be shown here'}; tags cannot be edited.</div>` : ''}
-      ${!d || (d.loading && !shown && !d.error) ? '<p class="tiny">Loading the session…</p>' : ''}
+      ${errBox}${missingBox}${unsupportedBox}
+      ${!d || (d.loading && !shown && !d.error && !d.missing) ? '<p class="tiny">Loading the session…</p>' : ''}
       ${id ? `<div class="dp-summary dp-rev-receipt">
           <div><span>Session</span><strong>${escape(id.kind === 'robot' ? `Real robot · ${id.robot ?? ''}` : id.kind === 'practice' ? 'Practice · simulated G1' : id.kind ?? '—')}${shown.ended ? ' · ended' : ' · running'}</strong></div>
           <div><span>Policy</span><strong>${escape(profileLabel(id.profile))} · ${escape(shortSha(id.sha))}</strong></div>
@@ -1774,13 +1853,16 @@ function reviewBody() {
           <div><span>Operator</span><strong>${escape(id.operator ?? '—')}</strong></div>
           <div><span>Scan</span><strong>${escape(id.scan ?? '—')}</strong></div>
         </div>` : ''}
-      ${rec ? `<div class="dpi-rec ${rec.tone}">${statusIcon(rec.tone)}<span>${escape(shown.ended ? rec.text.replace('Recording · ', 'Recording (final) · ') : rec.text)}</span></div>` : ''}
+      ${rec ? `<div class="dpi-rec ${rec.tone} dp-rev-rec">${statusIcon(rec.tone)}<span>${escape(rec.text)}</span></div>` : ''}
+      ${canTag && attempts?.some(a => a.outcome) ? `<label class="field dp-rev-op"><span>Your name (recorded with a tag)</span><input id="dp-review-operator" type="text" autocomplete="name" placeholder="Your name" value="${escape(reviewOperator())}"></label>` : ''}
       ${name && attempts ? `<h4>Attempts</h4>${attempts.length ? `<ol class="dp-rev-attempts">${attempts.map(a => attemptHtml(name, a, a.n === sel, live)).join('')}</ol>` : '<p class="tiny">No attempts in this session.</p>'}` : ''}
       ${mHtml}`,
-    primary: { label: selA ? `Open in Replay at attempt ${selA.n}` : 'Open in Replay', action: 'replay', locked: !name ? 'No session yet' : rp.id ? null : rp.why ?? 'Loading the session…' },
+    primary: { label: selA ? `Open in Replay at attempt ${selA.n}` : 'Open in Replay', action: 'replay', locked: replayLock },
     secondary: name ? `<button class="dp-secondary" data-action="detail-retry">Refresh</button>` : '',
   };
 }
+// Review's tagging name: what was typed here, else Connect's operator.
+const reviewOperator = () => (S.reviewOperator ?? S.operator ?? '').trim();
 async function loadManifest(name) {
   S.manifestFor = name; S.manifest = null;
   const r = await api(`/api/deploy/manifest?name=${encodeURIComponent(name)}`, { timeout: 5000 });
@@ -1826,6 +1908,9 @@ function bindPanel(root) {
   root.querySelectorAll('[data-note]').forEach(i => i.addEventListener('input', e => { (S.tagDraft[i.dataset.note] ??= {}).note = e.target.value; }));
   root.querySelectorAll('[data-rtag]').forEach(b => b.addEventListener('click', () => { const d = S.tagDraft[b.dataset.key] ??= {}; d.tag = b.dataset.rtag; d.result = null; renderPanel(true); }));
   root.querySelectorAll('[data-rnote]').forEach(i => i.addEventListener('input', e => { (S.tagDraft[i.dataset.rnote] ??= {}).note = e.target.value; }));
+  root.querySelector('#dp-review-operator')?.addEventListener('input', e => { S.reviewOperator = e.target.value; root.querySelectorAll('[data-action^="rtag:"]').forEach(b => { const k = `review:${S.reviewName}:${b.dataset.action.split(':').pop()}`; b.disabled = !S.tagDraft[k]?.tag || !reviewOperator(); }); });
+  root.querySelector('#dp-review-operator')?.addEventListener('change', () => renderPanel(true));
+  root.querySelectorAll('[data-review-session]').forEach(b => b.addEventListener('click', () => { S.reviewName = b.dataset.reviewSession; S.reviewAttempt = null; syncReviewUrl(); renderPanel(true); }));
   root.querySelectorAll('[data-attempt]').forEach(b => b.addEventListener('click', () => { const n = Number(b.dataset.attempt); S.reviewAttempt = n; syncReviewUrl(); renderPanel(true); }));
   root.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', () => doAction(b.dataset.action, b)));
 }
@@ -1858,7 +1943,7 @@ function doAction(a, el = null) {
     case 'retry-tracks': { const rec = rehearsalFor(); if (rec) loadTracks(rec, `${rec.name}:${setState(rec)}:${Date.now()}`); return renderPanel(true); }
     case 'send-goal': return sendGoal();
     case 'manifest': S.manifestFor = null; if (S.reviewName) loadManifest(S.reviewName); return renderPanel(true);
-    case 'detail-retry': { const d = S.detail[S.reviewName]; if (d) { clearTimeout(d.retryTimer); d.retryTimer = 0; d.retries = 0; d.at = 0; } loadDetail(S.reviewName, { force: true }); return renderPanel(true); }
+    case 'detail-retry': loadDetail(S.reviewName, { manual: true }); return renderPanel(true);
     case 'replay': return openReplay();
     default: return undefined;
   }
@@ -1937,7 +2022,7 @@ function sheetModel() {
         </div>
         <p class="tiny">${escape(ODOMETRY[odomName()]?.validation ?? '')}.</p>
         ${items.length ? `<div class="dp-before"><strong>Before GO</strong><ul>${items.map(i => `<li>${statusIcon('block')}${escape(i)}</li>`).join('')}</ul></div>`
-          : cautionHtml || '<p class="tiny ok">The console reports no lock, and the goal was rehearsed from this start. Watch the robot, remote in hand.</p>'}`,
+          : cautionHtml || (v?.tone === 'pass' ? '<p class="tiny ok">The console reports no lock, and the goal was rehearsed robust from this start. Watch the robot, remote in hand.</p>' : '<p class="tiny">The console reports no lock. Watch the robot, remote in hand.</p>')}`,
       ok: robot ? 'GO — the robot walks' : 'GO — practice robot walks',
       locked: sheetLock('go') ?? items[0] ?? (needAck && !S.sheet.ack ? 'Tick the line above: this walk has no matching complete rehearsal (or it did not pass)' : null), run: () => go(),
       caution: !items.length && cautions.length > 0 };

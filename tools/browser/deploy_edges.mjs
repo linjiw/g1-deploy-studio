@@ -15,9 +15,11 @@
 // F05 Review: an attempt completed, tagged, reopened from its link in a fresh browser, re-tagged, opened in Replay.
 // F06 goal check basis and freshness. F07 a dropped act reply, Review and track 503s then recovery.
 // Design: 390 px current action, keyboard walk of every sheet.
+// Verification round (D1-D13): Review requests bounded for an unknown and a failing session; recording states from a
+// detail recorded from the real kit (finalized, stalled); a failing rehearsal on fused odometry asks for the override.
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,7 +73,7 @@ const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH 
 const contexts = [];
 let faultWindow = false, lastPage = null;
 const BENIGN = [/\/api\/deploy\/(live|panel)$/];  // 404 after a session ends, between two state polls
-async function openPage({ width = 1440, height = 900, init = null, query = '?workspace=deploy', label = 'page' } = {}) {
+async function openPage({ width = 1440, height = 900, init = null, query = '?workspace=deploy', label = 'page', allow = [], before = null } = {}) {
   const context = await browser.newContext({ viewport: { width, height } });
   contexts.push(context);
   if (init) await context.addInitScript(init);
@@ -85,9 +87,10 @@ async function openPage({ width = 1440, height = 900, init = null, query = '?wor
   page.on('response', r => {
     if (r.status() < 400) return;
     const p = new URL(r.url()).pathname;
-    if (faultWindow || (r.status() === 404 && BENIGN.some(re => re.test(p))) || (r.status() === 409 && p === '/api/deploy/lease')) return;
+    if (faultWindow || (r.status() === 404 && BENIGN.some(re => re.test(p))) || (r.status() === 409 && p === '/api/deploy/lease') || allow.some(a => a.status === r.status() && a.path === p)) return;
     report.errors.push({ page: label, kind: 'http', message: `${r.status()} ${p}` });
   });
+  if (before) await before(page);
   await page.goto(`${base}/${query}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__studio?.state?.ready !== undefined && window.__deploy?.S?.stateOk, null, { timeout: 60000 });
   await page.waitForTimeout(1500);
@@ -387,6 +390,27 @@ try {
     return out;
   });
 
+  await check('D3', 'robot, FAST-LIO + legs, a matching set that fails with drift: the override tick is required and goes with GO', async () => {
+    const scan = await A.evaluate(() => window.__deploy.S.scanName);
+    await hubPost('/api/fake/rehearsals', { scan, goal_scene: [1.6, 0], profile: 'deploy', odom: 'fused', sets: [{ minutes_ago: 0.5, state: 'complete', verdict: 'fails with drift', label: 'fused-fail' }] });
+    await until(A, 'the failing set matched', () => /fused-fail/.test(window.__deploy.fn.rehearsalFor()?.name ?? ''), null, 12000);
+    await goBack(A, 20000);
+    await A.click('#dp-primary'); await A.waitForSelector('.dp-sheet');
+    const m = await A.evaluate(() => ({ caution: document.querySelector('.dp-sheet .dp-caution')?.textContent ?? '', okDisabled: document.getElementById('dp-sheet-ok').disabled,
+      lock: document.querySelector('#dp-sheet-lock')?.textContent ?? '', green: !!document.querySelector('.dp-sheet .tiny.ok'), body: document.querySelector('.dp-sheet-body').innerText }));
+    await shot(A, 'd3-fused-failing-set');
+    assert(/fails with the injected leg drift/i.test(m.caution) && /models leg odometry/.test(m.caution), `the caution names the failing set and the odometry context: ${m.caution}`);
+    assert(m.okDisabled && /Tick the line above/.test(m.lock) && !m.green, `GO waits for the tick and never ends green: ${JSON.stringify(m)}`);
+    await A.locator('.dp-sheet [data-ack]').check();
+    await until(A, 'GO enabled by the tick', () => !document.getElementById('dp-sheet-ok').disabled, null, 5000);
+    await A.click('#dp-sheet-ok');
+    await until(A, 'the GO press', () => !document.querySelector('.dp-sheet'), null, 10000);
+    const g = A.__requests.filter(r => r.path === '/api/deploy/act' && r.body && JSON.parse(r.body).act === 'g').map(r => JSON.parse(r.body)).at(-1);
+    assert(g?.rehearsal_override?.operator && /fails with/i.test(g.rehearsal_override.reason ?? '') && /fused-fail/.test(g.rehearsal?.name ?? ''), `GO carried the override and the set: ${JSON.stringify(g)}`);
+    await until(A, 'the walk ends', () => (window.__deploy.S.panel?.attempts ?? []).some(a => a.result ?? a.outcome), null, 60000);
+    return { caution: m.caution, override: g.rehearsal_override, rehearsal: g.rehearsal };
+  });
+
   await check('Design', '390 px: the current action is reachable without scrolling; the E-STOP bar stays; the map collapses', async () => {
     await A.setViewportSize({ width: 390, height: 844 });
     await A.evaluate(() => { scrollTo(0, 0); window.__deploy.setStep('deploy'); });
@@ -401,7 +425,22 @@ try {
     const collapsed = await A.evaluate(() => document.getElementById('viewport-shell').getBoundingClientRect().height);
     await shot(A, 'design-390-map-collapsed');
     await A.click('#dp-map-toggle');
+    // A failing audit log with a long path wraps (no horizontal scroll at 390 px).
+    const linkRoute = u => u.pathname === '/api/deploy/link';
+    await A.route(linkRoute, async route => { const res = await route.fetch(), body = await res.json(); body.audit = { ok: false, errors: 3, last_error: "PermissionError: [Errno 13] Permission denied: '/tmp/claude-1000/a/very/long/path/to/the/studio/data/root/deploy/gateway_actions.jsonl'", at: Date.now() / 1000 }; await route.fulfill({ response: res, json: body }); });
+    await until(A, 'the audit warning', () => /audit log is not writing/.test(document.getElementById('dp-identity')?.textContent ?? ''), null, 9000);
+    const auditW = await A.evaluate(() => document.documentElement.scrollWidth);
+    await shot(A, 'design-390-audit-path');
+    await A.unroute(linkRoute);
+    // 1024 x 768 with the receipt expanded: the current action stays above the fold.
+    await A.setViewportSize({ width: 1024, height: 768 }); await A.evaluate(() => scrollTo(0, 0)); await A.waitForTimeout(600);
+    await A.click('#dp-identity-toggle'); await A.waitForTimeout(400);
+    const at1024 = await A.evaluate(() => ({ bottom: document.getElementById('dp-primary').getBoundingClientRect().bottom, vh: innerHeight }));
+    await shot(A, 'design-1024-receipt-open');
+    await A.click('#dp-identity-toggle');
     await A.setViewportSize({ width: 1440, height: 900 }); await A.waitForTimeout(600);
+    assert(auditW <= 391, `a long audit path wraps at 390 px (${auditW})`);
+    assert(at1024.bottom <= at1024.vh, `1024x768 with the receipt open: the current action is above the fold (${JSON.stringify(at1024)})`);
     assert(m.primary.top >= 0 && m.primary.bottom <= m.vh && m.topmost, `the current action is on screen and on top: ${JSON.stringify(m)}`);
     assert(m.estop.top >= 0 && m.estop.bottom <= m.vh, 'the E-STOP bar is on screen');
     assert(m.docW <= 391, `no horizontal scroll (${m.docW})`);
@@ -416,7 +455,7 @@ try {
     await takeControls(page, 'Linji');
     await page.evaluate(() => { window.__deploy.setStep('goal'); return window.__deploy.checkGoal([1.6, 0]); });
     await until(page, 'checked', () => !!window.__deploy.S.goal?.check?.check_id);
-    const first = await page.evaluate(() => ({ basis: document.querySelector('.dp-basis')?.textContent, profile: window.__deploy.S.goal.check.config?.profile, asked: window.__deploy.S.goal.check.profileAsked }));
+    const first = await page.evaluate(() => ({ basis: document.querySelector('.dp-basis')?.textContent, legend: document.querySelector('.dp-legend-inline')?.textContent, profile: window.__deploy.S.goal.check.config?.profile, asked: window.__deploy.S.goal.check.profileAsked }));
     const reqs0 = page.__requests.filter(r => r.path === '/api/deploy/goal_check').length;
     await page.evaluate(() => window.__deploy.setStep('connect')); await page.selectOption('#dp-profile', 'low-margin');
     await page.evaluate(() => window.__deploy.setStep('goal'));
@@ -429,6 +468,7 @@ try {
     await shot(page, 'f06-goal-basis');
     await page.selectOption('#dp-profile', 'deploy').catch(() => {});
     assert(/route settings|generic/i.test(first.basis ?? '') && /Checked .* ago/.test(first.basis ?? ''), `basis and freshness shown: ${first.basis}`);
+    assert(/0\.30 m margin/.test(first.legend ?? '') || /generic/i.test(first.basis ?? ''), `the legend's margin is the profile's: ${first.legend}`);
     assert(second.profile === 'low-margin' || /generic/i.test(second.basis ?? ''), `checked again with the new profile: ${JSON.stringify(second)}`);
     assert(expired === 'pending' && reqs1 > reqs0 + 1, `an expired check is not green and runs again (${expired}, ${reqs0} -> ${reqs1})`);
     await page.evaluate(() => { window.__deploy.S.profile = 'deploy'; localStorage.setItem('studio.deploy.profile', 'deploy'); });
@@ -515,7 +555,12 @@ try {
     await until(page, 'Arm', () => /Arm/.test(document.getElementById('dp-primary')?.textContent ?? '') && !document.getElementById('dp-primary').disabled, null, 20000);
     const kbArm = await keyboardWalk(page, '#dp-primary', 'dp-primary');
     await ladderToGo(page, [1.6, 0]);
-    await page.click('#dp-primary'); await page.waitForSelector('.dp-sheet'); await page.click('#dp-sheet-ok');
+    await page.click('#dp-primary'); await page.waitForSelector('.dp-sheet');
+    // Practice with a failing matching set (seeded in D3 when it ran): a note, no tick.
+    const practiceGo = await page.evaluate(() => ({ caution: document.querySelector('.dp-sheet .dp-caution')?.textContent ?? '', tick: !!document.querySelector('.dp-sheet [data-ack]'), okDisabled: document.getElementById('dp-sheet-ok').disabled, green: !!document.querySelector('.dp-sheet .tiny.ok') }));
+    assert(!practiceGo.tick && !practiceGo.okDisabled, `Practice: no tick, GO open: ${JSON.stringify(practiceGo)}`);
+    assert(!(practiceGo.green && /fails/i.test(practiceGo.caution)), 'never green beside a failing set');
+    await page.click('#dp-sheet-ok');
     await until(page, 'arrival', () => (window.__deploy.S.panel?.attempts ?? []).some(a => a.result ?? a.outcome), null, 60000);
     await page.waitForSelector('.dp-tagcard');
     await page.locator('.dp-tagcard [data-tag="clean"]').click();
@@ -527,17 +572,21 @@ try {
     await until(page, 'Review', () => window.__deploy.S.step === 'review' && !window.__deploy.fn.session(), null, 20000);
     const url = await page.evaluate(() => location.href);
     // A clean browser opens the exact link.
-    const fresh = await openPage({ label: 'f05-fresh', query: `?workspace=deploy&session=${encodeURIComponent(ended)}&attempt=1` });
+    const fresh = await openPage({ label: 'f05-fresh', query: `?workspace=deploy&session=${encodeURIComponent(ended)}&attempt=1`, init: () => { localStorage.setItem('studio.deploy.mode', 'robot'); } });
     await until(fresh, 'the session detail', () => !!document.querySelector('.dp-rev-attempt.sel'), null, 15000);
-    const m = await fresh.evaluate(() => ({ step: window.__deploy.S.step, text: document.querySelector('.dp-panel-content').innerText, primary: document.getElementById('dp-primary').textContent, disabled: document.getElementById('dp-primary').disabled, lock: document.querySelector('.dp-foot .dp-lock')?.textContent ?? '' }));
+    const m = await fresh.evaluate(() => ({ step: window.__deploy.S.step, text: document.querySelector('.dp-panel-content').innerText, primary: document.getElementById('dp-primary').textContent, disabled: document.getElementById('dp-primary').disabled, lock: document.querySelector('.dp-foot .dp-lock')?.textContent ?? '',
+      eyebrow: document.querySelector('.dp-head .eyebrow').textContent, blocker: document.querySelector('.dp-block-line')?.textContent ?? null }));
+    assert(/practice session/.test(m.eyebrow) && !/real robot/.test(m.eyebrow), `Review's eyebrow is the reviewed session's kind, not the next-session mode (robot here): ${m.eyebrow}`);
+    assert(m.blocker === null, `no readiness blocker on Review: ${m.blocker}`);
     await shot(fresh, 'f05-review-fresh-browser');
     assert(/[?&]session=/.test(url) && /[?&]workspace=deploy/.test(url), `the Review URL holds the session: ${url}`);
     assert(m.step === 'review' && /arrived/.test(m.text) && /clean/.test(m.text) && /edge run: arrived/.test(m.text), `attempt, outcome, tag and note after a reload elsewhere: ${m.text.slice(0, 500)}`);
     assert(/Rehearsal/.test(m.text) && /Start check/.test(m.text) && /Alignment/.test(m.text), 'rehearsal, start check and alignment rows');
     assert(/Recording/.test(m.text) && /Evidence/.test(m.text) && !/Evidence\s*0 of 0/.test(m.text), 'recording health and evidence, never "0 of 0"');
     // Re-tag the ended session (named viewer; no lease needed).
-    await fresh.evaluate(() => { window.__deploy.S.operator = 'Reviewer'; });
     await fresh.locator('.dp-rev-body [data-rtag="touched"]').click();
+    assert(await fresh.locator('.dp-rev-body [data-action^="rtag:"]').isDisabled(), 'Save waits for a name (no 400)');
+    await fresh.fill('#dp-review-operator', 'Reviewer');
     await fresh.locator('.dp-rev-body input[data-rnote]').fill('re-tagged in Review');
     await fresh.locator('.dp-rev-body [data-action^="rtag:"]').click();
     await until(fresh, 'saved', () => /saved/.test(document.querySelector('.dp-rev-result')?.textContent ?? ''), null, 10000);
@@ -601,6 +650,60 @@ try {
     return { ...m, none: none.slice(0, 600) };
   });
 
+  await check('D1', 'Review requests are bounded: an unknown session (404) and a failing detail (503) over 15 s', async () => {
+    const page = await openPage({ label: 'd1-missing', query: '?workspace=deploy&session=practice-000000-not-today&attempt=1', allow: [{ status: 404, path: '/api/deploy/session' }] });
+    await page.waitForTimeout(15000);
+    const n404 = page.__requests.filter(r => r.path === '/api/deploy/session').length;
+    const missing = await page.evaluate(() => ({ text: document.querySelector('.dp-panel-content').innerText, offers: document.querySelectorAll('[data-review-session]').length, lock: document.querySelector('.dp-foot .dp-lock')?.textContent ?? '' }));
+    await shot(page, 'd1-unknown-session');
+    assert(n404 <= 6, `requests for an unknown session in 15 s: ${n404}`);
+    assert(/no session named/.test(missing.text) && /No such session/.test(missing.lock), `says so, with a consistent Replay lock: ${missing.lock}`);
+    faultWindow = true; await faults({ session_fail: -1 });
+    const page2 = await openPage({ label: 'd1-failing', query: `?workspace=deploy&session=${encodeURIComponent(ended ?? 'x')}&attempt=1` });
+    await page2.waitForTimeout(15000);
+    const n503 = page2.__requests.filter(r => r.path === '/api/deploy/session').length;
+    const failing = await page2.evaluate(() => ({ text: document.querySelector('.dp-panel-content').innerText, lock: document.querySelector('.dp-foot .dp-lock')?.textContent ?? '' }));
+    await shot(page2, 'd1-failing-detail');
+    await resetFaults(); faultWindow = false;
+    assert(n503 <= 6, `requests for a failing detail in 15 s: ${n503}`);
+    assert(/could not be loaded/.test(failing.text) && /Retry/.test(failing.text) && /could not be loaded/.test(failing.lock), `an error with Retry, the Replay lock says the same: ${failing.lock}`);
+    await page2.locator('.dp-retry [data-action="detail-retry"]').click();
+    if (ended) await until(page2, 'recovered on Retry', () => !!document.querySelector('.dp-rev-attempt'), null, 10000);
+    return { n404, n503, offers: missing.offers };
+  });
+
+  await check('D2', 'recording states from a session detail recorded from the real kit: finalized is good, stalled is stalled', async () => {
+    const fixture = JSON.parse(await readFile(path.join(root, 'tests/fixtures/deploy_v1/session_detail_practice_real.json'), 'utf8'));
+    const name = fixture.name;
+    const out = {};
+    for (const [label, mutate] of [['finalized', d => d], ['stalled', d => { d.recording.state = 'stalled'; d.recording.recorder = { ...(d.recording.recorder ?? {}), heartbeat_age_s: 12 }; d.recording.finalized = false; d.ended = false; return d; }],
+      ['not finalized', d => { d.recording.state = 'not finalized'; d.recording.finalized = false; return d; }]]) {
+      const page = await openPage({ label: `d2-${label}`, query: `?workspace=deploy&session=${encodeURIComponent(name)}&attempt=1`,
+        before: p => p.route(u => u.pathname === '/api/deploy/session', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mutate(JSON.parse(JSON.stringify(fixture)))) })) });
+      await until(page, 'the recording line', () => !!document.querySelector('.dp-rev-rec'), null, 10000);
+      out[label] = await page.evaluate(() => ({ rec: document.querySelector('.dp-rev-rec').textContent, tone: document.querySelector('.dp-rev-rec').className, evidence: document.querySelector('.dp-panel-content h4 .tiny')?.textContent ?? '', eyebrow: document.querySelector('.dp-head .eyebrow').textContent }));
+      await shot(page, `d2-recording-${label.replace(' ', '-')}`);
+      await contexts.pop().close();
+    }
+    assert(/Recording finalized · 6 of 6 required streams recorded/.test(out.finalized.rec) && !/NOT RUNNING|stopped/.test(out.finalized.rec) && /pass/.test(out.finalized.tone), `finalized reads as finalized: ${JSON.stringify(out.finalized)}`);
+    assert(/required present · complete/.test(out.finalized.evidence), `the evidence count: ${out.finalized.evidence}`);
+    assert(/practice session/.test(out.finalized.eyebrow), `eyebrow from the receipt: ${out.finalized.eyebrow}`);
+    assert(/Recorder stalled/.test(out.stalled.rec) && !/NOT RUNNING/.test(out.stalled.rec), `stalled reads as stalled: ${out.stalled.rec}`);
+    assert(/NOT finalized/.test(out['not finalized'].rec), `not finalized is distinct: ${out['not finalized'].rec}`);
+    return out;
+  });
+
+  await check('D13', 'an older service: Review of an ended session says once what it cannot show', async () => {
+    assert(ended, 'needs the ended session');
+    const page = await openPage({ label: 'd13', query: `?workspace=deploy&session=${encodeURIComponent(ended)}&attempt=1`,
+      before: p => p.route(u => u.pathname === '/api/deploy/session', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ supported: false, capability: 'session_detail', detail: 'the deploy service has no session_detail: it predates contract v3; update the kit' }) })) });
+    await until(page, 'the unsupported message', () => /unsupported/.test(document.querySelector('.dp-panel-content')?.textContent ?? ''), null, 8000);
+    await page.waitForTimeout(800);
+    const text = await page.evaluate(() => document.querySelector('.dp-panel-content').innerText);
+    await shot(page, 'd13-v1-review');
+    assert(/cannot be shown here/.test(text) && !/No attempts in this session/.test(text), `one clear message: ${text.slice(0, 500)}`);
+    return { text: text.slice(0, 300) };
+  });
 } catch (error) {
   failure = error;
 } finally {

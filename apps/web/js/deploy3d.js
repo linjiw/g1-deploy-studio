@@ -619,7 +619,7 @@ export function setGoal(goal) {
   D.goalGroup.add(g);
   const path = goal.path ?? [];
   if (path.length > 1) {
-    D.goalGroup.add(ribbon(path, ROUTE_MARGIN_M, status === 'block' ? COLORS.block : COLORS.route, status === 'block' ? 0.08 : 0.15));
+    D.goalGroup.add(ribbon(path, Number.isFinite(goal.margin) ? goal.margin : ROUTE_MARGIN_M, status === 'block' ? COLORS.block : COLORS.route, status === 'block' ? 0.08 : 0.15));
     // Centre band: teal where the scan saw the floor, grey where the route crosses unseen space.
     const seenC = status === 'block' ? COLORS.block : COLORS.route, unseenC = 0xa3adb8;
     let run = [path[0]], runSeen = null;

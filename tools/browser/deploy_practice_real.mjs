@@ -209,6 +209,14 @@ try {
   assert.match(rev, /arrived/, 'the reopened Review shows the outcome');
   assert.match(rev, /clean/, 'the reopened Review shows the tag');
   assert.doesNotMatch(rev, /Evidence\s*0 of 0/, 'never an empty evidence list');
+  // The recording line of an ended session: finalized (or ended), never "NOT RUNNING" for a closed recording.
+  const recLine = await fresh.evaluate(() => document.querySelector('.dp-rev-rec')?.textContent ?? '');
+  assert.match(recLine, /Recording (finalized|ended) · (\d+) of \2 required streams recorded/, `the recording line of an ended session: ${recLine}`);
+  assert.doesNotMatch(recLine, /NOT RUNNING|stalled|NOT finalized/, `a closed recording is not shown as dead: ${recLine}`);
+  const evidence = await fresh.evaluate(() => [...document.querySelectorAll('.dp-panel-content h4')].find(h => /Evidence/.test(h.textContent))?.textContent ?? '');
+  const ev = evidence.match(/(\d+) of (\d+) required present/);
+  assert.ok(ev && ev[1] === ev[2] && /· complete/.test(evidence), `every required evidence item present and complete: ${evidence}`);
+  report.review_recording = recLine; report.review_evidence = evidence;
   report.review_fresh = rev.slice(0, 1200);
   await fresh.screenshot({ path: path.join(shots, '16-review-fresh-browser.png') });
   await ctx2.close();
