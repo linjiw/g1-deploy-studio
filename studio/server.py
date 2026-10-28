@@ -663,7 +663,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/deploy/heartbeat':
                 return self.respond(self.server.deploy.heartbeat())
             if path == '/api/version':
-                return self.respond(dict(self.server.identity, hardware_enabled=False))
+                ident = self.server.identity  # release.commit read now: a release after this gateway started shows
+                return self.respond(dict(ident, hardware_enabled=False,
+                                         release=release_info(ident.get('root') or ROOT, ident.get('commit'),
+                                                              ident.get('dirty'))))
             if path == '/api/workbench' and workbench:
                 return self.respond(workbench.description())
             if path == '/api/map' and workbench:

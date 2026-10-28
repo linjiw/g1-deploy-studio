@@ -759,8 +759,10 @@ class Deploy:
         """The deploy service answered, but the console's reply was lost on its side (the kit's hub: 502 "panel
         unreachable" / a console that does not answer): what the console did is unknown. Returns the reason or None."""
         if act in CONSOLE_ACTS and status in (502, 504):
-            return (obj.get("error") or obj.get("reason") or f"the deploy service answered {status}") \
-                if isinstance(obj, dict) else f"the deploy service answered {status}"
+            text = (obj.get("error") or obj.get("reason") or "") if isinstance(obj, dict) else ""
+            if re.search(r"Connection refused|Errno 111", str(text)):
+                return None  # the console's panel was not listening: nothing was delivered, the answer stands
+            return str(text) or f"the deploy service answered {status}"
         if act == "send_goal" and isinstance(obj, dict) and isinstance(obj.get("act"), dict):
             reply = obj["act"]
             text = str(reply.get("error") or "")
