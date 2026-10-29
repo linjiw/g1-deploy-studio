@@ -97,6 +97,14 @@ export const S = {
 
 // ------------------------------------------------------------------------------------------------ requests
 const inflight = new Set();
+// The gateway's POST token, kept here once known: a press or a lease renewal must not wait on refetching the catalog
+// (a busy gateway may not serve it) unless the gateway said the token changed (a 403 after a restart).
+let csrfCache = null;
+async function csrfToken(fresh = false) {
+  if (!fresh && csrfCache) return csrfCache;
+  csrfCache = await S.ctx.csrf(fresh);
+  return csrfCache;
+}
 let pollsInFlight = 0;
 async function api(path, { method = 'GET', body, timeout = 1500, headers = {}, csrf = false, retried = false } = {}) {
   const ctl = new AbortController(); ctl.meta = { method, at: performance.now() }; inflight.add(ctl);
@@ -104,13 +112,12 @@ async function api(path, { method = 'GET', body, timeout = 1500, headers = {}, c
   try {
     const options = { method, cache: 'no-store', signal: ctl.signal, headers: { ...headers } };
     if (body !== undefined) { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
-    if (csrf) options.headers['X-Studio-Token'] = await S.ctx.csrf(false);
+    if (csrf) options.headers['X-Studio-Token'] = await csrfToken(retried);
     const response = await fetch(path, options);
     let data = {};
     try { data = await response.json(); } catch { data = {}; }
     if (csrf && response.status === 403 && !retried && /token/i.test(data?.error ?? '')) {
-      await S.ctx.csrf(true);
-      return api(path, { method, body, timeout, headers, csrf, retried: true });
+      return api(path, { method, body, timeout, headers, csrf, retried: true });  // csrfToken(true) refetches it
     }
     return { ok: response.ok, status: response.status, data: data ?? {} };
   } catch (error) {
