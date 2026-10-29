@@ -932,10 +932,11 @@ async function initialize() {
     get navigate() { return nav; }, pickGoal, get navOverlay() { return scene.view.navGroup?.children.length ?? 0; },
     get focus() { return focus; },
   };
-  await openInitialRecording(view);
+  await openInitialRecording(view, deployFirst);
 }
 
-async function openInitialRecording(view) {
+// deployFirst: a promise (or boolean) that Studio should open on Deploy (initialize() probes the deploy service).
+async function openInitialRecording(view, deployFirst = false) {
   let sessionDispatched = false;
   $('error-banner').hidden = true;
   $('loading-overlay').hidden = false;
@@ -952,7 +953,7 @@ async function openInitialRecording(view) {
       $('source-badge').textContent = 'Unavailable'; $('source-badge').className = 'chip chip-unavailable';
       if (!$('refresh-recordings')) {
         const retry = document.createElement('button'); retry.id = 'refresh-recordings'; retry.textContent = 'Refresh recordings';
-        retry.addEventListener('click', () => openInitialRecording(view)); $('no-recordings').append(retry);
+        retry.addEventListener('click', () => openInitialRecording(view, deployFirst)); $('no-recordings').append(retry);
       }
       await setWorkspace(view.get('workspace') || ((await deployFirst) ? 'deploy' : 'navigate'));
       return;
@@ -989,7 +990,7 @@ async function openInitialRecording(view) {
     if (view.get('play') === '1') setPlaying(true);
     if (view.get('focus') === '1') await focus.enter();
   } catch (error) {
-    showError(error.message, () => openInitialRecording(view)); $('loading-overlay').hidden = true;
+    showError(error.message, () => openInitialRecording(view, deployFirst)); $('loading-overlay').hidden = true;
     if (!state.session) { $('session-title').textContent = 'No recording open'; $('source-badge').textContent = 'UNAVAILABLE'; $('source-badge').className = 'chip chip-unavailable'; $('playback-state').textContent = 'UNAVAILABLE'; }
   } finally { if (!sessionDispatched) state.loading = false; syncTransport(); state.ready = true; }
 }
