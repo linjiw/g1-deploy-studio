@@ -12,6 +12,7 @@
   <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.min.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
 </head>
 <body>
+  <a class="skip-link" href="#studio-main">Skip to Studio</a>
   <header class="topbar">
     <a class="brand" href="/" aria-label="G1 Deploy Studio home"><span class="brand-icon">G1</span><span class="brand-name">Deploy <strong>Studio</strong></span></a>
     <div class="run-picker"><label for="session-picker">Run</label><select id="session-picker" aria-label="Select recording or rehearsal" data-testid="session-select"><option>Loading…</option></select></div>
@@ -38,7 +39,7 @@
   <div id="error-banner" class="error-banner" role="alert" hidden></div>
   <div id="deploy-estop" class="deploy-estop" role="region" aria-label="Emergency stop" hidden></div>
 
-  <main class="shell">
+  <main class="shell" id="studio-main" tabindex="-1">
     <nav class="rail" aria-label="Workspaces">
       <button id="workspace-deploy" data-workspace="deploy" aria-pressed="false" title="Connect, scan, pick a goal, rehearse and deploy, in 3D"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.8v10.4M7.6 8.2 12 3.8l4.4 4.4"/><path d="M4.5 14.5v3.2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3.2"/></svg></i><span>Deploy</span></button>
       <button id="workspace-replay" data-workspace="replay" class="active" aria-pressed="true" title="Replay recordings and runs"><i><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m10 8.6 5.2 3.4-5.2 3.4z"/></svg></i><span>Replay</span></button>
@@ -67,7 +68,7 @@
       <div class="stage-main">
         <div class="viewport-shell" id="viewport-shell">
           <div id="viewport" data-testid="viewport" aria-label="Interactive G1 digital twin"></div>
-          <canvas id="arena-canvas" class="stage-canvas" aria-label="Arena editor (top-down, metres)" hidden></canvas>
+          <canvas id="arena-canvas" class="stage-canvas" tabindex="0" aria-label="Arena editor (top-down, metres)" hidden></canvas>
           <canvas id="runs-canvas" class="stage-canvas" aria-label="Run trajectory comparison" hidden></canvas>
           <div id="system-stage" class="stage-doc" hidden></div>
           <div id="deploy-stage" class="deploy-stage"></div>
@@ -104,7 +105,7 @@
           <div id="preview-note" class="preview-note" hidden></div>
           <div class="viewport-meta"><span id="pose-caption">Pose unavailable</span><span id="reference-caption"></span></div>
           <div id="recording-warning" class="recording-warning" role="status" hidden></div>
-          <div id="loading-overlay" class="loading-overlay"><div class="loader"></div><span>Decoding recorded robot state…</span></div>
+          <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite"><div class="loader"></div><span>Decoding recorded robot state…</span></div>
           <div id="no-recordings" class="scene-unavailable no-recordings" hidden><h3>No recordings on this machine yet</h3><p>Start a session in Navigate or a run in Rehearse: its recording opens here and joins the run picker. Recordings from another machine are listed in config/local.json (docs/INSTALL.md).</p><button type="button" id="no-recordings-open" class="go-action">Open Navigate</button></div>
           <div id="scene-unavailable" class="scene-unavailable" hidden><h3>World pose was not captured</h3><p>This transport recording contains real reference values and receiver observations. Inspect Intent, Joints and Graph for available data. No root pose is inferred from reference joints.</p></div>
         </div>
@@ -123,11 +124,11 @@
             <label class="check loop-check"><input id="loop" type="checkbox"> Loop</label>
             <label class="speed-label" for="speed">Speed<select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
             <button id="copy-view" title="Copy a link to this run, time, panel, camera and sensors">Link</button>
-            <button id="lanes-toggle" class="ghost" aria-expanded="true">Hide lanes</button>
+            <button id="lanes-toggle" class="ghost" aria-expanded="true" aria-controls="timeline-lanes">Hide lanes</button>
           </div>
         </div>
         <div class="scrub"><input id="timeline" data-testid="timeline" type="range" min="0" max="1" value="0" step="0.001" aria-label="Seek session time"></div>
-        <div class="lanes"><canvas id="lanes-canvas" aria-label="Timeline lanes: events, goal distance, planner compute, SONIC inference, tracking error, contact"></canvas><div id="lanes-tip" class="lanes-tip" hidden></div></div>
+        <div class="lanes" id="timeline-lanes"><canvas id="lanes-canvas" aria-label="Timeline lanes: events, goal distance, planner compute, SONIC inference, tracking error, contact"></canvas><div id="lanes-tip" class="lanes-tip" hidden></div></div>
       </section>
     </section>
 

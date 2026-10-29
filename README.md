@@ -89,6 +89,10 @@ STUDIO_INTEGRATION=1 .venv/bin/python -m unittest tests.test_flow_worker_integra
 
 Browser tests need Chromium (`CHROME_PATH`, default `/opt/google/chrome/chrome`). Evidence and screenshots are written under `~/research-data/g1-deploy-studio/evidence/`, outside Git. See [acceptance](docs/ACCEPTANCE.md).
 
+The [2026-10-24 UI/UX review](docs/UIUX_REVIEW_2026-10-24.md) adds failure, cancellation, keyboard, responsive and rendering regressions: `npm run test:browser:edges`, `npm run site:check:edges` and `npm run test:visualization` (set `STUDIO_URL` and/or `SITE_URL` to the local test servers).
+
+The [2026-10-28 experience release](docs/UIUX_RELEASE_2026-10-28.md) adds the interactive LfH explanation, recorded Film cameras, separate frozen Navigate and newer R2 research films, and a pinned local R2 refinement bundle. Validate with `site:check:story`, `site:check:film` and `site:check:media`.
+
 ## Recordings, capture and export
 
 `config/sessions.json` registers the demonstrated recordings. For other local recordings, create `config/local.json` (ignored) with the same structure and pass `--config config/local.json`. An entry is a recording directory, a Studio `.mcap`, or a single-endpoint `pose` recorder `.jsonl`, plus an optional `environment_path` boxes file. Fresh rehearsals are stored under `~/research-data/g1-deploy-studio/workbench/jobs` and survive restarts.

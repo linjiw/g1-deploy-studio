@@ -37,12 +37,15 @@ export function initTimeline({ onSeek }) {
   };
   // A mouse seeks at once. A finger seeks on a tap or a sideways drag; a vertical swipe scrolls the page
   // (touch-action: pan-y), never the cursor.
-  let touch = null;
+  let touch = null, pointerId = null;
   tl.canvas.addEventListener('pointerdown', e => {
+    if (!e.isPrimary || e.button !== 0 || pointerId !== null) return;
+    pointerId = e.pointerId;
     if (e.pointerType === 'touch') { touch = { x: e.clientX, y: e.clientY, id: e.pointerId, mode: null }; return; }
     tl.dragging = true; tl.canvas.setPointerCapture(e.pointerId); seekAt(e);
   });
   tl.canvas.addEventListener('pointermove', e => {
+    if (!e.isPrimary || (pointerId !== null && pointerId !== e.pointerId)) return;
     if (touch && e.pointerId === touch.id) {
       const dx = Math.abs(e.clientX - touch.x), dy = Math.abs(e.clientY - touch.y);
       if (!touch.mode && (dx > 8 || dy > 8)) touch.mode = dx > dy ? 'seek' : 'scroll';
@@ -52,10 +55,14 @@ export function initTimeline({ onSeek }) {
     if (tl.dragging) seekAt(e); else hover(e);
   });
   tl.canvas.addEventListener('pointerup', e => {
+    if (pointerId !== e.pointerId) return;
+    pointerId = null;
     if (touch && e.pointerId === touch.id && !touch.mode) seekAt(e);
     touch = null; tl.dragging = false;
   });
-  tl.canvas.addEventListener('pointercancel', () => { touch = null; tl.dragging = false; });
+  const cancelDrag = e => { if (pointerId !== e.pointerId) return; pointerId = null; touch = null; tl.dragging = false; $('lanes-tip').hidden = true; };
+  tl.canvas.addEventListener('pointercancel', cancelDrag);
+  tl.canvas.addEventListener('lostpointercapture', cancelDrag);
   tl.canvas.addEventListener('pointerleave', () => { $('lanes-tip').hidden = true; });
   $('lanes-toggle')?.addEventListener('click', () => {
     const collapsed = document.body.classList.toggle('lanes-collapsed');
@@ -132,7 +139,7 @@ function drawBase() {
       if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText('No events recorded', g.left + 6, mid); }
       return;
     }
-    if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText(['simulation', 'live'].includes(tl.session?.metadata?.mode) ? 'No samples yet' : 'Unavailable in this recording', g.left + 6, mid); return; }
+    if (!lane.available) { ctx.fillStyle = UI.dim; ctx.fillText(['simulation', 'live'].includes(tl.session?.metadata?.mode) ? 'No samples yet' : narrow() ? 'Unavailable' : 'Unavailable in this recording', g.left + 6, mid); return; }
     const yOf = v => y1 - Math.min(1, v / lane.max) * (y1 - y0 - 3);
     if (lane.threshold !== null && lane.threshold <= lane.max * 1.001) {
       const ty = yOf(lane.threshold);
@@ -191,7 +198,7 @@ function hover(event) {
     text = `${lane.label} ${best[1].toFixed(3)} ${lane.unit} at ${clock(best[0])}${lane.threshold !== null ? ` · ${lane.thresholdLabel} ${lane.threshold} ${lane.unit}` : ''}`;
   } else text = `${lane.label} was not captured in this recording`;
   tip.textContent = text; tip.hidden = false;
-  tip.style.left = `${Math.min(rect.width - 260, Math.max(0, x + 10))}px`; tip.style.top = `${Math.max(0, y - 30)}px`;
+  tip.style.left = `${Math.max(0, Math.min(rect.width - tip.offsetWidth, x + 10))}px`; tip.style.top = `${Math.max(0, y - 30)}px`;
 }
 
 export function refreshTimelineLive() {

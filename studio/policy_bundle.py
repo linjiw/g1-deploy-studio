@@ -16,7 +16,22 @@ from studio import paths
 POLICY_ROOT = paths.get('data_root') / 'policies'
 ARTIFACT_LINKS = ['artifacts/native-reference-v1-final/geometry.json', 'artifacts/clean-reference-v2/receipt.json']
 # flow-<block>-rf-<commit7>-s<seed>, e.g. flow-wx-rf-23326aa-s0 (tools/build_policy_bundle.py).
-BUNDLE_ID = re.compile(r'flow-[a-z0-9]{1,16}-rf-[0-9a-f]{7}-s[0-2]')
+BUNDLE_ID = re.compile(r'flow-(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,14}[a-z0-9])?-rf-[0-9a-f]{7}-s[0-2]')
+
+
+def wm_refinement_paths(models):
+    """The CPU WM5 refiner loads exactly two members from each of two ensembles.
+
+    Require explicit absolute paths: archived source defaults otherwise point at
+    the snapshot's absent artifacts directory and are not dependency pins.
+    """
+    if not isinstance(models, (list, tuple)) or len(models) != 2 or any(
+            not isinstance(p, str) or not Path(p).is_absolute() for p in models):
+        raise ValueError('WM refinement needs two explicit absolute model directories (A and B)')
+    folders = [Path(p).resolve() for p in models]
+    if folders[0] == folders[1]:
+        raise ValueError('WM refinement needs distinct A and B model directories')
+    return [folder / f'member{i}.pt' for folder in folders for i in (0, 1)]
 
 
 def sha256(path):
@@ -61,10 +76,13 @@ def verify(root, *, deep=True):
         if current != manifest['src_files']:
             changed = sorted(set(current.items()) ^ set(manifest['src_files'].items()))
             problems.append(f'src tree differs from manifest ({len(changed)} entries), e.g. {changed[:2]}')
+    config = None
     if not (root / 'config.json').is_file():
         problems.append('missing config.json')
     elif sha256(root / 'config.json') != manifest['flow']['config_sha256']:
         problems.append('config.json hash mismatch')
+    else:
+        config = json.loads((root / 'config.json').read_text())
     for entry in manifest['artifacts'] + manifest['humanoid_lfh']['files'] + manifest['deploy']['files']:
         path = Path(entry['path'])
         if not path.is_file():
@@ -72,6 +90,22 @@ def verify(root, *, deep=True):
         elif path.stat().st_size != entry['bytes'] or (deep and sha256(path) != entry['sha256']):
             problems.append(f'hash mismatch {path}')
     pinned = {Path(a['path']).resolve() for a in manifest['artifacts']}
+    if config is not None:
+        arm = next((a for a in config.get('arms', []) if a['name'] == manifest['flow']['arm']), {})
+        planner = dict(config.get('planner_defaults', {}), **arm.get('planner', {}))
+        overrides = manifest.get('planner_overrides', {})
+        if planner.get('wm_refine') or overrides.get('wm_refine'):
+            try:
+                members = wm_refinement_paths(overrides.get('wm_refine_models'))
+                for member in members:
+                    if member.resolve() not in pinned:
+                        problems.append(f'unpinned WM refinement checkpoint {member}')
+                if overrides.get('wm_refine_device') != 'cpu':
+                    problems.append('WM refinement device must be pinned to cpu')
+                if overrides.get('wm_refine') is False:
+                    problems.append('WM refinement must not be disabled by bundle overrides')
+            except ValueError as error:
+                problems.append(str(error))
     for rel in ARTIFACT_LINKS:
         link = root / rel
         if not link.is_file():

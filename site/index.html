@@ -6,11 +6,11 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f4f5f7">
   <title>G1 Deploy Studio</title>
-  <meta name="description" content="A browser cockpit for deploying a learned navigation policy on a Unitree G1. Pick a goal on the robot's own LiDAR map, read Studio's checks, press Go, and watch recorded simulated walks of the deploy stack.">
+  <meta name="description" content="Learning from Hallucination for humanoid navigation. Explore motion-conditioned imagined scenes, watch recorded Unitree G1 walks, and inspect the gap between a whole-body plan and its execution.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://linjiw.github.io/g1-deploy-studio/">
   <meta property="og:title" content="G1 Deploy Studio">
-  <meta property="og:description" content="Rehearse the walk before the robot takes it. Try Navigate on recorded simulated walks of a Unitree G1 navigation stack.">
+  <meta property="og:description" content="Motion first. Imagine the world around it. Explore Learning from Hallucination and recorded whole-body navigation on a Unitree G1.">
   <meta property="og:image" content="https://linjiw.github.io/g1-deploy-studio/assets/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -28,18 +28,29 @@
 <header class="top">
   <a class="brand" href="#top"><span class="mark">G1</span><span>Deploy Studio</span></a>
   <nav aria-label="Sections">
-    <a href="#try">Demo</a><a href="#highlights">Highlights</a><a href="#atlas">Every walk</a><a href="#closer">Closer look</a><a href="#how">How it works</a><a href="#robot-day">Robot day</a><a href="#findings">Findings</a><a href="#faq">FAQ</a><a href="next/">Next step</a>
+    <a href="#showcase">Watch</a><a href="#learning" title="Learning from Hallucination">LfH</a><a href="#try">Demo</a><a href="#atlas">Every walk</a><a href="#how">How it works</a><a href="next/">Next step</a>
   </nav>
-  <details class="menu"><summary aria-label="Sections">Menu</summary><nav aria-label="Sections (menu)"><a href="#try">Demo</a><a href="#highlights">Highlights</a><a href="#atlas">Every walk</a><a href="#closer">Closer look</a><a href="#how">How it works</a><a href="#robot-day">Robot day</a><a href="#findings">Findings</a><a href="#faq">FAQ</a><a href="next/">Next step</a></nav></details>
+  <details class="menu"><summary aria-label="Sections">Menu</summary><nav aria-label="Sections (menu)"><a href="#showcase">Watch</a><a href="#research-film">Newer planner research film</a><a href="#learning">Learning from Hallucination</a><a href="#try">Demo</a><a href="#highlights">Highlights &amp; tour</a><a href="#atlas">Every walk</a><a href="#closer">Closer look</a><a href="#how">How it works</a><a href="#robot-day">Robot day</a><a href="#findings">Findings</a><a href="#faq">FAQ</a><a href="next/">Next step</a></nav></details>
   <a class="gh" href="https://github.com/linjiw/g1-deploy-studio">GitHub</a>
 </header>
 
 <main>
 <section id="top" class="hero">
-  <p class="eyebrow">Unitree G1 · learned navigation · simulation first</p>
-  <h1>Rehearse the walk before the robot takes it.</h1>
-  <p class="lede"><b>A browser cockpit for deploying a learned navigation policy on a humanoid.</b> It shows what the robot sees and where it plans to go, checks every goal before anyone presses Go, and never commands a motor.</p>
-  <div class="cta"><button class="button primary" data-start>Start the demo</button><a class="button ghost" href="#tour">Watch the tour · 9:44</a></div>
+  <p class="eyebrow"><span class="hero-signal" aria-hidden="true"></span> Learning from Hallucination · Unitree G1</p>
+  <h1>Imagine the scene.<br><span>Learn the way through.</span></h1>
+  <p class="lede">Start with whole-body motion. Build imagined worlds that fit it. Learn a planner that can move a humanoid through new spaces.</p>
+  <p class="hero-sub">Deploy Studio makes the next question visible: <b>does the body follow the plan?</b></p>
+  <div class="cta"><a class="button primary" href="#research-film">Watch the robot move <span aria-hidden="true">↘</span></a><button class="button ghost" data-start>Try it yourself <span aria-hidden="true">→</span></button></div>
+  <div class="hero-sequence" aria-label="From motion to execution"><span>Whole-body motion</span><i aria-hidden="true">→</i><span>Imagined scenes</span><i aria-hidden="true">→</i><span>Learned planner</span><i aria-hidden="true">→</i><span>SONIC tracking</span></div>
+  <p class="hero-evidence">Research in simulation · recorded playback in your browser · no motor commands</p>
+</section>
+
+<section id="showcase" class="showcase" aria-labelledby="showcase-title">
+  <div class="section-head showcase-head"><div><p class="eyebrow">See it move</p><h2 id="showcase-title">Start with a good run.</h2></div><p>Curated successes from the recorded deployment stack. Play a short film, then open the same walk and inspect it yourself.</p></div>
+  <div class="showcase-film"><div class="video"><video id="showcase-film" controls preload="none" playsinline poster="media/showcase/doorway-g18-14.jpg" aria-label="Three selected recorded simulated walks of the frozen Flow student and SONIC"><source src="media/showcase/highlights.mp4" type="video/mp4"><track kind="captions" src="media/showcase/highlights.vtt" srclang="en" label="English" default></video></div><div class="showcase-film-copy"><p class="eyebrow">The highlight film</p><h3>Three rooms.<br>One deploy stack.</h3><p>A guided camera follows the recorded body through a doorway, around a wall and into a cluttered room. The motion is the simulation's own output.</p><p class="fineprint">Frozen Flow student + SONIC · simulated LiDAR · MuJoCo. Selected successes; no physical-robot footage. Gray: executed body. Pink: planned reference. Captions included.</p><a href="#learning">How Learning from Hallucination fits in <span aria-hidden="true">↓</span></a></div></div>
+  <div class="showcase-grid" aria-live="polite"><p class="muted">Loading the recorded highlights…</p></div>
+  <div class="showcase-context"><p><span class="evidence-label">Recorded simulation</span> Frozen October 8 planner bundle <code>student-s2-kcsc</code> + SONIC, in MuJoCo. This is the planner bundle pinned for the public Navigate recordings.</p><a href="#atlas">See all <span data-showcase-count>recorded</span> Navigate walks <span aria-hidden="true">↘</span></a></div>
+  <details class="showcase-criteria"><summary>How these highlights were selected</summary><p>One walk each from the doorway, wall-detour and cluttered-room arenas. Eligible walks arrived cleanly, recorded <b>zero obstacle contact</b>, ended within <b>0.4 m by simulator truth</b> and lasted at most 20 seconds. In each room, choose the farthest goal; break ties by smaller final error, then goal ID. These are selected successes, not an average or a claim about the latest research policy. The <a href="#findings">complete outcome table and failures</a> remain available.</p></details>
 </section>
 
 <section id="try" class="slot" aria-label="Navigate demo">
@@ -58,11 +69,22 @@
   <p class="slot-note"><b>Recorded, simulated walks of the real deployment software.</b> A learned planner picks a path through what the robot has seen, a learned tracking controller turns it into joint targets, and the navigation node decides when a walk starts and ends. Goals snap to recorded ones on a 0.4 m grid. <a href="#faq">What this is, and is not</a>.</p>
 </section>
 
+<section id="learning" class="learning" aria-labelledby="learning-title">
+  <div class="section-head"><p class="eyebrow">The idea behind the planner</p><h2 id="learning-title">Motion first.<br>Imagine the world around it.</h2><p><b>Learning from Hallucination (LfH)</b> reverses the usual data-collection problem: take a feasible motion, then construct compatible obstacle scenes around it. This humanoid research applies that idea to the space swept by the whole body.</p></div>
+  <div id="lfh-explainer" class="lfh-explainer"><p class="muted">Explore how a motion becomes a training example, then a plan.</p></div>
+  <div class="lfh-context"><div><h3>Training imagination. Runtime observation.</h3><p>Here, the imagined scenes provide training context. At runtime the humanoid planner uses the supplied map, goal and motion history. The current research pipeline checks predicted execution and may refine the upper-body plan before sending a reference to SONIC. The public Navigate replays above use their explicitly identified frozen student bundle.</p></div><div><h3>Where the idea comes from</h3><p>LfH was introduced for robot navigation by Xiao, Liu, Warnell and Stone. The original method also hallucinates perception at deployment; the later HLSD work removes that step. Those papers establish the navigation idea; the whole-body adaptation shown here is this project's humanoid research.</p><p class="lfh-sources"><a href="https://www.cs.utexas.edu/~xiao/papers/hallucination.pdf">Original LfH paper ↗</a><a href="https://arxiv.org/abs/2010.08098">Hallucinated Learning &amp; Sober Deployment ↗</a></p></div></div>
+  <div id="research-film" class="research-film" aria-labelledby="research-film-title">
+    <div class="research-film-head"><p class="eyebrow">A newer whole-body planner · research replay</p><h3 id="research-film-title">Make room for the whole body.</h3><p>Watch a duck under an overhead obstacle and a walk through clutter, from the <b>WXD-TNP-R2 retrieval-free recipe</b>.</p></div>
+    <div class="research-film-layout"><div class="video"><video id="research-video" controls preload="none" playsinline poster="media/research/poster.jpg" aria-label="Two selected WXD-TNP-R2 development successes in Isaac simulation"><source src="media/research/highlights.mp4" type="video/mp4"><track kind="captions" src="media/research/highlights.vtt" srclang="en" label="English" default></video></div><div class="research-film-copy"><span class="evidence-label">Isaac + SONIC · recorded development runs</span><h4>Duck. Clear the clutter.</h4><dl class="research-cases"><div><dt>Under the obstacle</dt><dd><b>6.12 s</b> to arrival · <b>0 N</b> peak contact<br><b>0.363 m</b> final error</dd></div><div><dt>Through the clutter</dt><dd><b>10.02 s</b> to arrival · <b>0 N</b> peak contact<br><b>0.307 m</b> final error</dd></div></dl><p class="fineprint">All values from these two selected successful development recordings. Gray: executed body. Pink: planned reference.</p><a href="media/research/metadata.json">Recording details and provenance ↗</a></div></div>
+    <p class="research-setup"><b>Two setups, explicitly identified.</b> This research replay uses privileged scene geometry in Isaac simulation and its development arrival rule. The Navigate demo uses the frozen October 8 student, simulated LiDAR and MuJoCo. These selected cases show the newer planner's whole-body behavior; they are not an aggregate comparison between policies.</p>
+  </div>
+</section>
+
 <section id="highlights" class="band">
   <div class="section-head">
     <p class="eyebrow">Get the highlights</p>
     <h2 id="claim-highlights">Hundreds of walks. <span data-stat="arrived-claim">Most</span> arrived. Zero motor commands.</h2>
-    <p>Every number on this page is computed from the recordings in your browser, from the same files the demo plays.</p>
+    <p>These Navigate totals come from the same published recordings the interactive demo plays.</p>
   </div>
   <div class="highlights">
     <article class="hl"><b data-stat="walks">—</b><h3>recorded walks</h3><p>Five rooms. Each walk is a fresh simulated session of the deploy stack: boot at the start mark, one goal, Go, walk, stand.</p></article>
@@ -163,7 +185,7 @@
       <details><summary>What counts as contact?</summary><p><b>More than 100 N against an obstacle, at any moment.</b> The simulator's contact force between the robot and an obstacle. A walk is flagged when it exceeds 100 N at any frame<sup><a href="#fn-contact">2</a></sup>. The node's outcome does not see contact, so most such walks still "arrive".</p></details>
       <details><summary>What is the plan body?</summary><p><b>The pose the tracker is chasing.</b> The reference pose SONIC is tracking at each instant: 29 joint angles and an orientation, from the plan. Its pelvis position is the planner's and SONIC never receives it, so the body can fall behind or beside it<sup><a href="#fn-body">4</a></sup>. Turn it on in the demo with <kbd>B</kbd>.</p></details>
       <details><summary>Can I send it anywhere?</summary><p><b>Almost: to any recorded goal.</b> Goals snap to recorded ones on a 0.4 m grid, every walk starts from the start mark, and each goal was recorded once with one seed. Spots that fail Studio's checks show why; that is what Studio would refuse to send.</p></details>
-      <details><summary>What does this page cost to load?</summary><p><b>About 0.3 MB, then 1 MB for the demo.</b> Static files from GitHub Pages; nothing runs on a server. About 0.3 MB until you start something; about 1 MB for the demo (three.js, the robot, a room) and about 60 kB per walk. The video loads only when played.</p></details>
+      <details><summary>What does this page cost to load?</summary><p><b>Posters first. 3D and video on demand.</b> Static files from GitHub Pages; nothing runs on a server. The page starts with text, images and compact recording summaries. Starting the demo loads about 1 MB for three.js, the robot and a room, then about 60 kB per walk. Highlight films download only when played and pause when hidden or scrolled away.</p></details>
     </div>
     <ol class="footnotes" aria-label="Definitions">
       <li id="fn-arrived"><b>Arrived.</b> node.py's arrival rule: its own (LIO-level) pose estimate within the 0.4 m goal radius. The recording then ends when the robot stands still, or if it falls.</li>

@@ -18,10 +18,10 @@ import { initDeploy, enter as enterDeploy, leave as leaveDeploy, probe as probeD
 const state = {
   session: null, sessionId: null, frame: null, measuredFrame: null, frozenFrame: null, frameIndex: -1, time: 0,
   playing: false, speed: 1, loop: false, loading: false, loadGeneration: 0, runtime: null, liveStatus: null,
-  workspace: 'replay', live: null, catalog: null, robot: null, sessions: [],
+  workspace: 'replay', workspaceGeneration: 0, live: null, catalog: null, robot: null, sessions: [],
 };
 // Playback clock anchor (see tick): wall time and simulated time at the last re-anchor.
-let anchor = { wall: performance.now(), sim: 0, speed: 1 }, frameTimes = [];
+let anchor = { wall: performance.now(), sim: 0, speed: 1 }, frameTimes = [], playbackFrame = null, sessionController = null;
 let focus;
 let rehearsePreviewSuspensions = 0;
 state.freeze = on_ => { state.frozenFrame = on_ ? state.frame : null; renderFrame(true); };
@@ -37,7 +37,19 @@ const WORKSPACES = {
   system: { title: 'System', eyebrow: 'Pipeline · transports · Unitree contract', panel: 'system', stage: 'system' },
 };
 
-function showError(message) { $('error-banner').textContent = message; $('error-banner').hidden = false; clearTimeout(showError.t); showError.t = setTimeout(() => { $('error-banner').hidden = true; }, 9000); }
+function showError(message, retry = null) {
+  const banner = $('error-banner');
+  banner.textContent = message; banner.hidden = false; clearTimeout(showError.t);
+  if (retry) {
+    const button = document.createElement('button'); button.textContent = 'Retry'; button.id = 'retry-load';
+    button.addEventListener('click', retry); banner.append(' ', button);
+  } else showError.t = setTimeout(() => { banner.hidden = true; }, 9000);
+}
+function syncTransport() {
+  for (const id of ['play', 'restart', 'step-back', 'step-forward', 'timeline', 'speed', 'loop', 'copy-view'])
+    $(id).disabled = state.loading || !state.session;
+  $('loading-overlay').setAttribute('aria-busy', String(state.loading));
+}
 window.addEventListener('studio:error', e => showError(e.detail));
 on('workbench:error', message => { $('workbench-error').textContent = message; $('workbench-error').hidden = false; });
 on('workbench:clear', message => { if ($('workbench-error').textContent === message) $('workbench-error').hidden = true; });
@@ -60,6 +72,8 @@ async function refreshSessionList(selected) {
   const order = ['Navigation sessions', 'CPU rehearsals', 'Real-time rehearsals (L3)', 'Recordings'];
   $('session-picker').innerHTML = [...groups.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
     .map(([g, list]) => `<optgroup label="${escape(g)}">${list.map(sessionOption).join('')}</optgroup>`).join('');
+  $('session-picker').disabled = !sessions.some(s => s.available);
+  if (!sessions.length) $('session-picker').innerHTML = '<option value="">No recordings available</option>';
   if (selected && sessions.some(s => s.id === selected)) $('session-picker').value = selected;
   return sessions;
 }
@@ -72,12 +86,19 @@ function selectedFrame(time) {
 
 async function loadSession(id, { keepCamera = false } = {}) {
   const generation = ++state.loadGeneration;
+  sessionController?.abort();
+  const controller = sessionController = new AbortController();
   state.loading = true; setPlaying(false);
+  syncTransport();
   $('loading-overlay').hidden = false; $('error-banner').hidden = true;
   try {
-    const session = await request(`/api/session?id=${encodeURIComponent(id)}`, undefined, { cache: 'no-cache' });
+    const session = await request(`/api/session?id=${encodeURIComponent(id)}`, undefined, { cache: 'no-cache', signal: controller.signal });
     if (generation !== state.loadGeneration) return false;
     if (session.schema_version !== 1 || !session.frames?.length) throw new Error('Unsupported or empty recording. Expected telemetry schema v1.');
+    if (!session.metadata || !finite(session.metadata.duration_s) || !finite(session.frames[0].time)) throw new Error('Recording timing is unavailable.');
+    // Keep the last recording and its labels together until the replacement scene is ready.
+    const built = await scene.loadSessionScene(session, id, () => generation === state.loadGeneration);
+    if (!built || generation !== state.loadGeneration) return false;
     Object.assign(state, { session, sessionId: id, time: session.frames[0].time, frameIndex: -1, frame: null, measuredFrame: null,
       frozenFrame: null, runtime: null, liveStatus: null });
     inspector.jointsSession = null;
@@ -102,8 +123,6 @@ async function loadSession(id, { keepCamera = false } = {}) {
     $('playback-state').textContent = ['simulation', 'live'].includes(m.mode) ? 'Live' : 'Paused';
     setTimelineSession(session);
     renderFrame(true);
-    const built = await scene.loadSessionScene(session, id, () => generation === state.loadGeneration);
-    if (!built || generation !== state.loadGeneration) return false;
     $('loading-overlay').hidden = true;
     // Navigation runs open on the full scene; others on the robot (review UX-2).
     if (!keepCamera) cameraView(m.goal_xy ? 'scene' : 'orbit', true);
@@ -117,13 +136,15 @@ async function loadSession(id, { keepCamera = false } = {}) {
     return true;
   } catch (error) {
     if (generation === state.loadGeneration) {
-      $('loading-overlay').hidden = true; showError(`Cannot open this recording: ${error.message}`); console.error(error);
+      $('loading-overlay').hidden = true;
+      showError(`Cannot open this recording: ${error.message}${state.session ? ' The previous recording is still open.' : ''}`, () => loadSession(id, { keepCamera }));
+      if (!state.session) { $('session-title').textContent = 'Recording unavailable'; $('source-badge').textContent = 'UNAVAILABLE'; $('source-badge').className = 'chip chip-unavailable'; }
       // The picker names what the view shows, never the recording that failed to open (validation D3).
       if (state.sessionId && [...$('session-picker').options].some(o => o.value === state.sessionId)) $('session-picker').value = state.sessionId;
     }
     return false;
   } finally {
-    if (generation === state.loadGeneration) state.loading = false;
+    if (generation === state.loadGeneration) { state.loading = false; syncTransport(); }
   }
 }
 
@@ -258,6 +279,7 @@ function updateHud(sample) {
 const svg = d => `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">${d}</svg>`;
 const PLAY_ICON = svg('<path d="m8 5 11 7-11 7z"/>'), PAUSE_ICON = svg('<rect x="7" y="5" width="3.6" height="14" rx="1"/><rect x="13.4" y="5" width="3.6" height="14" rx="1"/>');
 function setPlaying(value) {
+  value = !!value && !!state.session && !state.loading;
   // Pausing lands on the wall-clock time of the pause, not on the last rendered frame.
   const landing = !value && state.playing && state.session && !state.loading;
   if (landing) state.time = Math.min(state.session.metadata.duration_s, anchor.sim + (performance.now() - anchor.wall) / 1000 * anchor.speed);
@@ -268,6 +290,7 @@ function setPlaying(value) {
   updateView({ play: value ? '1' : null });
   if (value && scene.view.camera_mode === 'scene' && state.session?.metadata?.goal_xy) cameraView('follow', true);
   reanchor();
+  schedulePlayback();
   if (!value) $('render-rate').hidden = true;
   if (landing) renderFrame();
 }
@@ -284,8 +307,14 @@ function step(ticks) { setPlaying(false); seek(state.time + ticks * 0.02 + 1e-6)
 // the tab becomes visible), so 1x is real time at any frame rate; slow rendering only drops
 // frames, which the render-rate badge reports, and never slows simulated time.
 function reanchor() { anchor = { wall: performance.now(), sim: state.time, speed: state.speed }; frameTimes = []; }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) reanchor(); });
+function schedulePlayback() {
+  if (state.playing && !state.loading && !document.hidden) {
+    if (playbackFrame === null) playbackFrame = requestAnimationFrame(tick);
+  } else if (playbackFrame !== null) { cancelAnimationFrame(playbackFrame); playbackFrame = null; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) reanchor(); schedulePlayback(); });
 function tick(now) {
+  playbackFrame = null;
   if (state.playing && state.session && !state.loading) {
     if (anchor.speed !== state.speed) reanchor();
     state.time = Math.min(state.session.metadata.duration_s, anchor.sim + (now - anchor.wall) / 1000 * state.speed);
@@ -303,7 +332,7 @@ function tick(now) {
       else setPlaying(false);
     }
   }
-  requestAnimationFrame(tick);
+  schedulePlayback();
 }
 
 function markCamera(kind) {
@@ -624,6 +653,7 @@ setTokenRefresher(async () => { const fresh = await request('/api/workbench'); s
 
 async function setWorkspace(name, { preserveScene = false } = {}) {
   if (!WORKSPACES[name]) name = 'replay';
+  const generation = ++state.workspaceGeneration;
   const ws = WORKSPACES[name], previous = state.workspace;
   state.workspace = name;
   for (const key of Object.keys(WORKSPACES)) document.body.classList.toggle(`ws-${key}`, key === name);
@@ -659,13 +689,16 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
   try {
     if (name === 'arena') {
       const catalog = await ensureCatalog();
+      if (generation !== state.workspaceGeneration) return;
       if (!arena.canvas) initArena($('arena-canvas'), catalog); else { arena.catalog = catalog; renderArenaPanel(); }
       arena.active_workspace = true;
       requestAnimationFrame(() => fitArena());
     } else arena.active_workspace = false;
     if (name === 'rehearse') {
       const catalog = await ensureCatalog();
+      if (generation !== state.workspaceGeneration) return;
       if (!rh.catalog) await initRehearse(catalog); else renderRehearse();
+      if (generation !== state.workspaceGeneration) return;
       if (!rh.attached) emit('rehearse:preview', previewMarkers());
     }
     if (name === 'navigate') {
@@ -673,10 +706,12 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
       const stale = state.catalog && Date.now() - (state.catalogAt ?? 0) > 300;
       if (stale) state.catalog = null;
       const catalog = await ensureCatalog();
+      if (generation !== state.workspaceGeneration) return;
       if (stale) emit('catalog:refreshed', catalog);
       catalog.nav_options ??= await request('/api/nav/options').catch(() => null);
+      if (generation !== state.workspaceGeneration) return;
       if (!nav.catalog) await initNavigate(catalog); else { nav.catalog = catalog; renderNavigate(); }
-      if (state.workspace !== 'navigate') return;
+      if (generation !== state.workspaceGeneration) return;
       scene.view.onPick = xy => pickGoal(xy);
       navLayers(true);
       scene.setNavOverlay(navOverlay());
@@ -684,6 +719,7 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
     }
     if (name === 'runs') {
       const catalog = await ensureCatalog();
+      if (generation !== state.workspaceGeneration) return;
       if (!runs.canvas) initRuns($('runs-canvas'), catalog.maps);
       await refreshRuns();
       requestAnimationFrame(() => drawCompare());
@@ -696,9 +732,9 @@ async function setWorkspace(name, { preserveScene = false } = {}) {
       const id = state.defaultSession; state.defaultSession = null;
       $('session-picker').value = id; await loadSession(id);
     }
-  } catch (error) { emit('workbench:error', error.message); }
+  } catch (error) { if (generation === state.workspaceGeneration) emit('workbench:error', error.message); }
   finally { if (preserving) rehearsePreviewSuspensions--; }
-  emit('workspace', name);
+  if (generation === state.workspaceGeneration) emit('workspace', name);
 }
 
 async function renderSystem() {
@@ -723,14 +759,23 @@ function buildLegend() {
     ${Object.entries(EVIDENCE).map(([k, e]) => `<div class="legend-row">${chip(k)}<span>${escape(e.tip)}</span></div>`).join('')}
     <p class="tiny">CPU lockstep pauses physics while the planner runs. Success in Studio is a simulation result, never hardware readiness.</p>`;
 }
-function closePopovers(except = null) {
-  document.querySelectorAll('.popover').forEach(p => { if (p.id !== except) p.hidden = true; });
-  document.querySelectorAll('[aria-expanded][aria-controls]').forEach(b => { if (b.getAttribute('aria-controls') !== except && document.getElementById(b.getAttribute('aria-controls'))?.classList.contains('popover')) b.setAttribute('aria-expanded', 'false'); });
+function closePopovers(except = null, restoreFocus = false) {
+  document.querySelectorAll('.popover').forEach(p => {
+    if (p.id === except) return;
+    if (!p.hidden && restoreFocus) document.querySelector(`[aria-controls="${p.id}"]`)?.focus();
+    p.hidden = true;
+  });
+  document.querySelectorAll('[aria-expanded][aria-controls]').forEach(b => {
+    const target = $(b.getAttribute('aria-controls'));
+    if (target?.classList.contains('popover') && target.id !== except) b.setAttribute('aria-expanded', 'false');
+  });
 }
 function togglePopover(id, button) {
   const node = $(id), open = node.hidden;
   closePopovers(id);
   node.hidden = !open; button?.setAttribute('aria-expanded', String(open));
+  if (open) { node.tabIndex = -1; (node.querySelector('input:not(:disabled), button:not(:disabled), a[href]') ?? node).focus(); }
+  else button?.focus();
 }
 // The inspector is a drawer from 1024 to 1279 px, and up to 1599 px in Navigate, where the map needs the room.
 function updateDrawerMode() {
@@ -752,20 +797,42 @@ function initInspectorResize() {
   let saved = 0;
   try { saved = Number(localStorage.getItem('studio.inspector') ?? 0); } catch { /* storage unavailable: keep default width */ }
   if (saved >= 280 && saved <= 720) document.documentElement.style.setProperty('--inspector-w', `${saved}px`);
-  handle.addEventListener('pointerdown', e => { start = { x: e.clientX, w: document.querySelector('.inspector').getBoundingClientRect().width }; handle.setPointerCapture(e.pointerId); });
+  handle.setAttribute('aria-valuemin', '280'); handle.setAttribute('aria-valuemax', '720');
+  const setWidth = value => {
+    const w = Math.max(280, Math.min(720, value));
+    document.documentElement.style.setProperty('--inspector-w', `${w}px`);
+    handle.setAttribute('aria-valuenow', String(Math.round(w)));
+    return w;
+  };
+  const saveWidth = () => { try { localStorage.setItem('studio.inspector', handle.getAttribute('aria-valuenow')); } catch { /* storage optional */ } };
+  handle.setAttribute('aria-valuenow', String(saved >= 280 && saved <= 720 ? saved : 372));
+  handle.addEventListener('keydown', e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault(); e.stopPropagation();
+    const w = Number(handle.getAttribute('aria-valuenow'));
+    setWidth(e.key === 'Home' ? 280 : e.key === 'End' ? 720 : w + (e.key === 'ArrowLeft' ? 20 : -20)); saveWidth();
+  });
+  handle.addEventListener('pointerdown', e => { if (e.button !== 0) return; start = { x: e.clientX, w: document.querySelector('.inspector').getBoundingClientRect().width }; handle.setPointerCapture(e.pointerId); });
   handle.addEventListener('pointermove', e => {
     if (!start) return;
-    const w = Math.max(280, Math.min(720, start.w + start.x - e.clientX));
-    document.documentElement.style.setProperty('--inspector-w', `${w}px`);
+    setWidth(start.w + start.x - e.clientX);
   });
-  handle.addEventListener('pointerup', () => { if (start) { try { localStorage.setItem('studio.inspector', String(parseInt(getComputedStyle(document.documentElement).getPropertyValue('--inspector-w'), 10))); } catch { /* storage optional */ } } start = null; });
+  handle.addEventListener('pointerup', () => { if (start) saveWidth(); start = null; });
+  handle.addEventListener('pointercancel', () => { start = null; });
+  handle.addEventListener('lostpointercapture', () => { start = null; });
 }
 
 function onKey(e) {
+  if (e.defaultPrevented) return;
+  if (e.key === 'Escape' && document.querySelector('.popover:not([hidden])')) { e.preventDefault(); closePopovers(null, true); return; }
   if (state.workspace === 'deploy' && deployKey(e)) return;
   if (focus?.handleKey(e)) return;
   if (e.key === 'Escape' && document.body.classList.contains('show-inspector')) { setInspectorDrawer(false); $('inspector-toggle').focus(); return; }
-  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+  const focused = document.activeElement;
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(focused?.tagName) || focused?.isContentEditable || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (focused?.closest('.popover')) return;
+  // Space on a focused control belongs to that control's native activation.
+  if (e.key === ' ' && focused?.closest('button, a[href], summary, [role="button"]')) return;
   if (state.workspace === 'arena' && e.key !== '?') return;  // the arena editor owns the keyboard
   const k = e.key;
   if (k === ' ') { e.preventDefault(); $('play').click(); }
@@ -835,11 +902,13 @@ function bindChrome() {
 
 async function initialize() {
   const view = new URLSearchParams(location.search);
+  syncTransport();
   try {
     scene.initScene($('viewport'), { onPick: null });
-  } catch (error) { showError(`3D renderer could not start: ${error.message}`); $('loading-overlay').hidden = true; return; }
+  } catch (error) { showError(`3D renderer could not start: ${error.message}`, () => location.reload()); $('loading-overlay').hidden = true; return; }
   initTimeline({ onSeek: t => { setPlaying(false); seek(t); } });
   initSensors(); buildLegend(); initInspectorResize(); bindChrome();
+  syncTransport();
   // Notes, popovers and chips that float under the title row follow its height (it wraps on narrow stages).
   new ResizeObserver(([entry]) => $('viewport-shell').style.setProperty('--vp-top-h', `${Math.ceil(entry.target.getBoundingClientRect().height)}px`)).observe(document.querySelector('.vp-top'));
   focus = initFocus({ state, scene, rh, setWorkspace, setPlaying, seek, cameraView, previewMarkers, sampleHealth });
@@ -850,7 +919,6 @@ async function initialize() {
   const deployFirst = view.get('workspace') === 'deploy' || (!view.has('session') && !view.has('workspace') ? probeDeploy().catch(() => false) : false);
   $('focus-details-close').addEventListener('click', () => setInspectorDrawer(false));
   $('focus-enter').addEventListener('click', () => setInspectorDrawer(false));
-  requestAnimationFrame(tick);
   request('/api/version').then(v => { $('build-info').textContent = `build ${v.commit ? v.commit.slice(0, 7) : 'unknown'}${v.dirty ? ' · modified tree' : ''}`; $('build-info').title = v.describe ?? ''; }).catch(() => {});
   window.__studio = {
     get state() { return state; }, get model() { return scene.view.model; }, get robot() { return scene.view.robot; },
@@ -864,29 +932,43 @@ async function initialize() {
     get navigate() { return nav; }, pickGoal, get navOverlay() { return scene.view.navGroup?.children.length ?? 0; },
     get focus() { return focus; },
   };
+  await openInitialRecording(view);
+}
+
+async function openInitialRecording(view) {
+  let sessionDispatched = false;
+  $('error-banner').hidden = true;
+  $('loading-overlay').hidden = false;
+  state.loading = true; syncTransport();
   try {
     const sessions = (await refreshSessionList()) ?? [];
     const requested = view.get('session');
-    if (!sessions.some(s => s.available) && !sessions.some(s => s.id === requested)) {
+    if (!sessions.some(s => s.available)) {
       // A new machine has nothing recorded yet. That is not an error: say where recordings come from and open
       // Navigate (or the linked workspace) to make the first one.
       $('loading-overlay').hidden = true; $('no-recordings').hidden = false;
       $('session-title').textContent = 'No recordings yet';
-      $('session-picker').insertAdjacentHTML('afterbegin', '<option value="" selected disabled>No recordings yet</option>');
+      $('session-picker').innerHTML = '<option value="" selected disabled>No recordings yet</option>';
+      $('source-badge').textContent = 'Unavailable'; $('source-badge').className = 'chip chip-unavailable';
+      if (!$('refresh-recordings')) {
+        const retry = document.createElement('button'); retry.id = 'refresh-recordings'; retry.textContent = 'Refresh recordings';
+        retry.addEventListener('click', () => openInitialRecording(view)); $('no-recordings').append(retry);
+      }
       await setWorkspace(view.get('workspace') || ((await deployFirst) ? 'deploy' : 'navigate'));
       return;
     }
     const firstJob = [...sessions].filter(s => s.group === 'CPU rehearsals' && s.available && s.outcome)
       .sort((a, b) => (b.started_unix_s ?? 0) - (a.started_unix_s ?? 0))[0];
-    const selected = sessions.some(s => s.id === requested) ? requested : (firstJob ?? sessions.find(s => s.available)).id;
+    const selected = sessions.some(s => s.id === requested && s.available) ? requested : (firstJob ?? sessions.find(s => s.available)).id;
     $('session-picker').value = selected;
     if (await deployFirst) {
       state.defaultSession = selected; $('loading-overlay').hidden = true;
       await setWorkspace('deploy');
       return;
     }
+    sessionDispatched = true;
     if (!(await loadSession(selected))) return;
-    if (requested && requested !== selected) return;
+    if (requested && requested !== selected) showError('The linked recording is unavailable. Opened an available recording instead.');
     // View links configure this browser only; they never start a worker.
     const panel = view.get('panel');
     if ([...document.querySelectorAll('[data-tab]')].some(b => b.dataset.tab === panel)) selectTab(panel, state);
@@ -906,8 +988,10 @@ async function initialize() {
     }
     if (view.get('play') === '1') setPlaying(true);
     if (view.get('focus') === '1') await focus.enter();
-  } catch (error) { showError(error.message); $('loading-overlay').hidden = true; }
-  finally { state.ready = true; }  // tests wait for this, with or without a recording
+  } catch (error) {
+    showError(error.message, () => openInitialRecording(view)); $('loading-overlay').hidden = true;
+    if (!state.session) { $('session-title').textContent = 'No recording open'; $('source-badge').textContent = 'UNAVAILABLE'; $('source-badge').className = 'chip chip-unavailable'; $('playback-state').textContent = 'UNAVAILABLE'; }
+  } finally { if (!sessionDispatched) state.loading = false; syncTransport(); state.ready = true; }
 }
 $('no-recordings-open').addEventListener('click', () => setWorkspace('navigate'));
 initialize();

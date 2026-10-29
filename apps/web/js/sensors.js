@@ -3,7 +3,7 @@ import { $, escape, num, vector, fact, finite, request, chip, updateView, yawOf 
 import { setSensorOverlay, removeSensorOverlay } from './scene.js';
 import { UI, SERIES } from './palette.js';
 
-export const sn = { data: null, pinned: new Set(), inflight: false, pending: false, time: null, session: null, lastFetch: 0, visible: false };
+export const sn = { data: null, pinned: new Set(), inflight: false, pending: false, time: null, session: null, lastFetch: 0, visible: false, error: null, retryAt: 0 };
 
 const CLASS_EVIDENCE = { 'simulator-ground-truth': 'sim-truth', 'simulator-commanded': 'commanded', estimated: 'estimated', commanded: 'commanded',
   measured: 'measured', observed_scan: 'measured', recorded: 'recorded', configured: 'configured' };
@@ -24,6 +24,8 @@ function payloadView(sensor) {
 }
 
 function card(sensor, pinned = false) {
+  // Never present a previously fresh sample as current after a failed refresh.
+  if (sn.error) sensor = { ...sensor, available: false, status: 'unavailable', reason: 'Sensor refresh failed. The last sample is hidden until the connection recovers.' };
   const available = sensor.available ?? (!['unavailable', 'missing'].includes(sensor.status) && !!sensor.payload);
   const tone = !available ? 'missing' : sensor.status === 'fresh' ? 'available' : 'unknown';
   return `<article class="sensor-card ${pinned ? 'pinned' : ''}" data-sensor-card="${escape(sensor.id)}">
@@ -32,7 +34,7 @@ function card(sensor, pinned = false) {
     ${available ? payloadView(sensor) : `<p class="sensor-reason">${escape(sensor.reason ?? 'This source was not captured.')}</p>`}
     ${available ? fact('Age / rate', `${num(sensor.age_ms, 0, 'ms')} / ${num(sensor.rate_hz, 1, 'Hz')}`) : ''}
     ${pinned ? '' : `<details><summary>Frame & provenance</summary>${fact('Frame', sensor.frame_id)}${fact('Clock', sensor.source_clock ?? sensor.source_clock_domain)}${fact('Source time', num(sensor.source_time, 3, 's'))}<pre>${escape(JSON.stringify({ extrinsics: sensor.extrinsics, provenance: sensor.provenance }, null, 1))}</pre></details>`}
-    <button class="sensor-pin" data-pin-sensor="${escape(sensor.id)}" ${!available && !pinned ? 'disabled' : ''}>${sn.pinned.has(sensor.id) ? 'Unpin' : 'Pin to viewport'}</button></article>`;
+    <button class="sensor-pin" data-pin-sensor="${escape(sensor.id)}" aria-label="${sn.pinned.has(sensor.id) ? 'Unpin' : 'Pin'} ${escape(sensor.label)}" aria-pressed="${sn.pinned.has(sensor.id)}" ${!available && !pinned ? 'disabled' : ''}>${sn.pinned.has(sensor.id) ? 'Unpin' : 'Pin to viewport'}</button></article>`;
 }
 
 function preview(canvas, sensor, state) {
@@ -59,11 +61,14 @@ function preview(canvas, sensor, state) {
 }
 
 export function renderSensors(state) {
+  // Polling replaces cards; preserve the user's place and keyboard target.
+  const active = document.activeElement, focusedCard = active?.closest('[data-sensor-card]');
+  const focus = focusedCard ? { id: focusedCard.dataset.sensorCard, dock: !!active.closest('#sensor-dock'), selector: active.matches('[data-pin-sensor]') ? '[data-pin-sensor]' : active.matches('summary') ? 'summary' : null } : null;
   const sensors = sn.data?.sensors ?? [];
   const panel = $('sensors-panel');
   if (panel && sn.visible) {
     const open = [...panel.querySelectorAll('[data-sensor-card] details[open]')].map(n => n.closest('[data-sensor-card]').dataset.sensorCard);
-    panel.innerHTML = sn.data ? `<p class="tiny">Causal samples at ${num(sn.data.cursor_s, 3, 's')}. Pin up to three views below the viewport; point clouds also overlay the 3D scene when their frame matches. Unavailable sources stay listed with the reason.</p>
+    panel.innerHTML = sn.error ? `<div class="panel-section"><div class="callout warning" role="status"><strong>Sensor samples unavailable</strong><p>${escape(sn.error)}</p><button id="sensors-retry">Retry sensors</button></div></div><div class="sensor-grid">${sensors.map(s => card(s)).join('')}</div>` : sn.data ? `<p class="tiny">Causal samples at ${num(sn.data.cursor_s, 3, 's')}. Pin up to three views below the viewport; point clouds also overlay the 3D scene when their frame matches. Unavailable sources stay listed with the reason.</p>
       <div class="sensor-grid">${sensors.map(s => card(s)).join('')}</div>` : '<p class="tiny">Loading causal sensor samples…</p>';
     for (const id of open) panel.querySelector(`[data-sensor-card="${CSS.escape(id)}"] details`)?.setAttribute('open', '');
   }
@@ -72,10 +77,10 @@ export function renderSensors(state) {
   dock.hidden = !pinned.length;
   dock.innerHTML = pinned.map(s => card(s, true)).join('');
   document.body.classList.toggle('has-sensor-dock', pinned.length > 0);
-  for (const s of pinned) setSensorOverlay(s);
+  for (const s of pinned) { if (sn.error) removeSensorOverlay(s.id); else setSensorOverlay(s); }
   document.querySelectorAll('[data-sensor-preview]').forEach(c => preview(c, sensors.find(s => s.id === c.dataset.sensorPreview), state));
   // Bind only the freshly rendered buttons of this panel and the dock (no duplicate handlers).
-  [panel, dock].filter(Boolean).flatMap(root => [...root.querySelectorAll('[data-pin-sensor]')]).forEach(b => b.addEventListener('click', () => {
+  [sn.visible ? panel : null, dock].filter(Boolean).flatMap(root => [...root.querySelectorAll('[data-pin-sensor]')]).forEach(b => b.addEventListener('click', () => {
     const id = b.dataset.pinSensor;
     if (sn.pinned.has(id)) { sn.pinned.delete(id); removeSensorOverlay(id); }
     else if (sn.pinned.size >= 3) { window.dispatchEvent(new CustomEvent('studio:error', { detail: 'Unpin a view first: the viewport holds three sensor cards.' })); return; }
@@ -83,31 +88,42 @@ export function renderSensors(state) {
     updateView({ pin: sn.pinned.size ? [...sn.pinned].join(',') : null });
     renderSensors(state);
   }));
+  if (sn.visible) $('sensors-retry')?.addEventListener('click', () => refreshSensors(state, true));
+  if (focus?.selector) {
+    const host = focus.dock ? dock : panel;
+    const target = host?.querySelector(`[data-sensor-card="${CSS.escape(focus.id)}"] ${focus.selector}`);
+    if (target && !target.disabled) target.focus({ preventScroll: true });
+  }
 }
 
 export async function refreshSensors(state, force = false) {
   if (!state?.sessionId) return;
   if (sn.inflight) { sn.pending = true; return; }
+  if (!force && Date.now() < sn.retryAt) return;
   if (!force && !sn.visible && !sn.pinned.size) return;
-  if (!force && sn.session === state.sessionId && finite(sn.time) && Math.abs(sn.time - state.time) < (state.playing ? 0.09 : 1e-9)) return;
+  if (!force && !sn.error && sn.session === state.sessionId && finite(sn.time) && Math.abs(sn.time - state.time) < (state.playing ? 0.09 : 1e-9)) return;
   sn.inflight = true;
   const id = state.sessionId, time = state.time;
   try {
     const data = await request(`/api/sensors?session=${encodeURIComponent(id)}&time=${encodeURIComponent(time)}`);
     if (state.sessionId !== id) return;
+    sn.error = null; sn.retryAt = 0;
     sn.data = data; sn.time = time; sn.session = id;
     renderSensors(state);
   } catch (error) {
-    if (sn.visible) window.dispatchEvent(new CustomEvent('studio:error', { detail: error.message }));
+    if (state.sessionId !== id) return;
+    sn.error = error.message; sn.retryAt = Date.now() + 3000;
+    for (const sensorId of sn.pinned) removeSensorOverlay(sensorId);
+    renderSensors(state);
   } finally {
     sn.inflight = false;
-    if (sn.pending || state.sessionId !== id || (!state.playing && Math.abs(state.time - time) > 1e-9)) { sn.pending = false; refreshSensors(state, true); }
+    if (sn.pending || state.sessionId !== id || (!state.playing && Math.abs(state.time - time) > 1e-9)) { sn.pending = false; refreshSensors(state, state.sessionId !== id); }
   }
 }
 
 export function resetSensors() {
   for (const id of sn.pinned) removeSensorOverlay(id);
-  sn.data = null; sn.session = null; sn.time = null;
+  sn.data = null; sn.session = null; sn.time = null; sn.error = null; sn.retryAt = 0;
   $('sensor-dock').hidden = true;
 }
 

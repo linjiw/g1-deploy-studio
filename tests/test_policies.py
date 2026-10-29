@@ -389,6 +389,63 @@ class BuildPolicyBundleTests(CacheIsolation):
         self.assertIn('not tch_s0', self.build(arm, block='ABC'))
         self.assertIn('--block', self.build(dict(arm, planner={'run': '/x/tch_s0'}), block='AB C'))
 
+    def test_refinement_refuses_implicit_or_invalid_paths_before_writing(self):
+        arm = {'name': 'R2-s0', 'planner': {'run': '/x/tch_s0', 'wm_refine': True},
+               'gate_side': {'level': {'retrieval_k': 0}}}
+        self.assertIn('--wm-refine-models', self.build(arm, block='WXD-TNP-R2'))
+        for models in (['A', 'B'], ['/same', '/same'], ['/one'], '/one'):
+            with self.subTest(models=models):
+                self.assertIn('WM refinement', self.build(arm, block='WXD-TNP-R2', wm_refine_models=models))
+
+    def test_refinement_builder_pins_four_real_files_and_explicit_cpu_paths(self):
+        import io
+        import tarfile
+        from tools import build_policy_bundle as bpb
+        # The complete build uses only synthetic source and artifacts.
+        _, existing = write_bundle(self.base / 'fixture')
+        external = Path(existing['artifacts'][0]['path']).parent.parent
+        teacher = external / 'teacher_s0'
+        teacher.mkdir()
+        (teacher / 'model.pt').write_bytes(b'teacher')
+        (teacher / 'receipt.json').write_text('{}')
+        (external / 'wm/member0.pt').write_bytes(b'wm2')
+        (external / 'wm/train_log.json').write_text('{}')
+        models = [external / 'wm5/A', external / 'wm5/B']
+        for folder in models:
+            folder.mkdir(parents=True)
+            for i in (0, 1):
+                (folder / f'member{i}.pt').write_bytes(f'{folder.name}-{i}'.encode())
+        arm = {'name': 'R2-s0', 'planner': {'run': str(teacher), 'exec_model': str(external / 'wm'), 'wm_refine': True},
+               'gate_side': {'level': {'retrieval_k': 0}}}
+        config = json.dumps({'arms': [arm], 'planner_defaults': {'candidates': 16, 'ode_steps': 10}}).encode()
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode='w') as tar:
+            item = tarfile.TarInfo('src/motion2scene_flow/__init__.py')
+            item.size = 4
+            tar.addfile(item, io.BytesIO(b'x=1\n'))
+
+        def git(repo, *args, binary=False):
+            if args[0] == 'show':
+                return config
+            if args[0] == 'archive':
+                return archive.getvalue()
+            return '1234567' + '0' * 33
+        with patch.multiple(bpb, git=git, POLICY_ROOT=self.base / 'built', FLOW=external / 'flow',
+                            LFH=external / 'lfh', DEPLOY=external / 'deploy',
+                            LFH_FILES=['bridge.py'], DEPLOY_FILES=['sonic.onnx']):
+            root, manifest = bpb.build('1234567', 'configs/r2.json', 'R2-s0', 'teacher_s0', block='WXD-TNP-R2',
+                                       wm_refine_models=[str(p) for p in models])
+        self.assertEqual(root.name, 'flow-wxd-tnp-r2-rf-1234567-s0')
+        self.assertEqual(manifest['planner_overrides'], {'device': 'cpu', 'wm_refine_device': 'cpu',
+                                                        'wm_refine_models': [str(p) for p in models]})
+        pins = [a for a in manifest['artifacts'] if a['role'] == 'WM-v5 refinement member']
+        self.assertEqual(len(pins), 4)
+        self.assertEqual({p['sha256'] for p in pins}, {sha(f'{f.name}-{i}'.encode()) for f in models for i in (0, 1)})
+        # Extra checkpoints are deliberately refused, including those that predate the build.
+        self.assertTrue(any('unpinned checkpoint files' in p for p in pb.verify(root)))
+        (external / 'wm/ensemble.pt').unlink()
+        self.assertEqual(pb.verify(root), [])
+
 
 class BundleVerifyTests(CacheIsolation):
     def setUp(self):
@@ -452,6 +509,35 @@ class BundleVerifyTests(CacheIsolation):
         (self.root / pb.ARTIFACT_LINKS[1]).unlink()
         self.assertEqual(pb.verify(self.root), [f'missing planner artifact link {pb.ARTIFACT_LINKS[1]}'])
 
+    def test_refinement_verification_rejects_missing_or_redirected_dependency_pins(self):
+        config = {'arms': [{'name': 'wx-rf', 'planner': {'wm_refine': True}}]}
+        blob = json.dumps(config).encode()
+        (self.root / 'config.json').write_bytes(blob)
+        self.manifest['flow']['config_sha256'] = sha(blob)
+        self.manifest['planner_overrides'] = {'device': 'cpu', 'wm_refine_device': 'cpu'}
+
+        def verify():
+            (self.root / 'manifest.json').write_text(json.dumps(self.manifest))
+            return pb.verify(self.root)
+        self.assertTrue(any('two explicit absolute' in p for p in verify()))
+        models = [self.base / 'refine/A', self.base / 'refine/B']
+        for folder in models:
+            folder.mkdir(parents=True)
+            for i in (0, 1):
+                path = folder / f'member{i}.pt'
+                path.write_bytes(b'wm5')
+                self.manifest['artifacts'].append({'path': str(path), 'sha256': sha(b'wm5'), 'bytes': 3, 'role': 'WM-v5 refinement member'})
+        self.manifest['planner_overrides']['wm_refine_models'] = [str(p) for p in models]
+        self.assertEqual(verify(), [])
+        removed = self.manifest['artifacts'].pop()
+        self.assertTrue(any('unpinned WM refinement checkpoint' in p for p in verify()))
+        self.manifest['artifacts'].append(removed)
+        self.manifest['planner_overrides']['wm_refine_device'] = 'cuda'
+        self.assertIn('WM refinement device must be pinned to cpu', verify())
+        self.manifest['planner_overrides']['wm_refine_device'] = 'cpu'
+        self.manifest['planner_overrides']['wm_refine_models'][0] = str(self.base / 'unlisted')
+        self.assertTrue(any('unpinned WM refinement checkpoint' in p for p in verify()))
+
     def test_unreadable_or_unsupported_manifest(self):
         manifest = self.root / 'manifest.json'
         manifest.write_text(json.dumps(dict(self.manifest, schema_version=2)))
@@ -476,8 +562,10 @@ class BundleVerifyTests(CacheIsolation):
         self.assertEqual(pb.bundle_path('flow-wx-rf-23326aa-s0', root=self.base), self.base / 'flow-wx-rf-23326aa-s0')
         self.assertEqual(pb.bundle_path('flow-wx-rf-0123456-s2'), pb.POLICY_ROOT / 'flow-wx-rf-0123456-s2')
         self.assertEqual(pb.bundle_path('flow-abc-rf-1234567-s0'), pb.POLICY_ROOT / 'flow-abc-rf-1234567-s0')
+        self.assertEqual(pb.bundle_path('flow-wxd-tnp-r2-rf-1234567-s0'), pb.POLICY_ROOT / 'flow-wxd-tnp-r2-rf-1234567-s0')
         for bad in ('flow-ABC-rf-1234567-s0', 'flow-a.bc-rf-1234567-s0', 'flow--rf-1234567-s0', 'flow-abc-1234567-s0',
-                    'flow-abcdefghijklmnopq-rf-1234567-s0', 'flow-wx/../x-rf-1234567-s0'):
+                    'flow-abcdefghijklmnopq-rf-1234567-s0', 'flow-wx/../x-rf-1234567-s0',
+                    'flow-a-rf-abcdefghijklmnop-rf-1234567-s0', 'flow-wxd--tnp-rf-1234567-s0'):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 pb.bundle_path(bad)
         for bad in ('../x', 'flow-wx-rf-23326aa-s3', 'flow-wx-rf-23326AA-s0', 'flow-wx-rf-23326a-s0',

@@ -873,6 +873,7 @@ function beforeRender(now) {
     if (u >= 1) D.tween = null;
     view.dirty = true;
   }
+  return !!D.tween;  // scene.js renders on demand: keep frames coming while the camera flies
 }
 export function cameraMode() { return D.mode; }
 // Frame a set of scene points (xy or xyz) from behind the robot's heading, in the current mode.

@@ -75,6 +75,7 @@ $('closer-stage').querySelector('[data-closer-start]').addEventListener('click',
 // ----- small tools
 document.querySelector('.menu')?.addEventListener('click', e => { if (e.target.closest('a')) e.currentTarget.open = false; });
 document.addEventListener('pointerdown', e => { const m = document.querySelector('.menu[open]'); if (m && !m.contains(e.target)) m.open = false; });
+document.addEventListener('keydown', e => { const m = document.querySelector('.menu[open]'); if (e.key === 'Escape' && m) { e.preventDefault(); e.stopPropagation(); m.open = false; m.querySelector('summary').focus({ preventScroll: true }); } });
 $('faq-all')?.addEventListener('click', e => {
   const all = [...document.querySelectorAll('#faq-list details')], open = !all.every(d => d.open);
   for (const d of all) d.open = open;
@@ -85,6 +86,13 @@ for (const b of document.querySelectorAll('[data-copy]')) b.addEventListener('cl
   try { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; } catch { b.textContent = 'Select and copy'; }
   setTimeout(() => { b.textContent = 'Copy'; }, 2000);
 });
+
+// Highlight films start only from native playback controls and stop when no longer visible.
+for (const video of document.querySelectorAll('#showcase-film, #research-video')) {
+  const seen = new IntersectionObserver(entries => { if (!entries[0].isIntersecting) video.pause(); }, { threshold: 0.05 });
+  seen.observe(video);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) video.pause(); });
+}
 
 // ----- the tour's chapters (the video itself loads only when played)
 async function chapters() {
@@ -121,6 +129,8 @@ const lazy = (sectionId, start) => {
   starters.push(go);
 };
 stats().catch(() => {});
+lazy('showcase', async () => (await import('./showcase.js')).initShowcase($('showcase')));
+lazy('learning', async () => (await import('./lfh.js')).initLfh($('lfh-explainer')));
 lazy('highlights', chapters);
 lazy('closer', closer);
 lazy('atlas', async () => (await import('./atlas.js')).initAtlas($('atlas-chart')));

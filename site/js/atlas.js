@@ -34,6 +34,7 @@ export async function initAtlas(root) {
     <p class="sr-only" id="atlas-desc"></p>
     <p class="fineprint atlas-legend"><i class="ok"></i>arrived cleanly <i class="warn"></i>flagged: contact over 100 N or off target <i class="bad sq"></i>fell or E-stop. One dot per walk, nudged sideways by up to 0.08 m so dots on the same lattice distance stay apart; values past an axis sit on its edge. Simulation, one seed per goal. <span class="atlas-missing"></span></p>`;
   const svg = root.querySelector('svg'), read = root.querySelector('.atlas-read');
+  const hint = read.innerHTML;
   let pts = [];
   const draw = () => {
     const m = METRICS[S.metric], W = root.querySelector('.atlas-plot').clientWidth || 800, H = Math.max(300, Math.min(420, W * 0.42));
@@ -71,7 +72,12 @@ export async function initAtlas(root) {
   };
   const mark = () => {
     const ring = svg.querySelector('.focus-ring'), p = pts[S.at];
-    if (!p) { ring.setAttribute('visibility', 'hidden'); return; }
+    if (!p) {
+      ring.setAttribute('visibility', 'hidden');
+      read.setAttribute('aria-live', S.keyed ? 'polite' : 'off');
+      read.innerHTML = pts.length ? hint : '<p class="muted">No recorded values are available for this measure in this room. Choose another measure or room.</p>';
+      return;
+    }
     ring.setAttribute('cx', p.px); ring.setAttribute('cy', p.py); ring.setAttribute('visibility', 'visible');
     const m = METRICS[S.metric], r = p.r, g = GRADES[r.grade] ?? { label: r.grade };
     const value = m.get(r);
