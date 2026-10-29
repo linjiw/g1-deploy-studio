@@ -62,8 +62,10 @@ The review asked the operators to decide these; they are encoded centrally and c
   need the console process: Studio's E-STOP, the phone panel, the remote's Select while the student streams and the
   node's own stops (tilt, stale state) all reach the runner through the console. If the console hangs, none of them can
   stop the robot. **Only the physical E-stop is independent of the console.** The page polls the console heartbeat
-  once a second on that same direct path; when it is older than 1 s or cannot be measured the page says
-  "CONSOLE NOT RESPONDING — use the physical E-stop".
+  twice a second on that same direct path; when it is older than 1 s or cannot be measured the page says
+  "CONSOLE NOT RESPONDING — use the physical E-stop". If the console process dies, the SONIC runner stops with it
+  (about 1 s later in simulation; kept on purpose so that no runner commands the motors without its gates): treat it as
+  a sudden loss of control. What the robot does when its commands stop has not been measured on hardware.
 - **Freshness locks motion, never stops.** Each source (deploy service state, console heartbeat, panel, node view,
   lidar, map, plan, recorder) is aged from when it was received plus the age the source reported. Arm, Start SONIC,
   Clear map, Send goal and GO lock while a source they depend on is stale (console and node view > 1 s; panel and
