@@ -244,7 +244,7 @@ export async function initRobotDay(root) {
     },
     go: () => {
       const ok = !ready().some(i => i.status === 'block');
-      return `<h3>Only a person starts a walk</h3><p>Studio never sends Go. The operator reads the checklist and presses <kbd>g</kbd> on the node's console, which hands the runner to the node's stream and tells node.py to go. Nothing in software stops a person pressing it anyway, so the list is written to be read.</p>
+      return `<h3>Only a person starts a walk</h3><p>On this path (Navigate) Studio never sends Go; in Deploy a GO is the operator's own press, relayed to the console, which gates it. The operator reads the checklist and presses <kbd>g</kbd> on the node's console, which hands the runner to the node's stream and tells node.py to go. Nothing in software stops a person pressing it anyway, so the list is written to be read.</p>
         <div class="keys"><button class="keycap ${ok ? 'armed' : ''}" id="day-g" aria-label="Press g">g</button><span class="${ok ? 'verdict pass' : 'verdict block'}">${ok ? 'Checklist clear: press g' : 'Checklist blocked: do not press g'}</span></div>
         ${D.message ? `<p class="verdict block" style="margin-top:8px">${escape(D.message)}</p>` : ''}`;
     },

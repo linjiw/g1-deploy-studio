@@ -201,6 +201,16 @@ function ident(sess = session()) {
     odom: r?.odom ?? sess.odom ?? null, scan: r?.scan?.name ?? sess.scan ?? null, scanSha: r?.scan?.memory_sha ?? null };
 }
 const shortName = n => String(n ?? '').replace(/^(robot|practice|rehearse)-/, '$1 ');
+// When a session started, in unix seconds, whatever the service sent: the kit's session list has `started` as ISO text
+// (session.json) and `started_unix` as a number; a receipt has `started` as a number. null when neither parses.
+function startedUnix(row) {
+  if (!row) return null;
+  if (finite(row.started_unix)) return row.started_unix;
+  if (finite(row.started)) return row.started;
+  if (typeof row.started === 'string') { const ms = Date.parse(row.started.replace(/([+-]\d\d)(\d\d)$/, '$1:$2')); return Number.isFinite(ms) ? ms / 1000 : null; }
+  return null;
+}
+const startedClock = row => { const t = startedUnix(row); return t === null ? '' : new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
 const shortSha = s => (s ? String(s).slice(0, 8) : '—');
 // This tab controls a session only after attaching to it (it started it here, or the operator pressed Attach).
 const attached = () => { const s = session(); return !!s && S.attached === s.name; };
@@ -267,6 +277,41 @@ const walking = () => ['PRESCAN', 'RUN'].includes(S.panel?.phase ?? S.view?.phas
 // The console's attempt rows (g1deploy/attempts.py) say `result` and `end_goal_dist_m`; the page reads outcome / final_dist_m.
 const attemptRow = a => ({ ...a, outcome: a.outcome ?? a.result ?? null, final_dist_m: a.final_dist_m ?? a.end_goal_dist_m ?? null });
 const panelAttempts = () => (Array.isArray(S.panel?.attempts) ? S.panel.attempts.map(attemptRow) : []);
+// The console's attempt rows, with what the deploy service scored for them (the session detail: the passage through the
+// required gap): the console row carries the gate, the service the result. Until it is scored it says so.
+function liveAttempts() {
+  const det = S.liveDetail?.name === session()?.name && Array.isArray(S.liveDetail?.data?.attempts) ? S.liveDetail.data.attempts : [];
+  return panelAttempts().map(a => {
+    const d = det.find(x => x.n === a.n); if (!d) return a;
+    return { ...a, passage: d.passage ?? a.passage, passage_gate: d.passage_gate ?? a.passage_gate, passage_note: d.passage_note ?? a.passage_note,
+      passage_required: d.passage_required ?? a.passage_required, rehearsal: a.rehearsal ?? d.rehearsal };
+  });
+}
+// One attempt's task outcome, the same right after it ends, on its tag card and in Review (review 2026-11-06 R06):
+// arrival, the required passage (crossed / missed / not scored), GO by override, timing validity. "Arrived" is a task
+// pass only when a required gap was crossed; a required gap not scored is incomplete, never a pass. Physical contact is
+// never inferred here (a real robot records none).
+const LAG_SUSPECT_S = 0.35;  // the kit's machine.LAG_SUSPECT_S: node loop lag above it makes a run's timing suspect
+function attemptOutcome(a) {
+  const out = a?.outcome ?? a?.result ?? null;
+  if (!out) return { out: null, task: false, tone: 'live', label: 'walking', flags: [], summary: 'walking' };
+  const p = typeof a.passage === 'string' ? a.passage : null;
+  const required = a.passage_required === true || !!a.passage_gate || (!!a.passage && typeof a.passage === 'object') || p === 'crossed' || p === 'missed' || p === 'n/a';
+  const flags = [];
+  if (p === 'missed') flags.push({ tone: 'bad', text: 'required gap missed (went around it)' });
+  else if (p === 'crossed') flags.push({ tone: 'ok', text: 'crossed the required gap' });
+  else if (p === 'n/a') flags.push({ tone: 'warn', text: `required gap not scored: ${a.passage_note ?? 'started past the gate'}` });
+  else if (required) flags.push({ tone: 'warn', text: `required gap not scored${a.passage_note ? `: ${a.passage_note}` : ' yet'}` });
+  const ov = a.rehearsal?.override;
+  if (ov) flags.push({ tone: 'warn', text: `GO by override${ov.operator ? ` (${ov.operator})` : ''}` });
+  if (finite(a.max_lag_s) && a.max_lag_s > LAG_SUSPECT_S) flags.push({ tone: 'warn', text: `timing suspect (node lag ${num(a.max_lag_s, 2)} s)` });
+  const task = out === 'arrived' && (!required || p === 'crossed');
+  const label = out === 'arrived' && !task ? (p === 'missed' ? 'arrived · gap missed' : 'arrived · gap not scored') : out;
+  const dist = finite(a.final_dist_m ?? a.end_goal_dist_m) ? `${num(a.final_dist_m ?? a.end_goal_dist_m, 2)} m from the goal` : null;
+  return { out, task, tone: task ? 'good' : 'warn', label, flags, dist, summary: [label, dist, ...flags.filter(f => f.tone !== 'ok' || !task).map(f => f.text)].filter(Boolean).join(' · ') };
+}
+const outcomeChip = o => `<span class="outcome outcome-${o.tone}">${escape(o.label)}</span>`;
+const outcomeFlags = o => o.flags.filter(f => f.tone !== 'ok').map(f => `<span class="dp-tag ${f.tone === 'bad' ? 'bad' : 'warn'}">${escape(f.text)}</span>`).join('');
 
 function stepState(id) {
   const sess = session();
@@ -353,9 +398,9 @@ function onState(before, wasScanning) {
     if (S.sessionName) { delete S.detail[S.sessionName]; S.liveDetail = null; }
     if (name) { S.tagDraft = {}; S.attemptEnd = null; d3.clearTrail(); S.cursors = { cloud: -1, mem: -1 }; S.view = null; S.sendResult = null; S.goResult = null; S.startCheck = null; S.autoCheckKey = null; S.clearedAt = null; S.ladderNote = {}; if (!['sending', 'undelivered'].includes(S.estop.state)) { S.estopGen = (S.estopGen ?? 0) + 1; S.estop = { state: null, targets: [], t0: 0, error: null }; } }
     clearSessionSources(); S.liveDetail = null;
-    // Started from this tab (its start reply named it, or it appeared within 20 s of this tab's start): attached.
-    if (name && S.startedHere && (S.startedHere.name === name || (!S.startedHere.name && performance.now() - S.startedHere.at < 20000))) setAttached(name);
-    if (name) S.startedHere = null;
+    // Started from this tab (see ownsStart): attached, and its Start sheet closes, whether or not its reply came yet.
+    if (name && ownsStart(S.startedHere, sess)) completeStart(S.startedHere, name);
+    if (S.startedHere && (S.startedHere.done || performance.now() - S.startedHere.at > 3 * START_WINDOW_MS)) S.startedHere = null;
     if (!name || (S.attached && S.attached !== name)) setAttached(name && S.attached === name ? name : null);
     S.sessionName = name;
   }
@@ -563,21 +608,36 @@ function ackWords(data, expected) {
   if (expected && got !== expected) return ` · ANSWERED BY ANOTHER SESSION (${got}) — check the identity strip`;
   return ` · acknowledged by ${shortName(got)}`;
 }
-// Ask the console's act record until it knows (every 0.5 s for 10 s, then every 2 s). Never resends.
+// Ask the console's act record until it knows (every 0.5 s for 10 s, every 2 s to 2 min, then every 5 s). Never resends.
+// "No record" is not an answer (review 2026-11-06 R02): the console keeps its last 500 receipts, a log can have a hole and
+// a relay can still be in flight, so the press stays unresolved, and motion presses stay locked, until the console's
+// record or the session's event log says done or refused. After NO_RECORD_UNLOCK_MS without a record the operator may
+// unlock the page themselves, having looked at the robot and the console; the press is still shown as unresolved.
+const NO_RECORD_UNLOCK_MS = 15000;
 async function reconcileAct(id) {
   const a = S.acts[id]; if (!a || a.reconciling) return;
   a.reconciling = true; renderAll();
   while (S.acts[id]?.state === 'unknown') {
     const waited = (performance.now() - a.since) / 1000;
-    await new Promise(r => setTimeout(r, waited < 10 ? 500 : 2000));
+    if (a.session && session()?.name !== a.session && waited > 120) break;  // that session is over: nothing to unlock
+    await new Promise(r => setTimeout(r, waited < 10 ? 500 : waited < 120 ? 2000 : 5000));
     const q = new URLSearchParams({ id, ...(a.slot ? { slot: a.slot } : {}), ...(a.session ? { session: a.session } : {}) });
     const r = await api(`/api/deploy/act_status?${q}`, { timeout: 2000 });
-    const cur = S.acts[id]; if (!cur) return;
+    const cur = S.acts[id]; if (!cur || cur.state !== 'unknown') return;
+    cur.lastAsk = performance.now();
+    if (r.status === 404 && r.data?.code === 'no_such_session') { cur.askError = `the deploy service does not know session ${cur.session}`; continue; }
     if (r.status === 405 || r.data?.supported === false || (r.status === 404 && !('known' in (r.data ?? {})))) { if (!cur.unsupported) { cur.unsupported = true; renderAll(); } continue; }
+    // An answer about another session settles nothing (an older kit looks in the slot's current session only).
+    const about = r.data?.session ?? null;
+    if (r.ok && cur.session && about && about !== cur.session) { cur.otherSession = about; cur.askError = null; continue; }
+    cur.otherSession = null;
     if (!r.ok || !r.data?.known) {
-      cur.lastAsk = performance.now(); cur.askError = r.ok ? null : reason(r);
-      // The console's own record has no such press, asked for 15 s: it never arrived (pressing again is safe).
-      if (r.ok && r.data?.known === false) { cur.unknownSince ??= performance.now(); if (performance.now() - cur.unknownSince > 15000) { Object.assign(cur, { state: 'refused', reason: 'the console has no record of it: it never arrived (you may press again)', learned: true }); onActLearned(cur); renderAll(); } }
+      cur.askError = r.ok ? null : reason(r);
+      if (r.ok && r.data?.known === false) {
+        const first = cur.noRecordSince == null;
+        cur.noRecordSince ??= performance.now(); cur.searched = Array.isArray(r.data.searched) ? r.data.searched : null;
+        if (first) setTimeout(() => { if (S.acts[id]?.state === 'unknown') renderAll(); }, NO_RECORD_UNLOCK_MS + 50);  // the unlock offer
+      }
       continue;
     }
     const result = r.data.result;
@@ -587,6 +647,16 @@ async function reconcileAct(id) {
     onActLearned(cur);
     renderAll();
   }
+  if (S.acts[id]) S.acts[id].reconciling = false;
+}
+// No record for a while: the operator may unlock the page after looking at the robot and the console (logged here).
+const unlockOffered = a => a?.state === 'unknown' && a.noRecordSince != null && performance.now() - a.noRecordSince >= NO_RECORD_UNLOCK_MS;
+function unlockAct(id) {
+  const a = S.acts[id]; if (!unlockOffered(a)) return;
+  Object.assign(a, { dismissed: true, dismissedAt: Date.now(), dismissedBy: S.operator.trim() || null });
+  console.warn(`deploy: ${a.act} (${id}) unlocked by the operator with no console record of it`);
+  S.notice = { kind: 'warning', text: `${ACT_WORDS[a.act] ?? a.act} is still unresolved: no record of it yet, and it was not resent. You unlocked the page after checking the robot and the console; the page keeps asking and says so if a record turns up.` };
+  renderAll();
 }
 // What the page does once an unknown press is known: the same as a reply would have done.
 function onActLearned(a) {
@@ -600,8 +670,11 @@ function onActLearned(a) {
   pollPanel();
 }
 function unknownWords(a, { stable = false } = {}) {
-  const age = Math.round((performance.now() - a.since) / 1000);
-  return `${ACT_WORDS[a.act] ?? a.act}: acknowledgement unavailable — checking console state${stable ? '' : ` (${age} s)`}. Not resent.${a.unsupported ? ' This deploy service cannot report it: look at the console\'s own panel before pressing again.' : ''}`;
+  const age = Math.round((performance.now() - a.since) / 1000), what = ACT_WORDS[a.act] ?? a.act;
+  const other = a.otherSession ? ` The deploy service answered for another session (${shortName(a.otherSession)}); still asking about ${shortName(a.session)}.` : '';
+  const err = a.askError && !a.unsupported ? ` Last check: ${a.askError}.` : '';
+  if (unlockOffered(a)) return `${what}: unresolved — no record of it yet in ${a.searched?.length ? a.searched.join(', ') : 'the console\'s record'}${stable ? '' : ` (${age} s)`}. That does not mean it never arrived: watch the robot and check the console before pressing again. Not resent.${other}${err}`;
+  return `${what}: acknowledgement unavailable — checking console state${stable ? '' : ` (${age} s)`}. Not resent.${other}${err}${a.unsupported ? ' This deploy service cannot report it: look at the console\'s own panel before pressing again.' : ''}`;
 }
 function expectNow(fields) {
   const sess = session(), out = {};
@@ -667,17 +740,42 @@ async function loadTracks(rec, key) {
   renderAll();
 }
 
-// Start session asks for the NEXT session's settings (Connect); the tab that starts it is attached to it.
+// Start session asks for the NEXT session's settings (Connect); the tab that starts it is attached to it. The start is
+// one operation record, keyed by its request id: the reply and the state poll may each see the new session first, in
+// either order, and whichever does completes it, once (review 2026-11-06 R04). A session is this tab's by that id in its
+// receipt (start_id), else by the name in the reply; with a kit before start_id, also by appearing within 20 s with
+// this operator in this mode. Never just any session that shows up.
+const START_WINDOW_MS = 20000;
+function ownsStart(op, s) {
+  if (!op || !s) return false;
+  const rid = s.receipt?.start_id;
+  if (rid) return rid === op.id;
+  if (op.name) return op.name === s.name;
+  const who = s.receipt?.operator ?? s.operator ?? null;
+  return performance.now() - op.at < START_WINDOW_MS && s.slot === op.mode && (!who || !op.operator || who === op.operator);
+}
+function completeStart(op, name) {
+  if (!op || op.done || !name) return;
+  Object.assign(op, { done: true, name });
+  setAttached(name);
+  if (S.sheet?.kind === 'start') closeSheet();
+  S.notice = null; S.ladderNote = {};
+}
 async function startSession(confirm) {
   const robot = S.mode === 'robot';
   const body = { mode: robot ? 'robot' : 'sim', practice: !robot, scan: S.scanName, profile: nextProfile(), odom: nextOdom(),
     operator: S.operator.trim(), confirm };
-  S.startedHere = { at: performance.now(), name: null };
-  const res = await act('start', body, { slot: null, timeout: 15000 });
-  if (res.ok) { S.startedHere.name = res.data.name ?? null; if (res.data.name) setAttached(res.data.name); closeSheet(); S.notice = null; S.ladderNote = {}; }
+  const op = { id: uuid(), at: performance.now(), name: null, mode: body.mode, operator: body.operator || null, done: false };
+  S.startedHere = op;
+  const res = await act('start', { ...body, id: op.id }, { slot: null, timeout: 15000 });
+  if (res.ok) {
+    const name = res.data.name ?? null;
+    if (name) completeStart(op, name); else if (S.sheet?.kind === 'start') closeSheet();
+    if (!op.done) op.name = name;
+  } else if (op.done) { /* the state poll already found this start's session: its reply is moot */ }
   else if (res.unknown) { closeSheet(); S.notice = { kind: 'warning', act: res.id }; }
   else if (res.noReply) { closeSheet(); S.notice = { kind: 'warning', text: `Start session: ${res.reason}` }; }
-  else { S.startedHere = null; S.sheetError = res.reason; }
+  else { if (S.startedHere === op) S.startedHere = null; S.sheetError = res.reason; }
   await pollState(); renderAll();
 }
 async function ladderAct(key) {
@@ -1017,6 +1115,7 @@ function barModel() {
   const kind = robot ? 'robot' : live.length ? kindOf(live[0]) : 'unknown';
   return { live, unreachable, kind, robot };
 }
+const UNKNOWN_GRACE_MS = 2500;  // a fresh page's first heartbeat polls before "unknown" raises the alarm
 // The console's age now, per slot: the freshest of the direct heartbeat and the deploy service's last report, each aged
 // from its own receipt (a cached "0.02 s" from a hub that stopped answering ages with it). null: nothing known.
 function consoleAgeNow(slot) {
@@ -1030,7 +1129,7 @@ function consoleAgeNow(slot) {
 function buildBar(bar) {
   bar.innerHTML = `
     <div class="dpe-who"><strong id="dpe-title"></strong><span id="dpe-sub"></span></div>
-    <div class="dpe-alarm" id="dpe-alarm" role="alert" hidden>CONSOLE NOT RESPONDING — use the physical E-stop</div>
+    <div class="dpe-alarm" id="dpe-alarm" role="alert" hidden></div>
     <div class="dpe-actions">
       <button id="dp-estop" class="dpe-stop" title="Stops every live console now (relayed straight to each console, which owns the robot)">E-STOP</button>
       <span class="dpe-status" id="dpe-status" role="status" hidden></span>
@@ -1038,7 +1137,7 @@ function buildBar(bar) {
       <button id="dp-takeover" class="dpe-small">Take over</button>
       <span class="dpe-status" id="dpe-direct" role="status" hidden></span>
     </div>
-    <div class="dpe-fallback" title="Studio's E-STOP, the phone panel, the remote's Select while streaming and the node's auto-stop all go through the console process. Only the physical E-stop is independent.">Also: remote <b>Select</b> · phone panel · <b>physical E-stop</b>, the only stop that does not need the console</div>`;
+    <div class="dpe-fallback" title="Studio's E-STOP, the phone panel, the remote's Select while streaming and the node's auto-stop all go through the console process. Only the physical E-stop is independent."><span class="dpe-fb-long">Also: remote <b>Select</b> · phone panel · <b>physical E-stop</b>, the only stop that does not need the console</span><span class="dpe-fb-short">These go through the console · only the <b>physical E-stop</b> does not</span></div>`;
   const stop = bar.querySelector('#dp-estop');
   stop.addEventListener('pointerdown', e => { if (e.button === 0) { stop.dataset.fired = String(performance.now()); estop(); } });
   stop.addEventListener('click', () => { if (performance.now() - Number(stop.dataset.fired ?? 0) > 800) estop(); });  // keyboard
@@ -1050,21 +1149,29 @@ function renderBar() {
   const bar = $('deploy-estop'); if (!bar) return;
   const m = barModel();
   document.body.classList.toggle('estop-shown', !!m);
-  if (!m) { bar.hidden = true; return; }
+  if (!m) { bar.hidden = true; S.barShownAt = null; return; }
   if (!bar.dataset.built) buildBar(bar);
   bar.hidden = false; bar.dataset.kind = m.kind;
   const sess = m.robot ?? m.live[0];
   // Slots to judge: the live ones; with the service down, the ones the heartbeat still reports.
   const slots = [...new Set([...m.live.map(l => l.slot), ...(m.unreachable ? (S.hb?.rows ?? []).map(r => r.slot) : [])])];
-  const ages = slots.map(consoleAgeNow), worst = ages.filter(finite).length ? Math.max(...ages.filter(finite)) : null;
+  // Each potentially live console on its own (review 2026-11-06 R03): a healthy one never hides an unknown one, and an
+  // unknown heartbeat raises the alarm like a stale one, in its own words (unknown is not "stopped", nor "stale").
+  S.barShownAt ??= performance.now();
+  const rows = slots.map(slot => ({ slot, age: consoleAgeNow(slot), direct: !!S.src[`console:${slot}`] }));
+  const settled = performance.now() - S.barShownAt > UNKNOWN_GRACE_MS;  // the first heartbeat polls of a fresh page
+  const stale = rows.filter(r => finite(r.age) && r.age > SOURCES.console.stale), unknown = settled ? rows.filter(r => !finite(r.age)) : [];
   const robotName = sess?.receipt?.robot ?? st().robot_link?.robot ?? 'robot';
   $('dpe-title').textContent = m.kind === 'robot' ? `ROBOT LIVE · ${robotName}` : m.kind === 'practice' ? 'PRACTICE · simulated robot'
     : m.kind === 'rehearsal' ? 'REHEARSAL · simulator' : 'DEPLOY SERVICE NOT ANSWERING';
-  const hbText = worst !== null ? `console heartbeat ${ageText(worst)}${S.src[`console:${slots[ages.indexOf(worst)]}`] ? ' (direct)' : ' (via the service)'}`
-    : slots.length ? `console heartbeat unknown${S.hbSupported === false ? ' (unsupported by this gateway)' : ''}` : '';
+  const one = r => (finite(r.age) ? `${ageText(r.age)}${r.direct ? ' (direct)' : ' (via the service)'}` : `unknown${S.hbSupported === false ? ' (unsupported by this gateway)' : S.hbError ? ' (no answer)' : ''}`);
+  const hbText = !rows.length ? '' : rows.length === 1 ? `console heartbeat ${one(rows[0])}` : `console heartbeat ${rows.map(r => `${r.slot} ${one(r)}`).join(' · ')}`;
   $('dpe-sub').textContent = m.unreachable ? `A console may still be running: Studio cannot see it through the deploy service${hbText ? ` · ${hbText}` : ''}.`
     : `${sess?.name ?? ''}${sess?.panel?.phase ? ` · ${PHASE[sess.panel.phase] ?? sess.panel.phase}` : ''}${hbText ? ` · ${hbText}` : ''}`;
-  $('dpe-alarm').hidden = !(worst !== null && worst > SOURCES.console.stale);
+  const named = list => (rows.length > 1 ? ` (${list.map(r => r.slot).join(', ')})` : '');
+  const alarm = stale.length ? `CONSOLE NOT RESPONDING${named(stale)} — use the physical E-stop`
+    : unknown.length ? `CONSOLE STATUS UNKNOWN${named(unknown)} — Studio cannot reach it: use the physical E-stop` : '';
+  const al = $('dpe-alarm'); al.hidden = !alarm; if (al.textContent !== alarm) al.textContent = alarm; al.dataset.kind = stale.length ? 'stale' : unknown.length ? 'unknown' : '';
   const es = S.estop, some = es.missing?.length && es.targets?.length > es.missing.length ? ` to ${es.missing.join(', ')}` : '';
   const text = { sending: 'SENDING…', undelivered: `NOT DELIVERED${some} — use the physical E-stop · retrying`,
     failed: `NOT DELIVERED${some} — use the physical E-stop`, sent: 'SENT · the runner has not confirmed yet',
@@ -1195,7 +1302,7 @@ function renderIdentity() {
   const rec = id ? recordingWords(recordingHealth()) : null;
   const r = id?.receipt;
   const rows = id ? [
-    ['Session', id.name], ['Kind', id.kind], ['Robot', id.robot], ['Operator', id.operator ?? '—'], ['Started', finite(id.started) ? new Date(id.started * 1000).toLocaleString() : '—'],
+    ['Session', id.name], ['Kind', id.kind], ['Robot', id.robot], ['Operator', id.operator ?? '—'], ['Started', startedUnix(id) !== null ? new Date(startedUnix(id) * 1000).toLocaleString() : '—'],
     ['Profile', `${id.profile ?? '—'} · sha ${shortSha(id.profileSha)}`], ['Bundle', r?.bundle ? `${r.bundle.name ?? '—'} · ${shortSha(r.bundle.manifest_sha)}` : '—'],
     ['Rules', r?.rules ? `${r.rules.name ?? '—'} · ${shortSha(r.rules.sha)}` : '—'], ['Odometry', `${odomLabel(id.odom)} — ${ODOMETRY[id.odom]?.validation ?? 'validation status not known'}`],
     ['Scan', id.scan ? `${id.scan} · memory ${shortSha(id.scanSha)}` : '—'], ['Mount calibration', shortSha(r?.mount_calib_sha)],
@@ -1225,14 +1332,30 @@ function updateSources() {
 }
 
 // ------------------------------------------------------------------------------------------------ the step strip
+// The step strip is built once and then updated in place: polling never replaces the button under the keyboard focus or
+// a held pointer (review 2026-11-06 R07).
 function renderStrip() {
   const el = $('dp-strip'); if (!el) return;
-  const idx = STEPS.findIndex(s => s.id === S.step);
-  el.innerHTML = STEPS.map((s, i) => {
-    const ss = stepState(s.id), cls = s.id === S.step ? 'now' : ss.stale ? 'stale' : ss.done ? 'done' : i < idx ? 'todo' : 'todo';
-    return `<button data-step="${s.id}" class="${cls}" aria-current="${s.id === S.step ? 'step' : 'false'}" title="${escape(ss.stale ?? (ss.done ? `${s.label}: done` : s.label))}"><b>${ss.done && s.id !== S.step && !ss.stale ? '✓' : ss.stale ? '!' : i + 1}</b><em>${s.label}</em></button>`;
-  }).join('<span class="dp-sep" aria-hidden="true"></span>');
-  el.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => setStep(b.dataset.step)));
+  if (el.querySelectorAll('[data-step]').length !== STEPS.length) {
+    el.innerHTML = STEPS.map(s => `<button data-step="${s.id}"><b></b><em>${escape(s.label)}</em></button>`).join('<span class="dp-sep" aria-hidden="true"></span>');
+    el.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => setStep(b.dataset.step)));
+  }
+  STEPS.forEach((s, i) => {
+    const b = el.querySelector(`[data-step="${s.id}"]`); if (!b) return;
+    const ss = stepState(s.id), cls = s.id === S.step ? 'now' : ss.stale ? 'stale' : ss.done ? 'done' : 'todo';
+    const mark = ss.done && s.id !== S.step && !ss.stale ? '✓' : ss.stale ? '!' : String(i + 1);
+    const title = ss.stale ?? (ss.done ? `${s.label}: done` : s.label), current = s.id === S.step ? 'step' : 'false';
+    if (b.className !== cls) b.className = cls;
+    if (b.getAttribute('aria-current') !== current) b.setAttribute('aria-current', current);
+    if (b.title !== title) b.title = title;
+    const m = b.querySelector('b'); if (m.textContent !== mark) m.textContent = mark;
+  });
+}
+// A selector that finds the same control again after the panel is rebuilt (controls without an id).
+const FOCUS_ATTRS = ['data-action', 'data-tag', 'data-rtag', 'data-key', 'data-attempt', 'data-mode', 'data-review-session', 'data-confirm'];
+function focusSelector(el) {
+  const parts = FOCUS_ATTRS.filter(a => el.hasAttribute(a)).map(a => `[${a}="${CSS.escape(el.getAttribute(a))}"]`);
+  return parts.length ? `${el.tagName.toLowerCase()}${parts.join('')}` : null;
 }
 
 // ------------------------------------------------------------------------------------------------ the step panel
@@ -1245,7 +1368,8 @@ function renderPanel(force = false) {
   const key = JSON.stringify([body, blocker?.key ?? blocker?.text ?? null], (k, v) => (k === 'locked' && v && typeof v === 'object' ? v.key : k === 'liveText' ? undefined : v));
   if (!force && key === lastPanelKey) return;
   lastPanelKey = key;
-  const focused = document.activeElement?.id, sel = focused && document.activeElement.selectionStart;
+  const ae = document.activeElement, focused = ae?.id, sel = focused && ae.selectionStart;
+  const again = !focused && ae && root.contains(ae) ? focusSelector(ae) : null;
   const scroller = root.querySelector('.dp-body'), scroll = scroller?.scrollTop ?? 0;
   const idx = STEPS.findIndex(s => s.id === S.step) + 1;
   const top = S.stateOk === false
@@ -1265,6 +1389,7 @@ function renderPanel(force = false) {
   root.querySelector('.dp-body').scrollTop = attention && attention !== S.lastAttention ? 0 : scroll;
   S.lastAttention = attention;
   if (focused && root.contains(document.getElementById(focused))) { const el = document.getElementById(focused); el.focus({ preventScroll: true }); try { if (sel !== null && sel !== undefined) el.setSelectionRange(sel, sel); } catch { /* not a text input */ } }
+  else if (again && root.querySelector(again)) root.querySelector(again).focus({ preventScroll: true });
   else if (S.focusAction) { root.querySelector(`[data-action="${CSS.escape(S.focusAction)}"]`)?.focus({ preventScroll: true }); }
   S.focusAction = null;
   bindPanel(root); refreshLive();
@@ -1298,7 +1423,8 @@ function primaryButton(p) {
 function nextBlocker() {
   const sess = session(), review = S.step === 'review';
   // An unknown press matters on every step; the rest is about controlling the next or the running session, not Review.
-  const u = unknownAct(); if (u) return { tone: 'warn', key: `act:${u.id}`, text: unknownWords(u), act: u.id };
+  const u = unknownAct();
+  if (u) return { tone: 'warn', key: `act:${u.id}:${unlockOffered(u) ? 'late' : 'asking'}`, text: unknownWords(u), act: u.id, ...(unlockOffered(u) ? { action: `act-unlock:${u.id}`, actionLabel: 'I checked: unlock' } : {}) };
   if (review) return null;
   if (sess && !attached()) return { tone: 'info', key: 'view', text: `Viewing only: ${sess.name} (${ident().kind === 'robot' ? 'the real robot' : 'practice'}) was not started in this tab. Attach to control it; E-STOP, Stand and Take over work either way.`, action: 'step:connect', actionLabel: 'Attach…' };
   if (sess) {
@@ -1443,11 +1569,12 @@ function goalBody() {
   else if (status === 'pending') locked = 'The goal check expired: checking again…';
   const checks = check?.checks ?? [], shown = check ?? g?.previous;
   return {
-    title: 'Pick a goal', lead: 'Click the floor in 3D. The disc is the robot\'s footprint; its colour is a first look at the cells under it.',
+    title: 'Pick a goal', lead: 'Click the floor in 3D, or type the numbers. The disc is the robot\'s footprint; its colour is a first look at the cells under it.',
     html: `
       ${hover && !g ? `<p class="tiny">Under the pointer: ${escape(hover.text)}</p>` : ''}
       ${g?.carriedFrom ? `<div class="callout warning">This goal was carried over from ${escape(g.carriedFrom)} at the same place relative to the scan pose. Check it in 3D, or click a new one.</div>` : ''}
       ${g ? `<div class="dp-goal ${status}">${statusIcon(status === 'pending' ? 'unknown' : status)}<div><strong>(${num(g.xy[0], 2)}, ${num(g.xy[1], 2)}) m</strong><span>${escape(goalWords(g.xy))}</span></div><button class="link-button" data-action="clear-goal">Clear</button></div>` : '<div class="dp-empty"><b>No goal yet.</b> Point at the floor: green is clear, amber needs a look, red is blocked. A click on an obstacle lands on it and is refused there.</div>'}
+      ${S.scene ? goalEntryHtml(g) : ''}
       ${g ? goalBasisHtml(shown) : ''}
       ${check && !check.unavailable ? `<ul class="nav-checks dp-checks">${checks.map(c => `<li class="${escape(c.status)}"><i>${ICON[c.status] ?? '?'}</i><span><strong>${escape(c.label)}</strong>${c.detail ? `<small>${escape(c.detail)}</small>` : ''}</span></li>`).join('')}</ul>
         <p class="tiny">Straight ${num(check.straight_m, 2)} m · route ${num(check.path_m, 2)} m${finite(check.unknown_fraction) ? ` · ${Math.round(check.unknown_fraction * 100)} % of it unseen` : ''}${check.gap ? ` · narrowest gap on the route ${num(check.gap.width_m, 2)} m` : ''}${check.direct_gap ? ` · on the straight line ${num(check.direct_gap.width_m, 2)} m` : ''}</p>` : ''}
@@ -1457,6 +1584,27 @@ function goalBody() {
     primary: session() ? { label: `Back to the session: send this goal${rehearsalFor()?.verdict ? '' : ' (not rehearsed)'}`, action: 'step:deploy', locked }
       : { label: 'Next: rehearse this goal', action: 'step:rehearse', locked },
   };
+}
+// The goal by its numbers, in the scene frame (x ahead, y left of the scan pose, metres), beside the click in 3D: a
+// precise repeat of a trial and a keyboard way in (review 2026-11-06 R07). "Check this goal" runs the same goal check
+// as a click; nothing is sent to the robot from here.
+const GOAL_RANGE_M = 20;
+function goalEntryHtml(g) {
+  const d = S.goalDraft ?? {}, v = (k, i) => escape(d[k] ?? (g ? num(g.xy[i], 2) : ''));
+  return `<div class="dp-goal-xy" role="group" aria-labelledby="dp-goal-xy-h"><span id="dp-goal-xy-h" class="tiny">Or type it: metres from the scan pose</span>
+      <label>x ahead <input type="text" inputmode="decimal" autocomplete="off" id="dp-goal-x" data-goal-xy="x" value="${v('x', 0)}" aria-describedby="dp-goal-xy-h"></label>
+      <label>y left <input type="text" inputmode="decimal" autocomplete="off" id="dp-goal-y" data-goal-xy="y" value="${v('y', 1)}" aria-describedby="dp-goal-xy-h"></label>
+      <button class="dp-secondary" id="dp-goal-xy-check" data-action="goal-xy">Check this goal</button>
+      ${d.error ? `<small class="warn" role="alert">${escape(d.error)}</small>` : ''}</div>`;
+}
+function goalFromEntry() {
+  const d = S.goalDraft ?? {}, g = S.goal;
+  const read = (k, i) => { const t = String(d[k] ?? (g ? g.xy[i] : '')).trim().replace(',', '.'); return t === '' ? NaN : Number(t); };
+  const xy = [read('x', 0), read('y', 1)];
+  if (!xy.every(Number.isFinite)) { S.goalDraft = { ...d, error: 'Type both numbers, in metres (for example 2.5 and -0.3)' }; return renderPanel(true); }
+  if (xy.some(v => Math.abs(v) > GOAL_RANGE_M)) { S.goalDraft = { ...d, error: `Within ${GOAL_RANGE_M} m of the scan pose` }; return renderPanel(true); }
+  S.goalDraft = null; S.focusAction = 'goal-xy';
+  return checkGoal(xy);
 }
 // What the goal check was computed with (contract v3 F) and how long it stays good.
 function goalBasisHtml(check) {
@@ -1660,7 +1808,7 @@ function deployBody() {
   const estopped = p.runner === 'E-STOP', lostNow = !!S.view && liveState() === 'lost';
   // A goal moved after Send goal makes Send goal the step to do again.
   if (moved) { const g = rows.find(r => r.key === 'goal'); if (g?.state === 'done' && !walking()) { g.state = 'now'; g.note = moved; rows.find(r => r.key === 'go').state = 'todo'; } }
-  const attempts = panelAttempts(), lastA = attempts.at(-1), untagged = attempts.filter(a => a.outcome && !a.tag);
+  const attempts = liveAttempts(), lastA = attempts.at(-1), untagged = attempts.filter(a => a.outcome && !a.tag);
   // After an attempt ends: tag it, then pick the next goal (or send the same goal again). Not once a new goal was
   // picked (Send goal is the step then) or sent.
   const endKey = lastA?.outcome ? `${sess.name}:${lastA.n}` : null;
@@ -1715,14 +1863,15 @@ function deployBody() {
       ${sendHtml()}
       ${goHtml()}
       ${sc ? `<p class="tiny">Start check: ${escape(startWords(sc, { short: true }))} (the grey ghost in 3D is the scan pose).</p>` : ''}
-      ${attempts.length ? `<h4>Attempts</h4><ol class="dp-attempts">${attempts.map(a => `<li><strong>${a.n}</strong><span class="outcome ${a.outcome === 'arrived' ? 'outcome-good' : a.outcome ? 'outcome-warn' : 'outcome-live'}">${escape(a.outcome ?? 'walking')}</span>${finite(a.final_dist_m) ? `<small>${num(a.final_dist_m, 2)} m from the goal</small>` : ''}${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : a.outcome ? '<small>untagged</small>' : ''}</li>`).join('')}</ol>` : ''}`,
+      ${attempts.length ? `<h4>Attempts</h4><ol class="dp-attempts">${attempts.map(a => { const o = attemptOutcome(a); return `<li><strong>${a.n}</strong>${outcomeChip(o)}${o.dist ? `<small>${escape(o.dist)}</small>` : ''}${outcomeFlags(o)}${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : a.outcome ? '<small>untagged</small>' : ''}</li>`; }).join('')}</ol>` : ''}`,
     primary,
     secondary,
   };
 }
 function tagCard(a, sessionName, viaPrimary = false) {
   const key = `${sessionName}:${a.n}`, draft = S.tagDraft[key] ??= { tag: null, note: '' };
-  return `<div class="dp-tagcard${viaPrimary ? ' first' : ''}"><strong>Attempt ${a.n} ended: ${escape(a.outcome)}${finite(a.final_dist_m) ? ` (${num(a.final_dist_m, 2)} m from the goal)` : ''}</strong><p class="tiny">${viaPrimary ? 'Tag it, then pick the next goal.' : 'Not tagged yet.'}</p>
+  const o = attemptOutcome(a), notes = o.flags.filter(f => f.tone !== 'ok');
+  return `<div class="dp-tagcard${viaPrimary ? ' first' : ''}${o.task ? '' : ' warn'}"><strong>Attempt ${a.n} ended: ${escape(o.label)}${o.dist ? ` (${escape(o.dist)})` : ''}</strong>${notes.length ? `<p class="dp-tag-why">${escape(notes.map(f => f.text).join(' · '))}${o.out === 'arrived' && !o.task ? '. The robot reached the goal, but this is not a task pass.' : ''}</p>` : ''}<p class="tiny">${viaPrimary ? 'Tag what you saw, then pick the next goal.' : 'Not tagged yet.'}</p>
     <div class="dp-tags">${(S.panel?.tags ?? TAGS).map(t => `<button data-tag="${escape(t)}" data-key="${escape(key)}" aria-pressed="${draft.tag === t}">${escape(t)}</button>`).join('')}</div>
     <input type="text" id="dp-note-${a.n}" data-note="${escape(key)}" placeholder="Note (optional)" value="${escape(draft.note)}">
     ${viaPrimary ? '' : `<button class="dp-secondary" data-action="tag:${escape(key)}" ${draft.tag ? '' : 'disabled'}>Save tag</button>`}${draft.result ? `<small>${escape(draft.result)}</small>` : ''}</div>`;
@@ -1808,7 +1957,7 @@ function attemptHtml(name, a, sel, live) {
   const reh = a.rehearsal ? `${a.rehearsal.name ?? 'set'}${a.rehearsal.verdict ? ` · ${a.rehearsal.verdict}` : ''}` : 'none in force';
   const sc = a.start_check, rt = replayTime(a);
   const facts = [
-    ['Outcome', `${out ?? 'open'}${finite(a.final_dist_m ?? a.end_goal_dist_m) ? ` · ${num(a.final_dist_m ?? a.end_goal_dist_m, 2)} m from the goal` : ''}${finite(a.duration_s) ? ` · ${num(a.duration_s, 1)} s` : ''}`],
+    ['Outcome', `${out ? attemptOutcome(a).summary : 'open'}${finite(a.duration_s) ? ` · ${num(a.duration_s, 1)} s` : ''}`],
     ['Goal', Array.isArray(a.goal_scene) ? `(${num(a.goal_scene[0], 2)}, ${num(a.goal_scene[1], 2)}) on ${a.scan ?? 'the scan'}` : '—'],
     ['Passage', passage ?? (a.passage_required ? 'required, not scored' : 'not required')],
     ['Rehearsal', reh], ['Start check', sc ? `${num(sc.moved_m, 2)} m / ${num(sc.turned_deg, 0)}° from the scan pose${sc.within_offset_envelope === false ? ' · outside the rehearsed offset' : ''}` : '—'],
@@ -1816,7 +1965,8 @@ function attemptHtml(name, a, sel, live) {
     ['Plans', finite(a.plans) ? `${a.plans}${finite(a.no_safe_plans) ? ` · ${a.no_safe_plans} no-safe` : ''}` : '—'],
     ['In Replay', rt ? `${rt.exact ? '' : '≈ '}${num(rt.t, 1)} s${rt.exact ? '' : ' (console clock)'}` : 'time not recorded'],
   ];
-  return `<li class="dp-rev-attempt${sel ? ' sel' : ''}"><button class="dp-rev-head" data-attempt="${a.n}" aria-expanded="${sel}"><strong>${a.n}</strong><span class="outcome ${out === 'arrived' && a.passage !== 'missed' ? 'outcome-good' : out ? 'outcome-warn' : 'outcome-live'}">${escape(out ?? 'walking')}</span>${a.passage === 'missed' ? '<span class="dp-tag warn">missed gap</span>' : ''}${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : out ? '<small>untagged</small>' : ''}${a.note ? `<small class="dp-rev-note">${escape(a.note)}</small>` : ''}</button>
+  const o = attemptOutcome(a);
+  return `<li class="dp-rev-attempt${sel ? ' sel' : ''}"><button class="dp-rev-head" data-attempt="${a.n}" aria-expanded="${sel}"><strong>${a.n}</strong>${outcomeChip(o)}${outcomeFlags(o)}${a.tag ? `<span class="dp-tag">${escape(a.tag)}</span>` : out ? '<small>untagged</small>' : ''}${a.note ? `<small class="dp-rev-note">${escape(a.note)}</small>` : ''}</button>
     ${sel ? `<div class="dp-rev-body"><dl class="dp-rev-facts">${facts.map(([k, v]) => `<dt>${escape(k)}</dt><dd>${escape(v)}</dd>`).join('')}</dl>
       ${out ? `<div class="dp-tags">${(S.panel?.tags ?? TAGS).map(t => `<button data-rtag="${escape(t)}" data-key="${escape(key)}" aria-pressed="${draft.tag === t}">${escape(t)}</button>`).join('')}</div>
       <input type="text" id="dp-rnote-${a.n}" data-rnote="${escape(key)}" placeholder="Note (optional)" value="${escape(draft.note ?? '')}">
@@ -1866,7 +2016,7 @@ function reviewBody() {
   return {
     title: 'Review', lead: 'What the session did and recorded, from the deploy service. This view survives a reload: its link opens it in any browser.',
     html: `
-      <label class="field"><span>Session</span><select id="dp-review">${!listed && name ? `<option value="${escape(name)}" selected>${escape(name)}</option>` : ''}${[['Robot sessions', st().sessions?.robot ?? []], ['Practice and rehearsal runs', st().sessions?.other ?? []]].filter(([, l]) => l.length).map(([g, l]) => `<optgroup label="${g}">${l.map(s => `<option value="${escape(s.name)}" ${s.name === name ? 'selected' : ''}>${escape(s.name)}${s.practice ? ' (practice)' : ''}${s.started ? ` · ${new Date(s.started * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</option>`).join('')}</optgroup>`).join('') || (name ? '' : '<option>No sessions today</option>')}</select></label>
+      <label class="field"><span>Session</span><select id="dp-review">${!listed && name ? `<option value="${escape(name)}" selected>${escape(name)}</option>` : ''}${[['Robot sessions', st().sessions?.robot ?? []], ['Practice and rehearsal runs', st().sessions?.other ?? []]].filter(([, l]) => l.length).map(([g, l]) => `<optgroup label="${g}">${l.map(s => `<option value="${escape(s.name)}" ${s.name === name ? 'selected' : ''}>${escape(s.name)}${s.practice ? ' (practice)' : ''}${startedClock(s) ? ` · ${startedClock(s)}` : ''}</option>`).join('')}</optgroup>`).join('') || (name ? '' : '<option>No sessions today</option>')}</select></label>
       ${errBox}${missingBox}${unsupportedBox}
       ${!d || (d.loading && !shown && !d.error && !d.missing) ? '<p class="tiny">Loading the session…</p>' : ''}
       ${id ? `<div class="dp-summary dp-rev-receipt">
@@ -1926,6 +2076,10 @@ function bindPanel(root) {
   root.querySelector('#dp-seconds')?.addEventListener('change', e => { S.seconds = Math.max(3, Math.min(30, Number(e.target.value) || 8)); renderPanel(true); });
   root.querySelector('#dp-review')?.addEventListener('change', e => { S.reviewName = e.target.value; S.reviewAttempt = null; syncReviewUrl(); renderPanel(true); });
   root.querySelector('#dp-map-toggle')?.addEventListener('click', () => { S.mapCollapsed = !S.mapCollapsed; document.body.classList.toggle('dp-map-collapsed', S.mapCollapsed); renderPanel(true); setTimeout(updateInsets, 50); });
+  root.querySelectorAll('[data-goal-xy]').forEach(i => {
+    i.addEventListener('input', e => { S.goalDraft = { ...(S.goalDraft ?? {}), [i.dataset.goalXy]: e.target.value, error: null }; });
+    i.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); goalFromEntry(); } });
+  });
   root.querySelector('[data-passage]')?.addEventListener('change', e => { if (S.goal?.passage) { S.goal.passage.required = e.target.checked; drawGoal(); renderAll(); } });
   root.querySelectorAll('[data-tag]').forEach(b => b.addEventListener('click', () => { const d = S.tagDraft[b.dataset.key] ??= {}; d.tag = b.dataset.tag; d.result = null; renderPanel(true); }));
   root.querySelectorAll('[data-note]').forEach(i => i.addEventListener('input', e => { (S.tagDraft[i.dataset.note] ??= {}).note = e.target.value; }));
@@ -1952,6 +2106,7 @@ function doAction(a, el = null) {
   if (a.startsWith('sheet:')) return openSheet(a.slice(6), el);
   if (a.startsWith('ladder:')) return ladderAct(a.slice(7));
   if (a.startsWith('tag:')) return saveTag(a.slice(4));
+  if (a.startsWith('act-unlock:')) return unlockAct(a.slice(11));
   if (a.startsWith('rtag:')) { const [, ...rest] = a.split(':'); const n = Number(rest.pop()); return saveReviewTag(rest.join(':'), n); }
   switch (a) {
     case 'lease': return takeLease(false);
@@ -1961,7 +2116,8 @@ function doAction(a, el = null) {
     case 'release': releaseLease(); S.lease = { ...S.lease, id: null, supported: S.lease.supported === false ? null : S.lease.supported }; return renderAll();
     case 'doctor': return runDoctor();
     case 'scan': return startScan();
-    case 'clear-goal': return clearGoal();
+    case 'clear-goal': S.goalDraft = null; return clearGoal();
+    case 'goal-xy': return goalFromEntry();
     case 'rehearse': return runRehearsal();
     case 'retry-tracks': { const rec = rehearsalFor(); if (rec) loadTracks(rec, `${rec.name}:${setState(rec)}:${Date.now()}`); return renderPanel(true); }
     case 'send-goal': return sendGoal();
@@ -2447,7 +2603,7 @@ export function initDeploy(ctx) {
   });
   window.addEventListener('beforeunload', () => releaseLease());
   window.__deploy = { S, d3: d3.d3, estop, setStep, checkGoal, project: d3.project, pickAt: d3.pickAt, frameStep,
-    fn: { session, ident, isRobot, attached, rehearsalFor, ladderRows, sheetModel, liveState, liveAge, srcState, srcAge, freshLock, renderAll, reviewBody, goalStatus } };
+    fn: { session, ident, isRobot, attached, rehearsalFor, ladderRows, sheetModel, liveState, liveAge, srcState, srcAge, freshLock, renderAll, reviewBody, goalStatus, unknownAct, attemptOutcome, startedUnix, nextBlocker } };
 }
 // The service answers the v1 API: Studio opens on Deploy (app.js).
 export async function probe() {

@@ -6,8 +6,20 @@ its review. **Robot hardware has not run under Studio yet**; the robot has walke
 days 2026-10-24 and 2026-10-27). The contract v3 additions below (after an external review of the Deploy workspace:
 session receipts, rehearsal identity, freshness, uncertain acts, Review, profile goal checks, recording health) are
 built and tested in the gateway against `tools/fake_deploy_hub.py` and against replies recorded from the kit's real
-deploy service (`tests/fixtures/deploy_v1`); the kit's side of v3 is being built. Until a kit has a v3 capability, the
-gateway answers that endpoint with `{supported: false, capability}` instead of guessing.
+deploy service (`tests/fixtures/deploy_v1`). The kit serves them (kit `b098f35` and later). When a kit lacks a v3
+capability, the gateway answers that endpoint with `{supported: false, capability}` instead of guessing.
+
+**2026-11-06 (external review R01-R09).**
+- E-STOP and Stand never wait on the lease's audit row.
+- A press with no record stays unresolved and is never called "never arrived". The kit's act lookup is bound to the
+  session it is asked about and reads that session's event log.
+- An unknown console heartbeat raises its own alarm, and the phone keeps the physical E-stop line.
+- Start finds its session by the kit's `start_id`.
+- Replay decodes a growing recording again.
+- The live list, the tag card and Review share one attempt outcome.
+- Focus survives polling, and a goal can be typed.
+
+The current capability map is [CAPABILITIES.md](CAPABILITIES.md).
 
 Deploy is the workspace where an operator takes the robot from a scan of the room to a walk and its evidence: Connect,
 Scan, Goal, Rehearse, Deploy, Review, with a Readiness panel that stays on screen. It replaces the deploy kit's hub page

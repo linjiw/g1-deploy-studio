@@ -1,5 +1,7 @@
 # Physical G1 observation: preparation and limits
 
+> **Scope (2026-11-06).** This page covers the robot link's passive observation and its preparation. It is not the Deploy workspace, which relays the operator's presses (start session, Arm, GO, E-STOP, Stand, Take over) to the deploy kit's console ([DEPLOY.md](DEPLOY.md)). "No startup or stop action" below is about the observation path only. Current map: [CAPABILITIES.md](CAPABILITIES.md).
+
 **Physical G1 observation has not been run or authorized.** Studio currently performs file replay and optional loopback ZMQ telemetry subscriptions. It has no DDS participant, motor publisher, hand publisher, policy startup action, or robot stop action. A browser button cannot provide a physical emergency stop. Simulation/replay evidence is not hardware verification.
 
 ## Current blocker for a fresh canonical SONIC rehearsal

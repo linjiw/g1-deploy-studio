@@ -61,6 +61,8 @@ body.estop-shown #workspace-deploy::after { content: ''; position: absolute; top
 @keyframes dpe-blink { 50% { box-shadow: 0 0 0 2px transparent; } }
 .dpe-fallback { flex-basis: 100%; font-size: 11.5px; opacity: .9; }
 .dpe-fallback b { font-weight: 750; }
+.dpe-fb-short { display: none; }
+.dpe-alarm[data-kind="unknown"] { color: #8a3b00; box-shadow: 0 0 0 2px #ffb020; }
 
 /* ---------- The step panel ---------- */
 .deploy-panel { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; border-left: 1px solid var(--border); background: var(--panel); }
@@ -449,6 +451,10 @@ body.ws-deploy #viewport canvas { cursor: grab; }
 .dp-rev-hist { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
 .dp-rev-hist ul { margin: 4px 0 0; padding-left: 16px; }
 .dp-tag.warn { background: var(--warn-soft); color: #7a4c05; }
+.dp-tag.bad { background: #fde8e7; color: #a3160e; font-weight: 700; }
+.dp-tagcard.warn > strong { color: #7a4c05; }
+.dp-tag-why { margin: 4px 0 0; font-size: 12.5px; font-weight: 600; color: #7a4c05; line-height: 1.4; }
+.dp-attempts li .dp-tag { margin-left: 4px; }
 .dp-manifest tr.grp td { padding-top: 10px; font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); border-bottom: 0; }
 .dp-manifest tr.partial td:nth-child(2) { color: #7a4c05; font-weight: 600; }
 .deploy-panel h4 .tiny.warn, .deploy-panel .tiny.warn { color: #7a4c05; }
@@ -488,7 +494,9 @@ body.ws-deploy #viewport canvas { cursor: grab; }
   .deploy-estop { gap: 4px 10px; padding: 6px 10px; }
   .dpe-who span { max-width: 60vw; }
   .dpe-stop { height: 44px; padding: 0 22px; }
-  .dpe-fallback { display: none; }
+  /* The independent stop stays named on a phone (review 2026-11-06 R03), in one short line. */
+  .dpe-fallback { font-size: 11px; line-height: 1.3; }
+  .dpe-fb-long { display: none; } .dpe-fb-short { display: inline; }
   .deploy-context { display: none; }
   /* The map stays visible: the HUD keeps what drives the robot, its phase, the distance and the odometry. */
   .dp-hud-item[data-k="speed"], .dp-hud-item[data-k="tilt"], .dp-hud-item[data-k="plan-latency"], .dp-hud-item[data-k="motors"], .dp-hud-item[data-k="lidar"], .dp-hud-item[data-k="remote"] { display: none; }
@@ -511,3 +519,11 @@ body.ws-deploy #viewport canvas { cursor: grab; }
 .dpi-rec > span, .dpi-own, .dp-block-line > span, .callout { min-width: 0; overflow-wrap: anywhere; }
 .dp-missing .link-button { font-weight: 650; }
 .dp-rev-op { margin-top: 10px; }
+
+/* The goal by its numbers (review 2026-11-06 R07): beside the click in 3D, keyboard reachable. */
+.dp-goal-xy { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0; }
+.dp-goal-xy > .tiny { flex-basis: 100%; }
+.dp-goal-xy label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.dp-goal-xy input { width: 5.5em; min-height: 32px; }
+.dp-goal-xy .dp-secondary { min-height: 32px; margin: 0; }
+.dp-goal-xy small.warn { flex-basis: 100%; color: #7a4c05; }

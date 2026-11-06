@@ -1,12 +1,13 @@
 # Documentation index
 
-Start with **[STATUS.md](STATUS.md)**: one page with what works, the current results, the open issues and who owns each one.
+Start with **[CAPABILITIES.md](CAPABILITIES.md)** (2026-11-06): what Studio does today and what each part is verified on (fake services, the real deploy chain in simulation, hardware). [STATUS.md](STATUS.md) is the 2026-10-21 snapshot, from before the Deploy workspace: history.
 
 ## Current guides (kept up to date)
 
 | Document | Read it for |
 |---|---|
-| [STATUS.md](STATUS.md) | Current state, results, open issues, decisions and their dates |
+| [CAPABILITIES.md](CAPABILITIES.md) | **Current** capability map: Deploy, Navigate, observation, and what each is verified on |
+| [STATUS.md](STATUS.md) | The 2026-10-21 state (before Deploy): results, issues and decisions of that date |
 | [INSTALL.md](INSTALL.md) | Installing Studio, the deploy stack and the pinned navigation policy on another machine; configuration; updating the pin |
 | [SERVICE.md](SERVICE.md) | Starting, releasing and reaching Studio (systemd unit, SSH tunnel) |
 | [WORKBENCH.md](WORKBENCH.md) | Arena editor, rehearsals, suites, the Runs report, data layout and API |

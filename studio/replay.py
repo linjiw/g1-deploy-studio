@@ -426,6 +426,39 @@ def console_rec_dir(path):
     return None
 
 
+def console_revision(path):
+    """(signature, finalized) of what a console session's decode reads, from stat calls and two directory listings:
+    equal signatures decode the same. Finalized once the recorder wrote stopped_unix into rec/meta.json. A recording
+    still growing gets a new signature with each chunk (review 2026-11-06 R05: Replay once kept its first decode)."""
+    root = Path(path)
+    rec = console_rec_dir(root)
+    if rec is None:
+        return None, False
+    parts = []
+    for f in (rec / "meta.json", rec / "node_status.jsonl", root / "session.json", root / "node_plans.json",
+              root / "node.log", root / "node_memory.npz"):
+        try:
+            st = f.stat()
+            parts.append((f.name, st.st_size, st.st_mtime_ns))
+        except OSError:
+            parts.append((f.name, None, None))
+    for stream in ("lowstate", "zmq_odom"):
+        try:
+            names = sorted(p.name for p in (rec / stream).iterdir() if p.suffix == ".npz" and ".tmp" not in p.name)
+        except OSError:
+            names = []
+        last = None
+        if names:
+            try:
+                last = (rec / stream / names[-1]).stat().st_size
+            except OSError:
+                pass
+        parts.append((stream, len(names), names[-1] if names else None, last))
+    meta = _json(rec / "meta.json", None)
+    final = isinstance(meta, dict) and meta.get("stopped_unix") is not None
+    return hashlib.sha256(repr(parts).encode()).hexdigest()[:16], final
+
+
 def _rec_stream(rec, name, keys):
     """g1deploy/recording.py Session.stream, numpy only: chunks rec/<name>/NNNNNN.npz concatenated, selected keys."""
     parts = {}

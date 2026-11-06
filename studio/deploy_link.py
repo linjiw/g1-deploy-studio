@@ -626,12 +626,23 @@ class Deploy:
 
     # -- the operator lease
     def _live_lease(self):
+        """The live lease (callers hold self.lock); expires it on the way. Its audit row is only queued: nothing that
+        holds self.lock waits on a disk (review 2026-11-06 R01: E-STOP and Stand once did, behind a hung audit)."""
         lease = self.lease
         if lease is not None and lease["until"] <= self.clock():
-            self.audit("lease_lost", holder=lease["holder"], reason="no heartbeat for 3 s")
+            self.audit("lease_lost", sync=False, holder=lease["holder"], reason="no heartbeat for 3 s")
             self.lease = lease = None
             self.wake.set()
         return lease
+
+    def _lease_holder_now(self):
+        """Who holds the lease, for an E-STOP's or a direct press's attribution: one read, no lock, no expiry, no
+        audit. The emergency paths depend on nothing but the console (attribution may be missing, never late)."""
+        lease = self.lease
+        try:
+            return lease["holder"] if lease is not None and lease["until"] > self.clock() else None
+        except (KeyError, TypeError):
+            return None
 
     def lease_public(self):
         with self.lock:
@@ -1008,7 +1019,7 @@ class Deploy:
         service. `ok` only when every target acknowledged."""
         t0 = time.monotonic()
         targets = self.consoles.snapshot()
-        operator = (self.lease_public() or {}).get("holder") or "studio"
+        operator = self._lease_holder_now() or "studio"
         if not targets:
             out = {"ok": False, "targets": [], "t": round(time.time(), 3),
                    "error": "Studio knows no live console (the deploy service has not reported one): "
@@ -1094,7 +1105,7 @@ class Deploy:
         target = self.consoles.get(slot)
         if target is None:
             raise DeployError(f"Studio knows no live console in the {slot} slot", 404)
-        operator = (self.lease_public() or {}).get("holder") or "studio"
+        operator = self._lease_holder_now() or "studio"
         body = {"act": act, "id": document.get("id") if isinstance(document.get("id"), str) and document.get("id")
                 else uuid.uuid4().hex, "source": "studio", "operator": operator}
         row, reply = self._send(target, body, DIRECT_TIMEOUT_S)

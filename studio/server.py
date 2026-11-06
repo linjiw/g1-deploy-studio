@@ -39,6 +39,9 @@ L3_BASE = paths.get('data_root') / 'l3'
 # (or a robot-day directory of sessions) here and Replay lists it. Read-only.
 CONSOLE_BASE = paths.get('data_root') / 'robot-sessions'
 L3_RESCAN_S = 10.0
+# A console recording still being written (no stopped_unix yet) is decoded again when it grew, at most this often:
+# Replay shows it as a snapshot of so far, never stuck on its first decode (review 2026-11-06 R05).
+LIVE_REDECODE_S = 5.0
 L3_GROUP = 'Real-time rehearsals (L3)'
 CONSOLE_GROUP = 'Robot sessions (deploy kit)'
 # The model the deploy kit's console sessions are replayed with (studio/replay.py _console), for Deploy's 3D robots.
@@ -167,6 +170,7 @@ class Catalog:
                 raise ValueError("Session IDs must be unique URL-safe identifiers")
             self.entries[key] = item
         self.cache = OrderedDict()
+        self.revisions = {}  # key -> (signature, finalized, monotonic decode time) of a cached console decode
         self.models = {}
         self.meshes = {}
         self.lock = threading.RLock()
@@ -193,6 +197,7 @@ class Catalog:
             else:
                 self.providers.pop(key, None)
             self.cache.pop(key, None)
+            self.revisions.pop(key, None)
 
     def discover_l3(self, base=None, *, force=False):
         """Register completed L3 runs (rehearse/sim.npz) and their wire captures. Read-only, throttled."""
@@ -294,8 +299,37 @@ class Catalog:
             mark_l3(data, Path(item['l3_provenance']))
         return data
 
-    def _finish(self, key, data):
+    @staticmethod
+    def _revision(item):
+        """(signature, finalized) of a console recording (studio/replay.py console_revision); None for the others,
+        whose files do not change once they are listed."""
+        if item.get('kind') != 'robot-session':
+            return None
+        from studio.replay import console_revision
+        try:
+            sig, final = console_revision(item['path'])
+        except OSError:
+            return None
+        return (sig, final) if sig else None
+
+    def _cache_valid(self, key, rev):
+        """The cached decode of `key` still stands for revision `rev` (callers hold self.lock)."""
+        if rev is None:
+            return True
+        have = self.revisions.get(key)
+        if have is None:
+            return False
+        if have[0] == rev[0]:
+            return True
+        return not have[1] and not rev[1] and time.monotonic() - have[2] < LIVE_REDECODE_S  # a live one: throttled
+
+    def _finish(self, key, data, rev=None):
         data["metadata"]["catalog_id"] = key
+        if rev is not None:
+            data["metadata"]["recording_revision"] = {
+                "signature": rev[0], "finalized": rev[1], "decoded_unix": round(time.time(), 3),
+                "basis": "finalized: the recorder stopped" if rev[1] else
+                         "a snapshot of a recording still being written: reopen for what was recorded since"}
         # JSON encoding validates finite values before any response is served.
         body = json.dumps(data, allow_nan=False, separators=(",", ":")).encode()
         if len(body) > MAX_SESSION_BYTES:
@@ -309,26 +343,31 @@ class Catalog:
                 raise KeyError("Unknown session")
             item = dict(self.entries[key])
             provider = self.providers.get(key)
-            if provider is None and key in self.cache:
-                self.cache.move_to_end(key)
-                return self.cache[key]
-            gate = self._loading.setdefault(key, threading.Lock())
         if provider is not None:
             # Live providers refresh every request and are never cached.
             return self._finish(key, provider())
+        rev = self._revision(item)  # stat calls, outside the catalog lock
+        with self.lock:
+            if key in self.cache and self._cache_valid(key, rev):
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            gate = self._loading.setdefault(key, threading.Lock())
         with gate:
             with self.lock:
-                if key in self.cache:
+                if key in self.cache and self._cache_valid(key, rev):
                     self.cache.move_to_end(key)
                     return self.cache[key]
-            result = self._finish(key, self._decode(key, item))
+            result = self._finish(key, self._decode(key, item), rev)
             with self.lock:
                 if self.entries.get(key, {}).get('path') == item['path'] and key not in self.providers:
                     self.cache[key] = result
                     self.cache.move_to_end(key)
+                    if rev is not None:
+                        self.revisions[key] = (rev[0], rev[1], time.monotonic())
                     while len(self.cache) > CACHE_ENTRIES or (
                             len(self.cache) > 1 and sum(e[1].cost for e in self.cache.values()) > CACHE_BUDGET_BYTES):
-                        self.cache.popitem(last=False)
+                        gone, _ = self.cache.popitem(last=False)
+                        self.revisions.pop(gone, None)
                 self._loading.pop(key, None)
             return result
 

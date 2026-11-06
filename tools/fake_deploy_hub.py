@@ -898,8 +898,9 @@ class FakeHub:
         return c if c is not None and not c.ended else None
 
     # -- receipts (contract v3 A)
-    def make_receipt(self, c, operator=None, confirm=None, scan=None, start_offset=None):
+    def make_receipt(self, c, operator=None, confirm=None, scan=None, start_offset=None, start_id=None):
         return {"session": c.name, "slot": c.slot, "kind": c.kind, "robot": "lab-g1", "operator": operator,
+                "start_id": start_id,
                 "started": round(c.started_wall, 3),
                 "profile": {"name": c.profile, "sha": profile_sha(c.profile) if c.profile in PROFILES else None},
                 "bundle": {"name": "bundle", "manifest_sha": BUNDLE_MANIFEST_SHA}, "rules": None, "odom": c.odom,
@@ -969,7 +970,9 @@ class FakeHub:
 
     def session_row(self, c):
         return {"name": c.name, "dir": str(c.dir), "mode": "robot" if c.kind == "robot" else "sim", "kind": c.kind,
-                "practice": c.practice, "started": round(c.started_wall, 3), "profile": c.profile, "odom": c.odom,
+                # as the kit's session list: `started` is session.json's ISO text, `started_unix` the number
+                "practice": c.practice, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(c.started_wall)),
+                "started_unix": round(c.started_wall, 3), "profile": c.profile, "odom": c.odom,
                 "attempts": [{k: a.get(k) for k in ("n", "result", "tag", "note")} for a in c.attempts],
                 "studio": studio_id(c.day, c.name), "ended": c.ended}
 
@@ -1702,10 +1705,11 @@ class FakeHub:
             c = FakeConsole(self, slot, self.world, start_scene=start, profile=profile,
                             odom=body.get("odom", "fused"), practice=practice, operator=body.get("operator"),
                             confirm=conf or None, scan=body.get("scan") or self.scans[0]["name"])
+            c.receipt["start_id"] = str(body.get("id") or "")[:80] or None  # as the kit (its hub_start.json)
             self.slots[slot] = c
             self.consoles[c.name] = c
             self.sessions.insert(0, {"name": c.name, "practice": practice, "started": time.time()})
-            out = {"ok": True, "slot": slot, "name": c.name}
+            out = {"ok": True, "slot": slot, "name": c.name, "start_id": c.receipt["start_id"]}
             if self.v3:
                 out["receipt"] = c.receipt
             return 200, out

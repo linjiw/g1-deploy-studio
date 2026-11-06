@@ -1,5 +1,7 @@
 # G1 Deploy Studio · status (2026-10-21)
 
+> **Historical (2026-10-21), from before the Deploy workspace.** It describes the checked-goal and stand-only scope of that date. For what Studio does now (Deploy relays the operator's presses to the kit's console) and what each part is verified on, read [CAPABILITIES.md](CAPABILITIES.md).
+
 Studio is a loopback-only cockpit for deploying, visualizing and rehearsing navigation policies for the Unitree G1:
 **Flow planner → versioned ZMQ pose reference → SONIC tracker → Unitree DDS**. It observes and rehearses and owns no motor-command path. Its only robot-side commands are a checked goal (while the robot stands) and a stand request to node.py; Go stays with the operator.
 
